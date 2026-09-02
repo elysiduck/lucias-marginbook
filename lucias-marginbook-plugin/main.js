@@ -58,10 +58,14 @@
 
 "use strict";
 
+/* ============================================================
+ * 10-constants —— 正则与数据格式常量
+ * 修改注意：ppd-note / lmb-comment / selection= 是数据格式字面量，
+ * 改了会破坏存量笔记，动前先确认。
+ * ============================================================ */
+
 const { Plugin, Notice, TFile, PluginSettingTab, Setting, normalizePath, Modal, FuzzySuggestModal } = require("obsidian");
-
 const EX_ID_RE = /\^ex-[0-9a-z]{4,8}/;
-
 /* ==================== P1：摘录索引层 ====================
  * 动机：现有链路是 canvas → 摘录 md 的单向同步，打开 PDF 时无法知道「哪些段落
  *   已经摘录过」。本层建立反向索引（摘录 md → PDF/页/选区），为 P2 回绘与
@@ -79,7 +83,6 @@ const LMB_LINK_RE = /\[\[([^#|\]]+\.pdf)#page=(\d+)(?:&selection=([\d,]+))?(?:&r
 const LMB_SEL_RE = /^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/;
 // rect 参数：l,t,w,h（相对 .page 的百分比，浮点）—— 截图摘录用，不依赖 textLayer
 const LMB_RECT_RE = /^\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*$/;
-
 /* ==================== v0.8.0+：卡片补充描述（note） ====================
  * v0.8.0 最初设计：HTML 注释锚点 + callout 解析。v0.8.3 改成**完全可见**：
  *   - 砍掉 `<!-- ppd-note-start/end -->`（可疑失败点：要么被字面渲染破坏 callout，
@@ -105,7 +108,6 @@ const NOTE_START_LINE_RE = /^\s*<!--\s*ppd-note-start\s*-->\s*$/;
 const NOTE_END_LINE_RE = /^\s*<!--\s*ppd-note-end\s*-->\s*$/;
 // callout 首行：> [!类型][+-]? 标题
 const NOTE_CALLOUT_RE = /^\s*>\s*\[!([^\]]+)\]\s*([+-]?)\s*(.*)$/;
-
 /* ==================== v0.11.0：独立评论体系（lmb-comment） ====================
  * 与「补充描述」（ppd-note）并存的第二套数据，仿 PDF Flow 的批注评论底栏：
  *   空：> [!lmb-comment]- 添加评论     ← 折叠单行，渲染成底栏按钮
@@ -116,6 +118,8 @@ const LMB_COMMENT_TYPE = "lmb-comment";
 const LMB_COMMENT_EMPTY_TITLE = "添加评论";
 const LMB_COMMENT_TITLE = "评论";
 const LMB_COMMENT_CALLOUT_RE = /^\s*>\s*\[!lmb-comment\]\s*([+-]?)\s*(.*)$/;
+
+/* 23-pure-note —— 补充描述(ppd-note) + 独立评论(lmb-comment) 解析/合并（纯函数，可单测） */
 
 /**
  * 拆分 text → { body, note, fold, hasNote, type, tail }
@@ -200,7 +204,6 @@ function lmbSplitNote(text) {
   const tail = block.slice(tailStart).join("\n").replace(/^\s+|\s+$/g, "");
   return { body, note, fold, hasNote: true, type, tail };
 }
-
 /**
  * 合并 body + note → text。v0.8.3：emit 永远用新格式（无 HTML 注释锚点）。
  *   空内容 + allowEmpty=true → 输出「💬 添加评论」标题 + 占位提示行的可见按钮样式空框。
@@ -232,14 +235,12 @@ function lmbJoinNote(body, note, opts) {
   // 紧贴段落 ID 行可能被某些 markdown 渲染器当作同一段，触发渲染错误）
   return base + "\n\n" + callout.join("\n") + tail;
 }
-
 /** 剥离整个补充描述块（callout），用于摘录 md 同步，避免污染摘录文档。
  *  v0.11.0：评论块（tail）一并剥掉——摘录文档保持「原文镜像」。 */
 function lmbStripNote(text) {
   const r = lmbSplitNote(text);
   return (r.hasNote || r.tail) ? r.body : text;
 }
-
 /* ==================== v0.11.0：独立评论（comment）解析/合并 ==================== */
 
 /**
@@ -263,7 +264,6 @@ function lmbSplitComment(text) {
   }
   return { body: text, comment: "", fold: false, hasComment: false };
 }
-
 /**
  * 合并 body + 评论 → text。
  *   空 + allowEmpty=true → 折叠单行「> [!lmb-comment]- 添加评论」（渲染成底栏按钮）。
@@ -282,7 +282,6 @@ function lmbJoinComment(body, commentText, opts) {
   const callout = [head].concat(String(commentText).split("\n").map((l) => (l.trim() ? "> " + l : ">")));
   return base + "\n\n" + callout.join("\n");
 }
-
 /**
  * v0.8.3：把 text 转成「实际会被渲染」的形态供尺寸估算用。
  *   旧版本要去掉 HTML 注释锚点（不可见）；v0.8.3 没有不可见锚点，原样返回。
@@ -310,6 +309,8 @@ function lmbShouldReshowSelection(o) {
   return true;
 }
 
+/* 20-pure-interaction —— chip 重建把关（纯函数，可单测） */
+
 /* ==================== v0.4.0：MN4 式「拖到节点上自动成为子节点」纯函数 ==================== */
 
 /** 两矩形相交面积 / a 的面积（canvas 坐标：x,y 左上，y 向下） */
@@ -320,6 +321,8 @@ function lmbRectsOverlapRatio(a, b) {
   const areaA = a.w * a.h;
   return areaA > 0 ? (ox * oy) / areaA : 0;
 }
+
+/* 21-pure-layout —— 父子吸附/组居中/首连锁定/改挂侧/重居中（纯函数，可单测） */
 
 /**
  * 从候选节点里挑出「新卡落下时压住」的父节点 —— v0.4.3 多信号判定（修复识别率低）：
@@ -350,7 +353,6 @@ function lmbPickDropParent(newNode, otherNodes, threshold = 0.2) {
   }
   return best ? { node: best, ratio: bestRatio } : null;
 }
-
 /**
  * 子卡吸附到父卡旁边 —— v0.4.4 四方向择位（修复「长龙」问题）：
  *   按落点相对方位选首选面；首选面被已占位节点（含先吸附的兄弟卡）占据时，
@@ -404,7 +406,6 @@ function lmbSnapChildPosition(parent, child, gap = 30, occupied = []) {
   }
   return { fromSide: "right", toSide: "left", x: Math.round(x), y: Math.round(cand.right.y) };
 }
-
 /**
  * v0.7.3：自动边的存活判定（纯函数，便于测试）。
  *   ⚠️ 绝不能按「端点是否重叠」判定 —— lmbLayoutGroup 排布的目的就是让子卡不再遮挡父卡，
@@ -415,7 +416,6 @@ function lmbAutoEdgeAlive(edge, byId) {
   if (!edge || !edge.fromNode || !edge.toNode) return false;
   return !!(byId.get(edge.fromNode) && byId.get(edge.toNode));
 }
-
 /**
  * v0.7.3：找出某张子卡当前的自动父边（用于「换父」时先摘掉旧的，避免同一张卡挂两条自动父子线）。
  */
@@ -426,7 +426,6 @@ function lmbAutoParentEdgeOf(childId, edges, sidecar) {
   }
   return null;
 }
-
 /**
  * v0.6.0：由 child 当前中心相对 parent 中心，判定 child 在 parent 的哪一侧。
  *   主轴优先（横向 |dx| ≥ |dy| → right/left，否则 top/bottom），与 snapChild 选面规则一致。
@@ -436,7 +435,6 @@ function lmbSideOf(child, parent) {
   const dy = (child.y + (child.height || 0) / 2) - (parent.y + parent.height / 2);
   return Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? "right" : "left") : (dy >= 0 ? "bottom" : "top");
 }
-
 /**
  * v0.6.0：父→子 edge 的两端 side 标识（用于 SVG 连线端点）。
  */
@@ -446,7 +444,6 @@ function lmbSideEnds(side) {
   if (side === "top") return { fromSide: "top", toSide: "bottom" };
   return { fromSide: "bottom", toSide: "top" }; // bottom
 }
-
 /**
  * v0.6.0：从 edges 中导出指定父卡的所有子卡，按它们相对父卡的位置分组（right/left/top/bottom）。
  *   用法：拿到 kidsBySide.get(side) 后加上新子卡，整组调用 lmbLayoutGroup。
@@ -466,7 +463,6 @@ function lmbGroupBySide(parent, nodes, edges) {
   }
   return m;
 }
-
 /**
  * v0.6.0：同侧多子卡组居中布局 —— 修复「不同高度/宽度导致互相压住」的 bug。
  * v0.9.3：不再拉伸子卡尺寸（用户要求：把所有卡片拉成一样高/宽没有必要），
@@ -510,7 +506,6 @@ function lmbLayoutGroup(parent, kids, side, gap = 30) {
     }
   }
 }
-
 /* ==================== v0.11.0：首连锁定 / 改挂侧 / 尺寸重居中 ==================== */
 
 /**
@@ -542,7 +537,6 @@ function lmbPlanAutoLink(nn, parent, edges, sidecar) {
   if (auto) return { op: "skip" }; // 理论不可达（自动边本身即 linkEdge），防御
   return { op: "create", side: lmbSideOf(nn, parent) };
 }
-
 /**
  * v0.11.0（纯函数，原地改 edge + 坐标）：执行「改挂侧」。
  *   ① edge 两端 side 改为新侧（保持 from/to 方向属性不变，只换端点标识）；
@@ -567,7 +561,6 @@ function lmbApplyReside(parent, nn, plan, nodes, edges) {
   lmbLayoutGroup(parent, newGroup, side, 30);
   return { side, ends };
 }
-
 /**
  * v0.11.0（纯函数，原地改坐标）：尺寸变化后的组内重新居中 —— R1「乱放」的根因修复。
  *   根因链：instantAttach 用卡片落下时的默认小尺寸做组居中 → fitNode 随后把卡撑到
@@ -601,6 +594,8 @@ function lmbRecenterNode(nn, nodes, edges, sidecar) {
   return before !== after;
 }
 
+/* 22-pure-tree —— 摘录树构建 / canvas 新卡 diff（纯函数） */
+
 /**
  * 由 entries（已按页/画布序排好）+ parentOf（canvas 边导出的 childExId→parentExId）建树。
  * 父不在本组 / 自环 → 当根；环由渲染端 rendered 集合兜底，绝不死循环。
@@ -620,7 +615,6 @@ function lmbBuildTree(entries, parentOf) {
   }
   return { roots, children };
 }
-
 /**
  * canvas 新卡识别（纯函数）：prevIds=null 表示该画布从未见过（插件加载后首扫或全新画布）
  * → 只建档不动作；否则 diff 出新落下的 ^ex 卡。
@@ -631,6 +625,8 @@ function lmbDiffCanvasNodes(prevIds, exNodes) {
   if (!prevIds) return { firstRun: true, newNodes: [] };
   return { firstRun: false, newNodes: exNodes.filter((n) => !prevIds.has(n.id)) };
 }
+
+/* 24-pure-excerpt —— 摘录文档解析（纯函数，可单测） */
 
 /**
  * P1：解析摘录文档正文 → 条目数组。**纯函数**（不碰 this / 不碰 DOM），
@@ -713,6 +709,8 @@ function lmbParseExcerptDoc(content, sourcePath) {
   flush();
   return entries;
 }
+
+/* 30-plugin-core —— 插件类核心：构造器/生命周期/设置/样式注入 */
 
 class LuciasMarginBookPlugin extends Plugin {
 
@@ -1224,6 +1222,74 @@ class LuciasMarginBookPlugin extends Plugin {
     await this.saveData(obj);
   }
 
+  /* ==================== 样式 ==================== */
+
+  injectStyles() {
+    if (document.getElementById("lmb-styles")) return;
+    const st = document.createElement("style");
+    st.id = "lmb-styles";
+    st.textContent = [
+      ".lmb-chip{position:fixed;z-index:1000;",
+      "background:var(--interactive-accent,#7c6cf0);color:var(--text-on-accent,#fff);",
+      "font-size:12px;padding:6px 12px;border-radius:16px;cursor:grab;",
+      "box-shadow:0 4px 14px rgba(0,0,0,.5);user-select:none;white-space:nowrap;}",
+      ".lmb-chip:active{cursor:grabbing}",
+      ".lmb-rect{position:fixed;z-index:999;",
+      "border:2px dashed var(--interactive-accent,#7c6cf0);",
+      "background:rgba(124,108,240,.15);pointer-events:none;}",
+      ".lmb-btn.is-active{color:var(--text-on-accent);background:var(--interactive-accent);}",
+      // v0.8.1：动作按钮（补充描述）在不可用上下文里灰显，区别于「模式已开启」的 is-active
+      ".lmb-btn.is-idle{opacity:.35;}",
+      ".lmb-btn{cursor:pointer;}",
+      // ===== 补丁 C：Recall 回忆模式 =====
+      ".lmb-recall-blur{position:relative;cursor:pointer;}",
+      ".lmb-recall-blur>*{filter:blur(6px);transition:filter .25s;}",
+      ".lmb-recall-blur.lmb-recall-reveal>*{filter:none;}",
+      // ::after 挂在容器上（blur 只作用于子元素 > *，提示本身不会被糊掉）
+      ".lmb-recall-blur::after{content:'\\1F50D  点击回忆';position:absolute;top:6px;right:10px;", // Bugfix: 转义后首空格被 CSS 吃掉，补一个
+      "font-size:11px;line-height:1.4;color:var(--text-muted);",
+      "background:var(--background-secondary);border:1px solid var(--background-modifier-border);",
+      "border-radius:10px;padding:1px 8px;opacity:.85;pointer-events:none;}",
+      ".lmb-recall-blur.lmb-recall-reveal::after{display:none;}",
+      // ===== P2：摘录回绘标记 =====
+      // 关键：百分比定位 + .page 相对定位 → 覆盖层随页面缩放自动跟随，
+      //       完全不需要监听 zoom 事件重算（P0 实测 span 索引与缩放无关）。
+      'div[data-type="pdf"] .page{position:relative !important;}',
+      // 标记保持 pointer-events:none（见下）：单击/划选穿透，双击才跳转（P3）。
+      // 原因：标记覆盖在已摘录文字上，若单击可交互，会吃掉划选的起笔事件，
+      //       而"在 PDF 上划选拖拽"是本插件的主工作流，不能破坏。
+      ".lmb-mark{position:absolute;pointer-events:none;border-radius:2px;",
+      "mix-blend-mode:multiply;box-sizing:border-box;}",
+      // 降级标记：selection 缺失或 span 对不上时画页顶细条，宁可不准也不消失
+      '.lmb-mark[data-fallback="1"]{left:0 !important;right:0 !important;',
+      "top:0 !important;height:3px !important;width:auto !important;opacity:.75;}",
+      // ===== P3：跳转闪烁 =====
+      // 跳到目标选区后闪 3 次（0.5s × 3 = 1.5s），动画结束 opacity 回 0，2.2s 后 JS 移除节点
+      ".lmb-flash{position:absolute;pointer-events:none;border-radius:2px;",
+      "background:var(--interactive-accent,#7c6cf0);mix-blend-mode:multiply;",
+      "animation:lmb-flash-anim .5s ease-in-out 3;}",
+      "@keyframes lmb-flash-anim{0%,100%{opacity:0}45%,55%{opacity:.6}}",
+      // ===== v0.11.0：评论栏（仿 PDF Flow 批注底栏） =====
+      // 未知 callout 类型 Obsidian 默认给铅笔图标（✎）——正合底栏视觉；
+      // 折叠态 = 单行按钮条，展开态 = 标题 + 评论内容
+      '.callout[data-callout="lmb-comment"]{background:var(--background-secondary,transparent);',
+      "border:none !important;border-top:1px solid var(--background-modifier-border) !important;",
+      "border-radius:0 !important;box-shadow:none !important;padding:6px 10px !important;margin-top:10px;}",
+      '.callout[data-callout="lmb-comment"] .callout-title{gap:6px;}',
+      '.callout[data-callout="lmb-comment"] .callout-title-inner{color:var(--text-muted);font-weight:400;font-size:12.5px;}',
+      '.callout[data-callout="lmb-comment"] .callout-icon{color:var(--text-faint);}',
+      // 折叠箭头推到最右（PDF Flow 的「›」位置）；lmb-comment-clickable 供 JS/测试识别
+      '.callout[data-callout="lmb-comment"] .callout-fold{margin-left:auto;}'
+    ].join("");
+    document.head.appendChild(st);
+  }
+
+}
+
+/* 31-plugin-selection —— 选区/拖拽/chip/即时通道（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
+
+Object.assign(LuciasMarginBookPlugin.prototype, {
+
   /* ==================== 框选启动（按钮模式 / Alt） ==================== */
 
   onDocMouseDown(e) {
@@ -1241,7 +1307,7 @@ class LuciasMarginBookPlugin extends Plugin {
       this.startRectDrag(leaf, e);
       return;
     }
-  }
+  },
 
   startRectDrag(leaf, e) {
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
@@ -1284,12 +1350,12 @@ class LuciasMarginBookPlugin extends Plugin {
     };
     document.addEventListener("mousemove", mv, true);
     document.addEventListener("mouseup", up, true);
-  }
+  },
 
   pageAtPoint(doc, x, y) {
     const hit = doc.elementFromPoint(x, y);
     return hit && hit.closest ? hit.closest(".page[data-page-number]") : null;
-  }
+  },
 
   /* ==================== mouseup：出示手柄 ==================== */
 
@@ -1332,7 +1398,7 @@ class LuciasMarginBookPlugin extends Plugin {
       this._lastNoSelNotice = now;
       this.debugNotice("mouseup：无文字选区（图片框选 = 侧栏按钮 或 Alt+拖）");
     }
-  }
+  },
 
   /**
    * v0.7.2：判定鼠标事件是否发生在 PDF 视图（leaf）内。
@@ -1350,7 +1416,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (_) {
       return false;
     }
-  }
+  },
 
   /**
    * v0.7.2：判定鼠标事件是否发生在 canvas 视图（leaf）内，返回其文件。
@@ -1368,7 +1434,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (_) {
       return null;
     }
-  }
+  },
 
   /**
    * v0.9.3：由鼠标事件找到所在 canvas 视图的内部 canvas 对象（API 齐全才返回），
@@ -1388,7 +1454,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (_) {
       return null;
     }
-  }
+  },
 
   /**
    * v0.7.2：松手快速通道（drop flush）。
@@ -1411,7 +1477,7 @@ class LuciasMarginBookPlugin extends Plugin {
           console.error("[lmb] drop flush failed:", err));
       }, 600)
     };
-  }
+  },
 
   /* ==================== 图片：裁剪页面画布 → webp 附件 ==================== */
 
@@ -1483,7 +1549,7 @@ class LuciasMarginBookPlugin extends Plugin {
       console.error("[lmb] captureRectImage error:", err);
       return null;
     }
-  }
+  },
 
   /* ==================== 文字选区 ==================== */
 
@@ -1496,7 +1562,7 @@ class LuciasMarginBookPlugin extends Plugin {
     const view = leaf && leaf.view;
     if (!view || !view.file) return null;
     return { view, pageEl, pageNum: parseInt(pageEl.dataset.pageNumber, 10) || 1 };
-  }
+  },
 
   /**
    * 文字选区 → {file, pageNum, text, link, display}
@@ -1540,7 +1606,7 @@ class LuciasMarginBookPlugin extends Plugin {
       console.warn("[lmb] extractSelection error:", err);
       return null;
     }
-  }
+  },
 
   /** DOM 选区边界 → selection= 链接参数（textLayer 子 div 序号 + 字符偏移） */
   buildSelectionParams(sel, pageEl) {
@@ -1570,7 +1636,7 @@ class LuciasMarginBookPlugin extends Plugin {
     const a = (begin.idx < end.idx) || (begin.idx === end.idx && begin.off <= end.off) ? begin : end;
     const b = a === begin ? end : begin;
     return a.idx + "," + a.off + "," + b.idx + "," + b.off;
-  }
+  },
 
   /**
    * 补丁 A：内容寻址 exId（P0-1）——同一选区重复拖拽 → 同一 ^ex id → 引用计数正确、天然去重。
@@ -1598,7 +1664,7 @@ class LuciasMarginBookPlugin extends Plugin {
       console.warn("[lmb] contentExId 降级为随机 id:", err);
       return "ex-" + Math.random().toString(36).slice(2, 8);
     }
-  }
+  },
 
   buildDropText(info) {
     try {
@@ -1619,7 +1685,7 @@ class LuciasMarginBookPlugin extends Plugin {
       }
       return "> (" + info.link + ")\n> " + info.text + "\n^" + exId;
     }
-  }
+  },
 
   /* ==================== 拖拽手柄（纯原生 HTML5 drag） ==================== */
 
@@ -1665,14 +1731,14 @@ class LuciasMarginBookPlugin extends Plugin {
       } catch (_) { /* noop */ }
       this._chipSig = null;
     });
-  }
+  },
 
   hideChip() {
     if (this.chipEl) {
       this.chipEl.remove();
       this.chipEl = null;
     }
-  }
+  },
 
   /* ==================== Canvas：尺寸适配 + 摘录文档同步 ==================== */
 
@@ -1725,7 +1791,7 @@ class LuciasMarginBookPlugin extends Plugin {
       return;
     }
     // 1.2s 内没等到新卡 → 文件层兜底
-  }
+  },
 
   /**
    * v0.9.3 即时通道（移动已有卡）：canvas 内 mouseup 后直接在「内存 canvas 数据」上做
@@ -1807,7 +1873,13 @@ class LuciasMarginBookPlugin extends Plugin {
       return;
     }
     // 500ms 内没检测到移动 → 文件层兜底
-  }
+  },
+
+});
+
+/* 32-plugin-canvas —— 画布处理/尺寸自适应/自愈（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
+
+Object.assign(LuciasMarginBookPlugin.prototype, {
 
   scheduleCanvasSync(file) {
     const old = this.syncTimers.get(file.path);
@@ -1818,7 +1890,7 @@ class LuciasMarginBookPlugin extends Plugin {
       this.syncTimers.delete(file.path);
       this.processCanvas(file).catch((err) => console.error("[lmb] canvas process failed:", err));
     }, 400));
-  }
+  },
 
   async processCanvas(cf) {
     const raw = await this.app.vault.read(cf);
@@ -2067,7 +2139,7 @@ class LuciasMarginBookPlugin extends Plugin {
         console.error("[lmb] excerpt sync failed for", pdfPath, err);
       }
     }
-  }
+  },
 
   /**
    * v0.6.0：规范化已有重叠摘录（命令入口）。
@@ -2159,7 +2231,90 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     }
     new Notice(`已规范化：新建 ${totalEdges} 条边，整组移动 ${totalMoves} 张卡（${targets.length} 个画布）`);
-  }
+  },
+
+  fitNode(node, store) {
+    const hash = this.simpleHash(node.text);
+    const prev = store.get(node.id);
+    if (prev && prev.hash === hash) return null;  // 已适配或用户手动调整过
+    const size = this.estimateSizeFor(node.text);
+    store.set(node.id, { hash, w: size.w, h: size.h });
+    this.persistAutoSizeSoon();
+    if (prev && Math.abs(prev.w - size.w) < 2 && Math.abs(prev.h - size.h) < 2) return null;
+    return size;
+  },
+
+  /** 图片卡：按截图真实宽高比；文本卡：按行宽/行数估算 */
+  estimateSizeFor(text) {
+    const em = text.match(/!\[\[([^\]|]+?)\]\]/);   // em[1] = 完整附件名（含 .webp）
+    if (em) {
+      const dims = this.imgDims.get(em[1]);
+      const w = 380;
+      if (dims && dims.w > 0) {
+        // 图片高（按卡片宽等比）+ 回跳引用行（约 2 行）+ 内边距
+        const imgH = Math.round(w * dims.h / dims.w);
+        return this.addNoteChrome({ w, h: imgH + 78 }, text);
+      }
+      return this.addNoteChrome({ w, h: 460 }, text);
+    }
+    // v0.8.0：不可见的注释锚点行不计入高度，按「实际渲染的文本」估算，再补 callout 框高
+    return this.addNoteChrome(this.estimateTextSize(lmbRenderedText(text)), text);
+  },
+
+  /**
+   * v0.8.0：给尺寸补上 callout（补充描述框）的额外高度。
+   *   callout 渲染出来会有背景框 + 标题行 + 上下内边距，这部分不在纯文本行高里。
+   *   估约 46px（标题行 25 + 上下 padding 约 21），近似值，够用。
+   */
+  addNoteChrome(size, text) {
+    if (!lmbSplitNote(text).hasNote) return size;
+    return { w: size.w, h: Math.ceil(Math.min(900, size.h + 46)) };
+  },
+
+  estimateTextSize(text) {
+    const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
+    const meas = doc.createElement("span");
+    meas.style.cssText = "position:fixed;left:-9999px;top:0;white-space:pre;visibility:hidden;" +
+      "font-size:16px;line-height:1.5;font-family:var(--font-text,-apple-system,'Microsoft YaHei',sans-serif);";
+    doc.body.appendChild(meas);
+    const lines = text.split("\n").map((l) => {
+      let s = l.replace(/\[\[[^\]]*\|([^\]]+)\]\]/g, "$1").replace(/\[\[[^\]]*\]\]/g, "……");
+      const quote = /^>/.test(s);
+      s = s.replace(/^>\s?/, "");
+      meas.textContent = s || " ";
+      return { w: meas.getBoundingClientRect().width, quote };
+    });
+    meas.remove();
+
+    const padX = 28, padY = 40, lineH = 25, quoteIndent = 22;
+    const natural = Math.max.apply(null, lines.map((l) => l.w + (l.quote ? quoteIndent : 0)));
+    const w = Math.ceil(Math.min(560, Math.max(260, natural + padX)));
+    const innerW = Math.max(80, w - padX - quoteIndent);
+    let h = padY;
+    for (const l of lines) {
+      h += Math.max(1, Math.ceil(l.w / innerW)) * lineH + (l.quote ? 4 : 0);
+    }
+    return { w, h: Math.ceil(Math.min(900, Math.max(80, h))) };
+  },
+
+  simpleHash(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return String(h);
+  },
+
+  persistAutoSizeSoon() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      this.saveSettings().catch(() => {});
+    }, 2000);
+  },
+
+});
+
+/* 33-plugin-note-comment —— 补充描述 + 独立评论（命令/点击编辑/批量）（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
+
+Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== v0.8.0：卡片补充描述（note） ==================== */
 
@@ -2202,7 +2357,7 @@ class LuciasMarginBookPlugin extends Plugin {
     await this.app.vault.adapter.write(ctx.file.path, JSON.stringify(data, null, indent));
     this.persistAutoSizeSoon();
     new Notice(`已给 ${n} 张摘录卡添加补充描述框（${fold ? "已折叠" : "已展开"}，点开即可写）`);
-  }
+  },
 
   /**
    * v0.11.0：给画布里所有还没有评论栏的摘录卡批量挂「添加评论」底栏（存量卡入口）。
@@ -2235,7 +2390,7 @@ class LuciasMarginBookPlugin extends Plugin {
     await this.app.vault.adapter.write(ctx.file.path, JSON.stringify(data, null, indent));
     this.persistAutoSizeSoon();
     new Notice(`已给 ${n} 张摘录卡添加评论栏（点评论栏直接写）`);
-  }
+  },
 
   /* ==================== v0.11.0：独立评论（批注评论底栏） ==================== */
 
@@ -2270,7 +2425,7 @@ class LuciasMarginBookPlugin extends Plugin {
     await this.app.vault.adapter.write(file.path, JSON.stringify(data, null, indent));
     this.persistAutoSizeSoon();
     return { ok: true, msg: "" };
-  }
+  },
 
   /** 评论命令统一入口（mode = "edit" 弹窗编辑 / "remove" 移除） */
   async runCardCommentCommand(mode) {
@@ -2293,7 +2448,7 @@ class LuciasMarginBookPlugin extends Plugin {
         new Notice(r.ok ? (String(v).trim() ? "已保存评论" : "已移除评论") : r.msg);
       }
     }).open();
-  }
+  },
 
   /**
    * v0.11.0：canvas 里点击「评论栏」直接弹编辑框（PDF Flow 式交互）。
@@ -2328,7 +2483,7 @@ class LuciasMarginBookPlugin extends Plugin {
         console.warn("[lmb] comment click edit error:", err);
       });
     } catch (_) { /* noop：点击拦截绝不能抛错破坏 canvas */ }
-  }
+  },
 
   /** 按节点 id 直开评论编辑弹窗（点击评论栏的入口，无需选择器） */
   async editCommentForNode(file, nodeId) {
@@ -2347,7 +2502,7 @@ class LuciasMarginBookPlugin extends Plugin {
         new Notice(r.ok ? (String(v).trim() ? "已保存评论" : "已移除评论") : r.msg);
       }
     }).open();
-  }
+  },
 
   /** 拿到当前 canvas 上下文 { file, leaf }；不在 canvas 里则返回 null */
   activeCanvasContext() {
@@ -2360,7 +2515,7 @@ class LuciasMarginBookPlugin extends Plugin {
     const f = leaf && leaf.view && leaf.view.file;
     if (!f || f.extension !== "canvas") return null;
     return { file: f, leaf };
-  }
+  },
 
   /**
    * 取目标卡片节点：
@@ -2392,7 +2547,7 @@ class LuciasMarginBookPlugin extends Plugin {
           () => resolve(null)).open();
       }).catch(() => resolve(null));
     });
-  }
+  },
 
   /**
    * 把补充描述写进指定节点。noteText 为空串 = 移除补充描述。
@@ -2437,7 +2592,7 @@ class LuciasMarginBookPlugin extends Plugin {
     await this.app.vault.adapter.write(file.path, JSON.stringify(data, null, indent));
     this.persistAutoSizeSoon();
     return { ok: true, msg: "" };
-  }
+  },
 
   /** 三条命令的统一入口：edit（弹窗编辑）/ remove（清空）/ fold（切换折叠） */
   async runCardNoteCommand(mode) {
@@ -2468,84 +2623,13 @@ class LuciasMarginBookPlugin extends Plugin {
         new Notice(r.ok ? (String(v).trim() ? "已保存补充描述" : "已移除补充描述") : r.msg);
       }
     }).open();
-  }
+  },
 
-  fitNode(node, store) {
-    const hash = this.simpleHash(node.text);
-    const prev = store.get(node.id);
-    if (prev && prev.hash === hash) return null;  // 已适配或用户手动调整过
-    const size = this.estimateSizeFor(node.text);
-    store.set(node.id, { hash, w: size.w, h: size.h });
-    this.persistAutoSizeSoon();
-    if (prev && Math.abs(prev.w - size.w) < 2 && Math.abs(prev.h - size.h) < 2) return null;
-    return size;
-  }
+});
 
-  /** 图片卡：按截图真实宽高比；文本卡：按行宽/行数估算 */
-  estimateSizeFor(text) {
-    const em = text.match(/!\[\[([^\]|]+?)\]\]/);   // em[1] = 完整附件名（含 .webp）
-    if (em) {
-      const dims = this.imgDims.get(em[1]);
-      const w = 380;
-      if (dims && dims.w > 0) {
-        // 图片高（按卡片宽等比）+ 回跳引用行（约 2 行）+ 内边距
-        const imgH = Math.round(w * dims.h / dims.w);
-        return this.addNoteChrome({ w, h: imgH + 78 }, text);
-      }
-      return this.addNoteChrome({ w, h: 460 }, text);
-    }
-    // v0.8.0：不可见的注释锚点行不计入高度，按「实际渲染的文本」估算，再补 callout 框高
-    return this.addNoteChrome(this.estimateTextSize(lmbRenderedText(text)), text);
-  }
+/* 34-plugin-excerpt-index —— 摘录索引/文档同步/画布聚焦（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
 
-  /**
-   * v0.8.0：给尺寸补上 callout（补充描述框）的额外高度。
-   *   callout 渲染出来会有背景框 + 标题行 + 上下内边距，这部分不在纯文本行高里。
-   *   估约 46px（标题行 25 + 上下 padding 约 21），近似值，够用。
-   */
-  addNoteChrome(size, text) {
-    if (!lmbSplitNote(text).hasNote) return size;
-    return { w: size.w, h: Math.ceil(Math.min(900, size.h + 46)) };
-  }
-
-  estimateTextSize(text) {
-    const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
-    const meas = doc.createElement("span");
-    meas.style.cssText = "position:fixed;left:-9999px;top:0;white-space:pre;visibility:hidden;" +
-      "font-size:16px;line-height:1.5;font-family:var(--font-text,-apple-system,'Microsoft YaHei',sans-serif);";
-    doc.body.appendChild(meas);
-    const lines = text.split("\n").map((l) => {
-      let s = l.replace(/\[\[[^\]]*\|([^\]]+)\]\]/g, "$1").replace(/\[\[[^\]]*\]\]/g, "……");
-      const quote = /^>/.test(s);
-      s = s.replace(/^>\s?/, "");
-      meas.textContent = s || " ";
-      return { w: meas.getBoundingClientRect().width, quote };
-    });
-    meas.remove();
-
-    const padX = 28, padY = 40, lineH = 25, quoteIndent = 22;
-    const natural = Math.max.apply(null, lines.map((l) => l.w + (l.quote ? quoteIndent : 0)));
-    const w = Math.ceil(Math.min(560, Math.max(260, natural + padX)));
-    const innerW = Math.max(80, w - padX - quoteIndent);
-    let h = padY;
-    for (const l of lines) {
-      h += Math.max(1, Math.ceil(l.w / innerW)) * lineH + (l.quote ? 4 : 0);
-    }
-    return { w, h: Math.ceil(Math.min(900, Math.max(80, h))) };
-  }
-
-  simpleHash(s) {
-    let h = 0;
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-    return String(h);
-  }
-
-  persistAutoSizeSoon() {
-    clearTimeout(this._saveTimer);
-    this._saveTimer = setTimeout(() => {
-      this.saveSettings().catch(() => {});
-    }, 2000);
-  }
+Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 摘录文档（<PDF名>-摘录.md） ==================== */
 
@@ -2641,7 +2725,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.error("[lmb] writeExcerptMd error:", err);
     }
-  }
+  },
 
   /* ==================== P1：摘录索引层 ====================
    * 反向索引：摘录 md → (PDF, 页, 选区)。为 P2 回绘 / P3 跳转供数。
@@ -2661,7 +2745,7 @@ class LuciasMarginBookPlugin extends Plugin {
       const links = rl[f.path];
       return links && Object.keys(links).some((p) => p.toLowerCase().endsWith(".pdf"));
     });
-  }
+  },
 
   /** 单个文件是否链接到 pdf（用于 modify 事件的廉价预筛，避免每次敲键都读文件） */
   lmbFileLinksPdf(f) {
@@ -2670,7 +2754,7 @@ class LuciasMarginBookPlugin extends Plugin {
         && this.app.metadataCache.resolvedLinks[f.path];
       return !!(links && Object.keys(links).some((p) => p.toLowerCase().endsWith(".pdf")));
     } catch (_) { return false; }
-  }
+  },
 
   /** 全量重建。分批 20 个 + 批间 sleep 10ms，避免大库卡 UI。 */
   async buildExcerptIndex() {
@@ -2703,7 +2787,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } finally {
       this._isIndexing = false;
     }
-  }
+  },
 
   /**
    * 增量重索引单个文件。
@@ -2737,7 +2821,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] reindexFile error:", f && f.path, err);
     }
-  }
+  },
 
   /** 摘掉某个摘录文档贡献的全部条目（文件删除 or 重索引前调用） */
   dropFileFromIndex(mdPath) {
@@ -2747,7 +2831,7 @@ class LuciasMarginBookPlugin extends Plugin {
       if (kept.length !== arr.length) this.excerptIndex.set(k, kept);
     }
     this.indexMtime.delete(mdPath);
-  }
+  },
 
   /**
    * P3.5：canvas 索引 —— 扫一个 .canvas，登记 text 节点里的 ^ex-id。
@@ -2775,7 +2859,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] lmbIndexCanvasFile error:", cf && cf.path, err);
     }
-  }
+  },
 
   /**
    * 打开 canvas 并聚焦到指定节点（选中 + 缩放到选区）。
@@ -2825,7 +2909,7 @@ class LuciasMarginBookPlugin extends Plugin {
       console.warn("[lmb] lmbFocusCanvasNode error:", err);
       return false;
     }
-  }
+  },
 
   /**
    * v0.9.2：跳转落地后的「重叠自愈」。
@@ -2845,12 +2929,12 @@ class LuciasMarginBookPlugin extends Plugin {
         } catch (_) { /* noop */ }
       }, 900);
     } catch (_) { /* noop */ }
-  }
+  },
 
   /** 供 P2 回绘使用：某 PDF 的全部摘录条目 */
   getExcerptsForPdf(pdfPath) {
     return this.excerptIndex ? (this.excerptIndex.get(pdfPath) || []) : [];
-  }
+  },
 
   getIndexStats() {
     let excerpts = 0;
@@ -2860,7 +2944,13 @@ class LuciasMarginBookPlugin extends Plugin {
       excerpts: excerpts,
       files: this.indexMtime ? this.indexMtime.size : 0
     };
-  }
+  },
+
+});
+
+/* 35-plugin-marks —— PDF 回绘标记/颜色语义（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
+
+Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== P2：回绘层 ====================
    * 在 PDF 页面上把「已摘录」的段落标出来，让"哪里摘过"一眼可见。
@@ -2888,7 +2978,7 @@ class LuciasMarginBookPlugin extends Plugin {
       width: 100 * cr.width / pr.width,
       height: 100 * cr.height / pr.height
     }));
-  }
+  },
 
   /**
    * 选区参数 → 页面内矩形数组。这是 buildSelectionParams 的**逆运算**。
@@ -2927,7 +3017,7 @@ class LuciasMarginBookPlugin extends Plugin {
       const rects = Array.from(r.getClientRects()).filter((x) => x.width > 0.5 && x.height > 0.5);
       return rects.length ? rects : null;
     } catch (_) { return null; }
-  }
+  },
 
   /** #rrggbb → rgba()，失败返回 null */
   lmbHexToRgba(hex, alpha) {
@@ -2937,7 +3027,7 @@ class LuciasMarginBookPlugin extends Plugin {
     const g = parseInt(h.slice(2, 4), 16);
     const b = parseInt(h.slice(4, 6), 16);
     return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
-  }
+  },
 
   /**
    * 标记颜色：优先用 colorMap 反查（tag → hex）。
@@ -2958,7 +3048,7 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     } catch (_) { /* 解析失败 → 默认色 */ }
     return "rgba(255, 226, 120, 0.40)";
-  }
+  },
 
   /** 画单条摘录的标记（跨行会有多个矩形，每个矩形一个 div） */
   lmbDrawEntryMark(pageEl, entry) {
@@ -3004,7 +3094,7 @@ class LuciasMarginBookPlugin extends Plugin {
       }
       pageEl.appendChild(frag);
     } catch (_) { /* 单条失败不影响其他条 */ }
-  }
+  },
 
   /** 性能守卫：摘录很多时只画视口附近的页 */
   lmbPageNearViewport(pageEl) {
@@ -3013,7 +3103,7 @@ class LuciasMarginBookPlugin extends Plugin {
       const h = window.innerHeight || 800;
       return r.bottom > -2 * h && r.top < 3 * h;
     } catch (_) { return true; }
-  }
+  },
 
   /** 清掉一个容器内的全部标记 */
   lmbClearMarks(containerEl) {
@@ -3025,7 +3115,7 @@ class LuciasMarginBookPlugin extends Plugin {
         if (m.parentNode) m.parentNode.removeChild(m);
       }
     } catch (_) { /* noop */ }
-  }
+  },
 
   /** 画一个 PDF 视图的全部标记 */
   lmbDrawMarksForView(view) {
@@ -3058,7 +3148,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] lmbDrawMarksForView error:", err);
     }
-  }
+  },
 
   /**
    * 挂 MutationObserver 驱动重画。
@@ -3129,7 +3219,7 @@ class LuciasMarginBookPlugin extends Plugin {
         this._ppdDblClickTargets.push(target);
       }
     } catch (_) { /* noop */ }
-  }
+  },
 
   lmbDisconnectObserver(view) {
     try {
@@ -3142,7 +3232,7 @@ class LuciasMarginBookPlugin extends Plugin {
         view._ppdMarkTimer = null;
       }
     } catch (_) { /* noop */ }
-  }
+  },
 
   /** 全量刷新所有 PDF 视图的标记 */
   lmbRefreshAllMarks() {
@@ -3155,7 +3245,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] lmbRefreshAllMarks error:", err);
     }
-  }
+  },
 
   /** 防抖刷新（布局变化 / 切标签 / 索引更新都走这里） */
   lmbScheduleMarksRefresh(delay) {
@@ -3166,7 +3256,129 @@ class LuciasMarginBookPlugin extends Plugin {
         this.lmbRefreshAllMarks();
       }, delay == null ? 200 : delay);
     } catch (_) { /* noop */ }
-  }
+  },
+
+  /**
+   * P1-5：探测选区命中的高亮背景色 → 按 settings.colorMap 映射为标签名。
+   * 探测不到 / 未配置 / 未命中一律返回 null（与现状行为一致，静默跳过）。
+   */
+  detectColorTag(anchorEl, pageEl) {
+    try {
+      const rawMap = this.settings && this.settings.colorMap;
+      if (!rawMap) return null;
+      const map = this.parseColorMap(rawMap);
+      if (!map.size) return null;
+      const colors = this.collectHighlightColors(anchorEl, pageEl);
+      for (const hex of colors) {
+        const tag = map.get(hex);
+        if (tag) {
+          console.log("[lmb] colorTag hit:", hex, "->", tag);
+          return tag;
+        }
+      }
+      return null;
+    } catch (err) {
+      console.warn("[lmb] detectColorTag error:", err);
+      return null;
+    }
+  },
+
+  /** 解析「颜色语义映射」textarea：每行 rrgggbb=标签名，忽略空行/错行/#前缀/大小写 */
+  parseColorMap(raw) {
+    const map = new Map();
+    try {
+      for (const lineRaw of String(raw || "").split("\n")) {
+        const line = lineRaw.trim();
+        if (!line) continue; // Bugfix: 不再把 # 开头当注释——key 侧本就允许 # 前缀（如 "#fff3a3=核心观点"），两者曾自相矛盾
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq).trim().replace(/^#/, "").toLowerCase();
+        const tag = line.slice(eq + 1).trim();
+        if (!/^[0-9a-f]{6}$/.test(key) || !tag) continue;
+        map.set(key, tag);
+      }
+    } catch (_) { /* noop：解析失败按空映射 */ }
+    return map;
+  },
+
+  /**
+   * 收集选区可能命中的高亮背景色（归一化 #rrggbb，小写，按优先顺序）：
+   * ① anchorEl 向上到 pageEl 的祖先链（万一某些版本把高亮画在 textLayer DOM 内）；
+   * ② 主路径：同页 .annotationLayer 里与选区矩形相交的注释 section
+   *    （及其内部 quad div），pdf.js 用内联 background-color 渲染高亮注释
+   *    （PDF++ 高亮走的就是 pdf.js 标准 annotationLayer：
+   *    .annotationLayer > section:not(.linkAnnotation)——高亮不在 textLayer。）
+   */
+  collectHighlightColors(anchorEl, pageEl) {
+    const out = [];
+    const seen = new Set();
+    const add = (el) => {
+      try {
+        if (!el || el.nodeType !== 1) return;
+        const win = el.ownerDocument && el.ownerDocument.defaultView;
+        if (!win || !win.getComputedStyle) return;
+        const hex = this.normalizeColor(win.getComputedStyle(el).backgroundColor);
+        if (hex && !seen.has(hex)) { seen.add(hex); out.push(hex); }
+      } catch (_) { /* noop */ }
+    };
+    try {
+      let cur = anchorEl;
+      while (cur && cur !== pageEl) { add(cur); cur = cur.parentElement; }
+    } catch (_) { /* noop */ }
+    try {
+      const rect = anchorEl.getBoundingClientRect();
+      if (rect.width || rect.height) {
+        const sections = pageEl.querySelectorAll(".annotationLayer section");
+        for (const sec of sections) {
+          try {
+            const r = sec.getBoundingClientRect();
+            const ox = Math.min(rect.right, r.right) - Math.max(rect.left, r.left);
+            const oy = Math.min(rect.bottom, r.bottom) - Math.max(rect.top, r.top);
+            if (ox > 2 && oy > 2) {
+              add(sec);
+              const quads = sec.querySelectorAll("div");
+              for (const q of quads) add(q);
+            }
+          } catch (_) { /* noop */ }
+        }
+      }
+    } catch (_) { /* noop */ }
+    return out;
+  },
+
+  /**
+   * 任意 CSS 颜色字符串 → 6 位 hex（小写）；透明/非法返回 null。
+   * 借离屏 canvas 的 fillStyle 归一化能力（rgb/rgba/#hex/颜色名通吃），零依赖。
+   */
+  normalizeColor(str) {
+    try {
+      if (!str || str === "transparent") return null;
+      if (!this._colorCtx) this._colorCtx = document.createElement("canvas").getContext("2d");
+      if (!this._colorCtx) return null;
+      this._colorCtx.fillStyle = "#000000";      // 先垫底色，非法值不会覆盖
+      this._colorCtx.fillStyle = str;
+      const v = this._colorCtx.fillStyle;
+      if (typeof v !== "string") return null;
+      const m = v.match(/^rgba?\(([^)]+)\)$/i);
+      if (m) {
+        const p = m[1].split(",").map((s) => parseFloat(s));
+        if (p.length < 3) return null;
+        if (p.length >= 4 && p[3] <= 0.05) return null;   // 近全透明视为无高亮
+        return p.slice(0, 3).map((n) => Math.max(0, Math.min(255, Math.round(n)))
+          .toString(16).padStart(2, "0")).join("");
+      }
+      const m2 = v.match(/^#([0-9a-f]{6})$/i);
+      return m2 ? m2[1].toLowerCase() : null;
+    } catch (_) {
+      return null;
+    }
+  },
+
+});
+
+/* 36-plugin-jump —— 双向跳转/链接接管/相关笔记（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
+
+Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== P3：双向跳转 ====================
    * 正向：摘录文档里的 [[x.pdf#page=N&selection=a,b,c,d]] → 滚到页 + 精确定位 + 闪 3 次
@@ -3214,7 +3426,7 @@ class LuciasMarginBookPlugin extends Plugin {
         rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null
       };
     } catch (_) { return null; }
-  }
+  },
 
   /**
    * 【v0.9.1 主力】DOM 捕获层拦截 pdf 链接点击。
@@ -3253,7 +3465,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] lmbSetupLinkInterception error:", err);
     }
-  }
+  },
 
   /** 拆除 DOM 层链接拦截（onunload 调用） */
   lmbTeardownLinkInterception() {
@@ -3263,7 +3475,7 @@ class LuciasMarginBookPlugin extends Plugin {
         this._ppdLinkHandler = null;
       }
     } catch (_) { /* noop */ }
-  }
+  },
 
   /**
    * 劫持 workspace.openLinkText（兜底，主力是 DOM 捕获拦截）。
@@ -3298,7 +3510,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] lmbPatchOpenLinkText error:", err);
     }
-  }
+  },
 
   /** 等 .page 元素出现（pdf.js 会给所有页建 .page，只是 textLayer 虚拟化） */
   async lmbWaitPageEl(container, pageNum, maxMs) {
@@ -3309,7 +3521,7 @@ class LuciasMarginBookPlugin extends Plugin {
       await new Promise((r) => setTimeout(r, 200));
     }
     return null;
-  }
+  },
 
   /** 轮询直到选区能解出矩形（= textLayer 已就绪）；超时返回 null */
   async lmbWaitSelectionRects(pageEl, selection, maxMs) {
@@ -3320,7 +3532,7 @@ class LuciasMarginBookPlugin extends Plugin {
       await new Promise((r) => setTimeout(r, 250));
     }
     return null;
-  }
+  },
 
   /**
    * 正向跳转：滚到页 → 按可用坐标定位 → 闪烁。
@@ -3374,7 +3586,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] lmbJumpToSelection error:", err);
     }
-  }
+  },
 
   /** 闪烁定位：覆盖 accent 色矩形，闪 3 次后自清理。
    *  二参一给 rects（页面客户坐标）一给 rectPcts（页面百分比），二选一。 */
@@ -3404,7 +3616,7 @@ class LuciasMarginBookPlugin extends Plugin {
         } catch (_) { /* noop */ }
       }, 2200);
     } catch (_) { /* noop */ }
-  }
+  },
 
   /**
    * 反向跳转：双击标记区域 → 跳到摘录所在处。
@@ -3433,7 +3645,7 @@ class LuciasMarginBookPlugin extends Plugin {
     } catch (err) {
       console.warn("[lmb] lmbOpenExcerptAt error:", err);
     }
-  }
+  },
 
   /* ==================== 旧知识自动浮现（补丁 B：P1-4 相关笔记 + P1-5 颜色语义） ==================== */
 
@@ -3501,7 +3713,7 @@ class LuciasMarginBookPlugin extends Plugin {
       if (this.relatedCache) this.relatedCache.set(entryId, empty);
       return empty;
     }
-  }
+  },
 
   /**
    * 分词：CJK 连续段切 2-gram（「注意力机制」→ 注意/意力/力机/机制）；
@@ -3539,186 +3751,11 @@ class LuciasMarginBookPlugin extends Plugin {
       console.warn("[lmb] tokenizeForSearch error:", err);
       return [];
     }
-  }
+  },
 
-  /**
-   * P1-5：探测选区命中的高亮背景色 → 按 settings.colorMap 映射为标签名。
-   * 探测不到 / 未配置 / 未命中一律返回 null（与现状行为一致，静默跳过）。
-   */
-  detectColorTag(anchorEl, pageEl) {
-    try {
-      const rawMap = this.settings && this.settings.colorMap;
-      if (!rawMap) return null;
-      const map = this.parseColorMap(rawMap);
-      if (!map.size) return null;
-      const colors = this.collectHighlightColors(anchorEl, pageEl);
-      for (const hex of colors) {
-        const tag = map.get(hex);
-        if (tag) {
-          console.log("[lmb] colorTag hit:", hex, "->", tag);
-          return tag;
-        }
-      }
-      return null;
-    } catch (err) {
-      console.warn("[lmb] detectColorTag error:", err);
-      return null;
-    }
-  }
+});
 
-  /** 解析「颜色语义映射」textarea：每行 rrgggbb=标签名，忽略空行/错行/#前缀/大小写 */
-  parseColorMap(raw) {
-    const map = new Map();
-    try {
-      for (const lineRaw of String(raw || "").split("\n")) {
-        const line = lineRaw.trim();
-        if (!line) continue; // Bugfix: 不再把 # 开头当注释——key 侧本就允许 # 前缀（如 "#fff3a3=核心观点"），两者曾自相矛盾
-        const eq = line.indexOf("=");
-        if (eq <= 0) continue;
-        const key = line.slice(0, eq).trim().replace(/^#/, "").toLowerCase();
-        const tag = line.slice(eq + 1).trim();
-        if (!/^[0-9a-f]{6}$/.test(key) || !tag) continue;
-        map.set(key, tag);
-      }
-    } catch (_) { /* noop：解析失败按空映射 */ }
-    return map;
-  }
-
-  /**
-   * 收集选区可能命中的高亮背景色（归一化 #rrggbb，小写，按优先顺序）：
-   * ① anchorEl 向上到 pageEl 的祖先链（万一某些版本把高亮画在 textLayer DOM 内）；
-   * ② 主路径：同页 .annotationLayer 里与选区矩形相交的注释 section
-   *    （及其内部 quad div），pdf.js 用内联 background-color 渲染高亮注释
-   *    （PDF++ 高亮走的就是 pdf.js 标准 annotationLayer：
-   *    .annotationLayer > section:not(.linkAnnotation)——高亮不在 textLayer。）
-   */
-  collectHighlightColors(anchorEl, pageEl) {
-    const out = [];
-    const seen = new Set();
-    const add = (el) => {
-      try {
-        if (!el || el.nodeType !== 1) return;
-        const win = el.ownerDocument && el.ownerDocument.defaultView;
-        if (!win || !win.getComputedStyle) return;
-        const hex = this.normalizeColor(win.getComputedStyle(el).backgroundColor);
-        if (hex && !seen.has(hex)) { seen.add(hex); out.push(hex); }
-      } catch (_) { /* noop */ }
-    };
-    try {
-      let cur = anchorEl;
-      while (cur && cur !== pageEl) { add(cur); cur = cur.parentElement; }
-    } catch (_) { /* noop */ }
-    try {
-      const rect = anchorEl.getBoundingClientRect();
-      if (rect.width || rect.height) {
-        const sections = pageEl.querySelectorAll(".annotationLayer section");
-        for (const sec of sections) {
-          try {
-            const r = sec.getBoundingClientRect();
-            const ox = Math.min(rect.right, r.right) - Math.max(rect.left, r.left);
-            const oy = Math.min(rect.bottom, r.bottom) - Math.max(rect.top, r.top);
-            if (ox > 2 && oy > 2) {
-              add(sec);
-              const quads = sec.querySelectorAll("div");
-              for (const q of quads) add(q);
-            }
-          } catch (_) { /* noop */ }
-        }
-      }
-    } catch (_) { /* noop */ }
-    return out;
-  }
-
-  /**
-   * 任意 CSS 颜色字符串 → 6 位 hex（小写）；透明/非法返回 null。
-   * 借离屏 canvas 的 fillStyle 归一化能力（rgb/rgba/#hex/颜色名通吃），零依赖。
-   */
-  normalizeColor(str) {
-    try {
-      if (!str || str === "transparent") return null;
-      if (!this._colorCtx) this._colorCtx = document.createElement("canvas").getContext("2d");
-      if (!this._colorCtx) return null;
-      this._colorCtx.fillStyle = "#000000";      // 先垫底色，非法值不会覆盖
-      this._colorCtx.fillStyle = str;
-      const v = this._colorCtx.fillStyle;
-      if (typeof v !== "string") return null;
-      const m = v.match(/^rgba?\(([^)]+)\)$/i);
-      if (m) {
-        const p = m[1].split(",").map((s) => parseFloat(s));
-        if (p.length < 3) return null;
-        if (p.length >= 4 && p[3] <= 0.05) return null;   // 近全透明视为无高亮
-        return p.slice(0, 3).map((n) => Math.max(0, Math.min(255, Math.round(n)))
-          .toString(16).padStart(2, "0")).join("");
-      }
-      const m2 = v.match(/^#([0-9a-f]{6})$/i);
-      return m2 ? m2[1].toLowerCase() : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /* ==================== 样式 ==================== */
-
-  injectStyles() {
-    if (document.getElementById("lmb-styles")) return;
-    const st = document.createElement("style");
-    st.id = "lmb-styles";
-    st.textContent = [
-      ".lmb-chip{position:fixed;z-index:1000;",
-      "background:var(--interactive-accent,#7c6cf0);color:var(--text-on-accent,#fff);",
-      "font-size:12px;padding:6px 12px;border-radius:16px;cursor:grab;",
-      "box-shadow:0 4px 14px rgba(0,0,0,.5);user-select:none;white-space:nowrap;}",
-      ".lmb-chip:active{cursor:grabbing}",
-      ".lmb-rect{position:fixed;z-index:999;",
-      "border:2px dashed var(--interactive-accent,#7c6cf0);",
-      "background:rgba(124,108,240,.15);pointer-events:none;}",
-      ".lmb-btn.is-active{color:var(--text-on-accent);background:var(--interactive-accent);}",
-      // v0.8.1：动作按钮（补充描述）在不可用上下文里灰显，区别于「模式已开启」的 is-active
-      ".lmb-btn.is-idle{opacity:.35;}",
-      ".lmb-btn{cursor:pointer;}",
-      // ===== 补丁 C：Recall 回忆模式 =====
-      ".lmb-recall-blur{position:relative;cursor:pointer;}",
-      ".lmb-recall-blur>*{filter:blur(6px);transition:filter .25s;}",
-      ".lmb-recall-blur.lmb-recall-reveal>*{filter:none;}",
-      // ::after 挂在容器上（blur 只作用于子元素 > *，提示本身不会被糊掉）
-      ".lmb-recall-blur::after{content:'\\1F50D  点击回忆';position:absolute;top:6px;right:10px;", // Bugfix: 转义后首空格被 CSS 吃掉，补一个
-      "font-size:11px;line-height:1.4;color:var(--text-muted);",
-      "background:var(--background-secondary);border:1px solid var(--background-modifier-border);",
-      "border-radius:10px;padding:1px 8px;opacity:.85;pointer-events:none;}",
-      ".lmb-recall-blur.lmb-recall-reveal::after{display:none;}",
-      // ===== P2：摘录回绘标记 =====
-      // 关键：百分比定位 + .page 相对定位 → 覆盖层随页面缩放自动跟随，
-      //       完全不需要监听 zoom 事件重算（P0 实测 span 索引与缩放无关）。
-      'div[data-type="pdf"] .page{position:relative !important;}',
-      // 标记保持 pointer-events:none（见下）：单击/划选穿透，双击才跳转（P3）。
-      // 原因：标记覆盖在已摘录文字上，若单击可交互，会吃掉划选的起笔事件，
-      //       而"在 PDF 上划选拖拽"是本插件的主工作流，不能破坏。
-      ".lmb-mark{position:absolute;pointer-events:none;border-radius:2px;",
-      "mix-blend-mode:multiply;box-sizing:border-box;}",
-      // 降级标记：selection 缺失或 span 对不上时画页顶细条，宁可不准也不消失
-      '.lmb-mark[data-fallback="1"]{left:0 !important;right:0 !important;',
-      "top:0 !important;height:3px !important;width:auto !important;opacity:.75;}",
-      // ===== P3：跳转闪烁 =====
-      // 跳到目标选区后闪 3 次（0.5s × 3 = 1.5s），动画结束 opacity 回 0，2.2s 后 JS 移除节点
-      ".lmb-flash{position:absolute;pointer-events:none;border-radius:2px;",
-      "background:var(--interactive-accent,#7c6cf0);mix-blend-mode:multiply;",
-      "animation:lmb-flash-anim .5s ease-in-out 3;}",
-      "@keyframes lmb-flash-anim{0%,100%{opacity:0}45%,55%{opacity:.6}}",
-      // ===== v0.11.0：评论栏（仿 PDF Flow 批注底栏） =====
-      // 未知 callout 类型 Obsidian 默认给铅笔图标（✎）——正合底栏视觉；
-      // 折叠态 = 单行按钮条，展开态 = 标题 + 评论内容
-      '.callout[data-callout="lmb-comment"]{background:var(--background-secondary,transparent);',
-      "border:none !important;border-top:1px solid var(--background-modifier-border) !important;",
-      "border-radius:0 !important;box-shadow:none !important;padding:6px 10px !important;margin-top:10px;}",
-      '.callout[data-callout="lmb-comment"] .callout-title{gap:6px;}',
-      '.callout[data-callout="lmb-comment"] .callout-title-inner{color:var(--text-muted);font-weight:400;font-size:12.5px;}',
-      '.callout[data-callout="lmb-comment"] .callout-icon{color:var(--text-faint);}',
-      // 折叠箭头推到最右（PDF Flow 的「›」位置）；lmb-comment-clickable 供 JS/测试识别
-      '.callout[data-callout="lmb-comment"] .callout-fold{margin-left:auto;}'
-    ].join("");
-    document.head.appendChild(st);
-  }
-}
+/* 40-modals —— 评论/补充描述输入弹窗 + 卡片模糊选择器 */
 
 /* ==================== v0.8.0：补充描述输入弹窗 ==================== */
 
@@ -3772,7 +3809,6 @@ class LMBNoteModal extends Modal {
   }
   onClose() { this.contentEl.empty(); }
 }
-
 /**
  * v0.8.0：卡片选择器（内部 API 不可用时的兜底，纯公开 API）。
  * 列出当前画布所有文本卡片，已带补充描述的加 📝 前缀。
@@ -3790,6 +3826,8 @@ class LMBNodeSuggester extends FuzzySuggestModal {
   onChooseItem(it) { this.done = true; this.onChoose(it); }
   onClose() { if (!this.done && this.onCancel) this.onCancel(); }
 }
+
+/* 41-settings-tab —— 设置页 */
 
 /* ==================== 设置页 ==================== */
 

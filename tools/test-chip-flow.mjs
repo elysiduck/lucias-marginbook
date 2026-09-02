@@ -749,11 +749,19 @@ t81(/active-leaf-change/.test(src), "O1.6 监听视图切换以刷新按钮可�
 t81(/is-idle/.test(src), "O1.7 不可用用 is-idle 灰显（不用 is-active，避免『模式已开启』的误读）");
 t81(/opacity:\.35/.test(src), "O1.8 is-idle 灰显样式已定义");
 // 语义守卫：动作按钮不能复用模式开关的高亮类
-// 精确取 updateNoteRibbonState() 方法体（到下一个同级方法为止），避免误伤 rectMode 的合法 is-active
+// 精确取 updateNoteRibbonState() 方法体（到下一个同级方法定义为止），
+// 避免误伤 rectMode 的合法 is-active。v0.12.0：改用「下一个 2 缩进方法定义」定界——
+// 旧写法用下一个 /** 注释定界，源码拆分后方法间可能隔很远（会误吞 injectStyles 的 CSS）。
 {
   const start = src.indexOf("updateNoteRibbonState() {");
-  const end = src.indexOf("\n  /**", start + 1);
-  const body = src.slice(start, end > start ? end : start + 400);
+  let end = start > 0 ? src.length : 0;
+  if (start > 0) {
+    const re = /\n  (?:async )?[a-zA-Z_$][\w$]*\(/g;
+    re.lastIndex = start + 5;
+    const m = re.exec(src);
+    if (m) end = m.index;
+  }
+  const body = src.slice(start, end);
   t81(start > 0, "O1.9a 找到 updateNoteRibbonState 方法体");
   t81(!/is-active/.test(body), "O1.9 【语义守卫】补充描述按钮不使用 is-active（动作按钮 ≠ 模式开关）");
   t81(/is-idle/.test(body), "O1.9b 方法体确实使用 is-idle 表达不可用");
