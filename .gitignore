@@ -1,0 +1,10 @@
+# 备份目录（拆分/迁移前的手工快照）
+_backup_*/
+# WorkBuddy 会话数据（记忆/技能/日志，非项目源码）
+.workbuddy/
+# 依赖与日志
+node_modules/
+*.log
+# 系统杂物
+.DS_Store
+Thumbs.db

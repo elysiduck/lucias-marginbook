@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>pdf-plus-drag v0.8.4 设想 · 纯链接按钮 + obsidian:// 协议 · 演示</title>
+<style>
+  /* ============ 主题变量：与 overlap-normalize-demo.html / card-note-demo.html 保持一致 ============ */
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b9cff; --accent2:#7ee0a8;
+    --warn:#ffcf6b; --danger:#ff7b7b; --edge:#8a93a6;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  body{font-size:13.5px;line-height:1.7}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 18px 60px}
+
+  header{padding:18px 0 14px;border-bottom:1px solid var(--line);margin-bottom:14px}
+  header h1{margin:0;font-size:17px;font-weight:600}
+  header h1 span{color:var(--accent)}
+  header p{margin:8px 0 0;font-size:12.5px;color:var(--muted)}
+  header p b{color:var(--text);font-weight:600}
+
+  h2{font-size:14.5px;margin:26px 0 10px;padding-left:9px;border-left:3px solid var(--accent);font-weight:600}
+  h3{font-size:13px;margin:16px 0 8px;color:var(--text);font-weight:600}
+  p.desc{font-size:12.5px;color:var(--muted);margin:0 0 12px}
+
+  /* ============ 工具条 ============ */
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+    padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+  .btn{background:#262b36;color:var(--text);border:1px solid var(--line);border-radius:7px;
+    padding:6px 11px;cursor:pointer;font-size:12.5px;transition:.15s;font-family:inherit}
+  .btn:hover{background:#303644;border-color:#3a4250}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.danger:hover{background:#3a262c;border-color:#5a3238;color:var(--danger)}
+  .btn.on{background:#23324a;border-color:var(--accent);color:var(--accent)}
+  .sep{width:1px;height:22px;background:var(--line);margin:0 2px}
+  .tag{font-size:11px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--muted)}
+  .tag.ok{color:var(--accent2);border-color:#2c5340;background:#16241d}
+  .tag.no{color:var(--danger);border-color:#543033;background:#241a1c}
+  .tag.mid{color:var(--warn);border-color:#554527;background:#241f16}
+
+  /* ============ A/B 对比 ============ */
+  .ab-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:900px){.ab-grid{grid-template-columns:1fr}}
+  .node{border:1px solid #3a4250;border-radius:10px;
+    background:linear-gradient(160deg,#242936,#1d212a);box-shadow:0 6px 18px rgba(0,0,0,.35);overflow:hidden}
+  .node.v-a{border-color:#4a3a52}
+  .node.v-b{border-color:#2f4a6b}
+  .n-head{display:flex;justify-content:space-between;align-items:center;gap:8px;
+    padding:8px 12px;border-bottom:1px solid var(--line);background:#20242d;font-size:11.5px;color:var(--muted)}
+  .n-head .ver{color:var(--text);font-weight:600}
+  .n-body{padding:12px 14px 14px;min-height:186px}
+  .n-quote{font-size:13px;color:#dfe4ee;border-left:2px solid var(--accent);padding-left:9px;margin-bottom:4px}
+  .n-blockid{font-size:11.5px;color:var(--edge);font-family:ui-monospace,Consolas,monospace;margin-bottom:10px}
+
+  /* callout（A 卡阅读模式） */
+  .callout{border:1px solid #3a4250;border-left:3px solid #7f6df2;border-radius:7px;
+    background:#1f2430;padding:8px 10px;margin-top:8px}
+  .callout .ct{color:#b3a6ff;font-size:12.5px;font-weight:600;display:flex;gap:6px;align-items:center}
+  .callout .cb{color:var(--muted);font-size:12.5px;margin-top:3px}
+
+  /* 纯链接（B 卡阅读模式） */
+  .linkbtn{display:inline-flex;align-items:center;gap:5px;margin-top:8px;
+    color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(91,156,255,.45);
+    font-size:13px;cursor:pointer;padding-bottom:1px}
+  .linkbtn:hover{border-bottom-color:var(--accent);background:rgba(91,156,255,.08)}
+  .linkbtn.done{color:var(--accent2);border-bottom-color:rgba(126,224,168,.45)}
+  .linkbtn.disabled{color:var(--edge);border-bottom-color:transparent;cursor:default;text-decoration:line-through}
+
+  /* markdown 源码视图（编辑模式） */
+  pre.md-src{margin:8px 0 0;padding:10px 11px;background:#12151c;border:1px solid var(--line);
+    border-radius:7px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.65;
+    color:#b9c2d2;white-space:pre-wrap;word-break:break-all}
+  pre.md-src .k{color:var(--accent)}
+  pre.md-src .c{color:#6b7688}
+  pre.md-src .u{color:var(--accent2)}
+  .ugly{margin-top:9px;font-size:11.5px;color:var(--danger)}
+  .clean{margin-top:9px;font-size:11.5px;color:var(--accent2)}
+
+  /* 注入评论的模拟展示 */
+  .injected{margin-top:10px;border:1px dashed #554527;border-radius:7px;padding:9px 10px;background:#221e15}
+  .injected .badge{display:inline-block;font-size:10.5px;color:var(--warn);border:1px solid #554527;
+    border-radius:4px;padding:1px 6px;margin-bottom:6px}
+  .injected .txt{font-size:13px;color:#e9e2cf;white-space:pre-wrap}
+  .injected .meta{margin-top:6px;font-size:11px;color:#8b8271}
+
+  /* ============ 通用面板 ============ */
+  .panel{border:1px solid var(--line);border-radius:9px;background:var(--panel);padding:12px 14px;margin-bottom:12px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:900px){.cols{grid-template-columns:1fr}}
+  pre.code{margin:0;padding:11px 12px;background:#12151c;border:1px solid var(--line);border-radius:7px;
+    font-family:ui-monospace,Consolas,monospace;font-size:11.8px;line-height:1.65;color:#b9c2d2;
+    overflow-x:auto;white-space:pre}
+  pre.code .k{color:#7fb0ff}
+  pre.code .s{color:#8fd6a4}
+  pre.code .c{color:#6b7688}
+  pre.code .n{color:#e0b072}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;background:#1a1e26;font-size:12px}
+  td:first-child{width:32%}
+  .yes{color:var(--accent2)} .no{color:var(--danger)} .mid{color:var(--warn)}
+
+  /* ============ Modal（模拟 Obsidian 的 Modal） ============ */
+  .overlay{position:fixed;inset:0;background:rgba(6,8,12,.66);display:none;
+    align-items:flex-start;justify-content:center;padding-top:11vh;z-index:100}
+  .overlay.show{display:flex}
+  .modal{width:min(560px,92vw);background:var(--panel2);border:1px solid #3a4250;border-radius:11px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6);overflow:hidden}
+  .modal .m-head{padding:11px 15px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600;
+    display:flex;justify-content:space-between;align-items:center}
+  .modal .m-head .x{cursor:pointer;color:var(--muted);font-size:16px;line-height:1;padding:0 4px}
+  .modal .m-head .x:hover{color:var(--danger)}
+  .modal .m-body{padding:13px 15px}
+  .modal label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:5px}
+  .modal textarea{width:100%;min-height:132px;resize:vertical;background:#141821;color:var(--text);
+    border:1px solid var(--line);border-radius:7px;padding:9px 10px;font-size:13px;
+    font-family:inherit;line-height:1.7;outline:none}
+  .modal textarea:focus{border-color:var(--accent)}
+  .modal .m-foot{padding:11px 15px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+  .hint{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.65}
+  .hint code{background:#12151c;border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--accent2)}
+
+  /* 步骤指示器 */
+  .steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .step{font-size:11.5px;padding:4px 10px;border-radius:20px;border:1px solid var(--line);
+    background:#151921;color:var(--muted)}
+  .step.cur{border-color:var(--accent);color:var(--accent);background:#182233}
+  .step.done{border-color:#2c5340;color:var(--accent2);background:#16241d}
+
+  .kv{font-family:ui-monospace,Consolas,monospace;font-size:11.8px;color:var(--muted)}
+  .kv b{color:var(--accent2);font-weight:400}
+  footer{margin-top:30px;padding-top:12px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>pdf-plus-drag <span>v0.8.4 设想</span> · 纯 Markdown 链接做按钮 + <span>obsidian://</span> 协议</h1>
+  <p>
+    目标：解决 v0.8.3 的「编辑模式下 callout 回退成 markdown 源码，很丑」。
+    新思路 —— <b>node.text 里只放一行短链接</b>，评论正文存到插件 <b>data.json 的 sidecar</b>，
+    点击链接走 <b>registerObsidianProtocolHandler</b> 弹 Modal。
+  </p>
+</header>
+
+<!-- ==================== 工具条 ==================== -->
+<div class="toolbar">
+  <button class="btn" id="btnMode">当前：阅读模式（点击切换到编辑模式）</button>
+  <div class="sep"></div>
+  <button class="btn" id="btnRerender">模拟 canvas 重新渲染</button>
+  <button class="btn danger" id="btnClear">清空评论</button>
+  <div class="sep"></div>
+  <span class="tag" id="tagSidecar">sidecar：空</span>
+  <span class="kv" style="margin-left:auto">node=<b id="kvNode">7f3a1c2d9e8b45a6</b></span>
+</div>
+
+<!-- ==================== 1. A/B 对比 ==================== -->
+<h2>1 · A/B 对比：编辑模式的视觉差异</h2>
+<p class="desc">
+  点上面第一个按钮在「阅读模式 / 编辑模式」之间切换 —— 这是用户抱怨的核心场景。
+  A 卡编辑模式看到的是 callout 源码；B 卡编辑模式只有一行短链接。
+</p>
+
+<div class="ab-grid">
+  <!-- A 卡：v0.8.3 callout 方案 -->
+  <div class="node v-a">
+    <div class="n-head">
+      <span><span class="ver">A · v0.8.3</span> callout 方案（现状）</span>
+      <span class="tag no">编辑模式可见源码</span>
+    </div>
+    <div class="n-body" id="bodyA"><!-- 由 JS 渲染 --></div>
+  </div>
+
+  <!-- B 卡：v0.8.4 纯链接方案 -->
+  <div class="node v-b">
+    <div class="n-head">
+      <span><span class="ver">B · v0.8.4</span> 纯链接方案（设想）</span>
+      <span class="tag ok">编辑模式只有一行</span>
+    </div>
+    <div class="n-body" id="bodyB"><!-- 由 JS 渲染 --></div>
+  </div>
+</div>
+
+<!-- ==================== 2. 交互演示 ==================== -->
+<h2>2 · 交互演示：点链接 → Modal → 写 sidecar → 卡片显示评论</h2>
+
+<div class="steps" id="steps">
+  <span class="step" data-s="1">1 · 点 B 卡链接</span>
+  <span class="step" data-s="2">2 · 协议 handler 解析参数</span>
+  <span class="step" data-s="3">3 · Modal 输入并保存</span>
+  <span class="step" data-s="4">4 · 卡片下方显示评论</span>
+</div>
+
+<div class="cols">
+  <div>
+    <h3>画布上的卡片（B 方案，可点击）</h3>
+    <div class="node v-b">
+      <div class="n-head">
+        <span>摘录卡 · <span class="kv">^ex-7f3a1c</span></span>
+        <span class="tag mid" id="tagRender">DOM 注入渲染</span>
+      </div>
+      <div class="n-body" id="bodyLive"><!-- 由 JS 渲染 --></div>
+    </div>
+    <p class="hint">
+      <b>限制说明：</b>下面那块评论是<b>插件往 canvas DOM 里注入</b>的，不是 canvas 原生渲染的。
+      canvas 只会渲染 <code>node.text</code> 这串字符串，它不知道 sidecar 的存在。
+      注入的 DOM 在 canvas 重新渲染时会被冲掉 —— 点上面的
+      <b>「模拟 canvas 重新渲染」</b> 复现这个行为。
+    </p>
+  </div>
+
+  <div>
+    <h3>插件 data.json（sidecar）</h3>
+    <pre class="code" id="outData"><span class="c">// 尚无评论</span></pre>
+    <h3>node.text（画布文件里真实存的东西）</h3>
+    <pre class="code" id="outNodeText"></pre>
+    <h3>handler 收到的 params</h3>
+    <pre class="code" id="outParams"><span class="c">// 点击链接后填充</span></pre>
+  </div>
+</div>
+
+<!-- ==================== 3. 可行性结论 ==================== -->
+<h2>3 · 可行性结论（调研结果）</h2>
+
+<div class="panel">
+  <table>
+    <tr><th>问题</th><th>结论</th><th>依据 / 备注</th></tr>
+    <tr>
+      <td>canvas 文本卡支持 markdown 链接吗？</td>
+      <td class="yes">支持</td>
+      <td>官方文档：文本卡「You can use Markdown, links, and code blocks the same way as in a note」。
+          社区 bug 报告也证实点击 canvas 里的链接能跳转到目标笔记。</td>
+    </tr>
+    <tr>
+      <td>canvas 阅读模式里链接可点击吗？</td>
+      <td class="yes">可以</td>
+      <td>单击 = 选中卡片，但点在链接文字上时走链接逻辑（同 Live Preview 的 <span class="kv">a.internal-link</span> 管道）。
+          注意：canvas 有按缩放比例的「渲染断点」，缩得太小节点内容不渲染，链接就不存在。</td>
+    </tr>
+    <tr>
+      <td><span class="kv">registerObsidianProtocolHandler</span> 存在吗？版本要求？</td>
+      <td class="yes">存在，很老</td>
+      <td>官方 API（<span class="kv">Plugin</span> 类方法），changelog 里「There is now an API available to handle URI
+          actions using the obsidian:// protocol」出自 0.9.x 时代。manifest 里
+          <span class="kv">minAppVersion</span> 写 1.0.0 以上即可覆盖几乎所有现役用户。</td>
+    </tr>
+    <tr>
+      <td>handler 能拿到 URL 参数吗？</td>
+      <td class="yes">能，且已解码</td>
+      <td>handler 收到的是<b>已经解析好的对象</b>，不用自己跑 <span class="kv">URLSearchParams</span>。
+          <span class="kv">obsidian://myaction?file=a.canvas&amp;node=b</span>
+           → <span class="kv">{file:"a.canvas", node:"b"}</span>。
+          坑：<b>写入 node.text 前必须百分号编码</b>（<span class="kv">/</span>→<span class="kv">%2F</span>、
+          空格→<span class="kv">%20</span>），未编码的空格会截断 URL。</td>
+    </tr>
+    <tr>
+      <td>action 名能带点吗？<span class="kv">pdf-plus-drag.addNote</span></td>
+      <td class="mid">有风险，建议改</td>
+      <td>URI 里 <span class="kv">obsidian://&lt;action&gt;?...</span> 的 host 段就是 action。
+          社区里见到的实例（<span class="kv">clickup</span>、<span class="kv">advanced-uri</span>、<span class="kv">playground</span>）
+          都是纯字母数字+连字符。带点没有先例 →
+          <b>改成 <span class="kv">obsidian://pdf-plus-drag?action=addNote&amp;...</span></b> 最稳。</td>
+    </tr>
+    <tr>
+      <td>点 canvas 里的 <span class="kv">obsidian://</span> 链接，会触发插件 handler 吗？</td>
+      <td class="mid">高度可能，但未经证实 —— 必须在真机验证</td>
+      <td>已知：在<b>普通笔记</b>里点 <span class="kv">[x](obsidian://open?...)</span> 会走应用内路由
+          （不走操作系统），官方 bug 报告里有用户明确写「clicking the same link from within a regular
+          Obsidian note works as expected」。
+          canvas 用同一套 <span class="kv">MarkdownRenderer</span>，理论上同管道；
+          但 canvas 对外链有自己一套处理（<span class="kv">shell.openExternal</span>），
+          <b>没有找到 canvas + obsidian:// 的直接证据</b>。这是本方案唯一的关键不确定点。</td>
+    </tr>
+    <tr>
+      <td>dataviewjs 在 canvas 节点里能跑吗？</td>
+      <td class="no">不能（至少不可靠）</td>
+      <td>dataview issue #1655：DQL 代码块后来被部分修好，但
+          <b>dataviewjs 的 promise / 内联查询在 canvas 里仍然不工作</b>。
+          → 排除「用 dataviewjs 渲染评论」这条路。</td>
+    </tr>
+    <tr>
+      <td>canvas 节点内容会被 metadataCache 索引吗？</td>
+      <td class="no">不会</td>
+      <td>Obsidian 硬编码了 <span class="kv">"md" === file.extension</span> 判断，
+          canvas 文本卡里的 <span class="kv">[[链接]]</span>、<span class="kv">#标签</span> 都不进索引。
+          → 别指望靠搜索/反链找到评论。</td>
+    </tr>
+    <tr>
+      <td>还有别的可点击 markdown 元素吗？</td>
+      <td class="mid">有，都更差</td>
+      <td>① <span class="kv">[[不存在的文件]]</span> → 点击会<b>新建笔记</b>，插件没法「拦截不存在事件」，
+          只能事后监听 <span class="kv">vault.on('create')</span> 再删掉 —— 会闪一下空白笔记，体验很差。
+          ② <span class="kv">![[]]</span> 嵌入、③ HTML <span class="kv">&lt;button&gt;</span>（canvas 会剥离或转义）。
+          → 都不如 <span class="kv">obsidian://</span> 链接。</td>
+    </tr>
+  </table>
+</div>
+
+<h3>最终推荐</h3>
+<div class="panel">
+  <p class="desc" style="margin-bottom:8px">
+    <b>结论：v0.8.4 可行，但不要裸奔依赖 canvas 的链接路由。</b>用「三层保险」把它变成确定可行：
+  </p>
+  <pre class="code"><span class="c">// 第 1 层（主）：协议 handler —— 优雅，但如果 canvas 不路由就完全不工作</span>
+<span class="k">this</span>.registerObsidianProtocolHandler(<span class="s">"pdf-plus-drag"</span>, (p) =&gt; {
+  <span class="k">if</span> (p.action === <span class="s">"addNote"</span>) <span class="k">this</span>.openNoteModal(p.file, p.node);
+});
+
+<span class="c">// 第 2 层（兜底，必做）：捕获阶段拦截 canvas 内的协议链接点击</span>
+<span class="c">// 就算 canvas 把 obsidian:// 当外链丢给系统，我们也能先一步接住</span>
+<span class="k">this</span>.registerDomEvent(document, <span class="s">"click"</span>, (e) =&gt; {
+  <span class="k">const</span> a = e.target.closest &amp;&amp; e.target.closest(<span class="s">'a[href^="obsidian://pdf-plus-drag"]'</span>);
+  <span class="k">if</span> (!a) <span class="k">return</span>;
+  e.preventDefault(); e.stopPropagation();          <span class="c">// 阻止外抛给系统</span>
+  <span class="k">const</span> p = <span class="k">new</span> URLSearchParams(a.getAttribute(<span class="s">"href"</span>).split(<span class="s">"?"</span>)[<span class="n">1</span>] || <span class="s">""</span>);
+  <span class="k">this</span>.openNoteModal(p.get(<span class="s">"file"</span>), p.get(<span class="s">"node"</span>));
+}, <span class="k">true</span>);
+
+<span class="c">// 第 3 层（永远可用）：命令面板 + 右键菜单，不依赖任何链接行为</span>
+<span class="k">this</span>.addCommand({ id: <span class="s">"ppd-add-note"</span>, name: <span class="s">"为选中卡片添加/编辑评论"</span>, callback: ... });
+<span class="k">this</span>.registerEvent(
+  <span class="k">this</span>.app.workspace.on(<span class="s">"file-menu"</span>, (menu, file) =&gt; { <span class="c">/* canvas 右键 */</span> })
+);</pre>
+  <p class="hint" style="margin-top:10px">
+    <b>代价与折中：</b>评论不在 canvas 的 <span class="kv">node.text</span> 里，所以
+    ① 导出/分享 canvas 时评论<b>不会跟着走</b>；② 全局搜索搜不到评论；
+    ③ canvas 上看评论要靠插件注入 DOM，节点被回收重渲染时会被冲掉（上面「模拟 canvas 重新渲染」按钮复现的就是这个）。<br>
+    <b>建议：</b>把评论的「权威副本」放在 sidecar，canvas 上的显示当作<b>可随时重建的缓存</b>；
+    并提供一个「把评论固化进 node.text（callout）」的命令，供需要导出/搜索时手动降级回 v0.8.3 形态。
+  </p>
+</div>
+
+<!-- ==================== 4. 实现要点 ==================== -->
+<h2>4 · 实现要点</h2>
+
+<div class="cols">
+  <div class="panel">
+    <h3 style="margin-top:0">① 数据怎么存</h3>
+    <pre class="code"><span class="c">// 插件 data.json</span>
+{
+  <span class="s">"version"</span>: <span class="n">2</span>,
+  <span class="s">"comments"</span>: {
+    <span class="c">// key = canvas 路径 + 节点 id，避免不同画布同名冲突</span>
+    <span class="s">"摘录.canvas#7f3a1c2d9e8b45a6"</span>: {
+      <span class="s">"text"</span>: <span class="s">"这一段要和第 3 节的论证对照看。"</span>,
+      <span class="s">"updated"</span>: <span class="n">1767350000000</span>
+    }
+  }
+}
+
+<span class="c">// 读写（Plugin 自带，无需引第三方库）</span>
+<span class="k">const</span> data = (<span class="k">await</span> <span class="k">this</span>.loadData()) || {};
+data.comments = data.comments || {};
+data.comments[key] = { text, updated: Date.now() };
+<span class="k">await</span> <span class="k">this</span>.saveData(data);</pre>
+    <p class="hint">
+      key 必须带 canvas 路径：节点 id 只在同一张画布内唯一，
+      用户可能有多张画布都从同一个 PDF 拖出摘录。
+    </p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">② node.text 怎么写</h3>
+    <pre class="code"><span class="c">// 生成链接（务必编码）</span>
+<span class="k">function</span> makeNoteLink(canvasPath, nodeId) {
+  <span class="k">const</span> q = <span class="k">new</span> URLSearchParams({
+    action: <span class="s">"addNote"</span>,
+    file: canvasPath,
+    node: nodeId
+  }).toString();          <span class="c">// 自动把 / 和空格编成 %2F %20</span>
+  <span class="k">return</span> <span class="s">"[💬 添加评论](obsidian://pdf-plus-drag?"</span> + q + <span class="s">")"</span>;
+}
+
+<span class="c">// 判断这个节点是不是我们的摘录卡：靠 ^ex-xxxx 块 id</span>
+<span class="k">const</span> EX_ID_RE = <span class="s">/\^ex-[0-9a-z]{4,8}/</span>;
+
+<span class="c">// 写入时：正文 + 换行 + 块 id + 空行 + 链接行</span>
+<span class="c">// 注意块 id 必须紧跟正文（否则 Obsidian 不认这个 block ref）</span>
+node.text = body + <span class="s">"\n^ex-"</span> + id + <span class="s">"\n\n"</span> + makeNoteLink(path, node.id);</pre>
+    <p class="hint">
+      <b>坑：</b>链接行和 <span class="kv">^ex-xxxx</span> 之间必须留空行，
+      否则 markdown 会把链接并进块 id 那一段，块引用就废了。
+    </p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">③ handler 怎么写</h3>
+    <pre class="code"><span class="k">async</span> onload() {
+  <span class="k">await</span> <span class="k">this</span>.loadSettings();
+
+  <span class="k">this</span>.registerObsidianProtocolHandler(
+    <span class="s">"pdf-plus-drag"</span>,
+    <span class="k">async</span> (params) =&gt; {
+      <span class="c">// params 已经解析好，形如 { action, file, node }</span>
+      <span class="k">const</span> { action, file, node } = params || {};
+      <span class="k">if</span> (action !== <span class="s">"addNote"</span>) <span class="k">return</span>;
+
+      <span class="c">// 白名单校验：协议链接可能来自任何地方</span>
+      <span class="k">const</span> f = <span class="k">this</span>.app.vault.getAbstractFileByPath(file || <span class="s">""</span>);
+      <span class="k">if</span> (!f || f.extension !== <span class="s">"canvas"</span>) {
+        <span class="k">new</span> Notice(<span class="s">"卡片所在的画布不存在"</span>);
+        <span class="k">return</span>;
+      }
+      <span class="k">this</span>.openNoteModal(file, node);
+    }
+  );
+}</pre>
+    <p class="hint">
+      <b>坑：</b>协议参数是外部可控输入 —— 一定要校验路径存在、扩展名是 canvas，
+      别拿它去拼 <span class="kv">vault.adapter</span> 的路径（目录穿越）。
+    </p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">④ Modal 怎么弹</h3>
+    <pre class="code"><span class="k">class</span> PPDNoteModal <span class="k">extends</span> Modal {
+  <span class="k">constructor</span>(app, plugin, canvasPath, nodeId) {
+    <span class="k">super</span>(app);
+    <span class="k">this</span>.plugin = plugin;
+    <span class="k">this</span>.key = canvasPath + <span class="s">"#"</span> + nodeId;
+  }
+  onOpen() {
+    <span class="k">const</span> { contentEl } = <span class="k">this</span>;
+    contentEl.createEl(<span class="s">"h3"</span>, { text: <span class="s">"添加评论"</span> });
+
+    <span class="k">const</span> ta = contentEl.createEl(<span class="s">"textarea"</span>);
+    ta.value = (<span class="k">this</span>.plugin.commentOf(<span class="k">this</span>.key) || <span class="s">""</span>);
+    ta.style.cssText = <span class="s">"width:100%;min-height:160px"</span>;
+
+    <span class="k">new</span> Setting(contentEl).addButton((b) =&gt;
+      b.setButtonText(<span class="s">"保存"</span>).setCta().onClick(<span class="k">async</span> () =&gt; {
+        <span class="k">await</span> <span class="k">this</span>.plugin.saveComment(<span class="k">this</span>.key, ta.value);
+        <span class="k">this</span>.plugin.refreshCanvas();   <span class="c">// 触发第 5 步的 DOM 注入</span>
+        <span class="k">this</span>.close();
+      })
+    );
+    ta.focus();
+  }
+  onClose() { <span class="k">this</span>.contentEl.empty(); }
+}</pre>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">⑤ 评论怎么画到 canvas 上</h3>
+    <pre class="code"><span class="c">// canvas 只读 node.text，不会渲染 sidecar → 只能注入 DOM</span>
+refreshCanvas() {
+  <span class="k">const</span> leaves = <span class="k">this</span>.app.workspace.getLeavesOfType(<span class="s">"canvas"</span>);
+  <span class="k">for</span> (<span class="k">const</span> leaf <span class="k">of</span> leaves) {
+    <span class="k">const</span> root = leaf.view.containerEl;
+    root.querySelectorAll(<span class="s">".canvas-node-content"</span>).forEach(...);
+    <span class="c">// 找到 nodeId 对应的节点容器，append 评论 div</span>
+  }
+}
+
+<span class="c">// 关键：canvas 会随时重渲染，必须盯着 DOM 重新注入</span>
+<span class="k">const</span> mo = <span class="k">new</span> MutationObserver(() =&gt; <span class="k">this</span>.scheduleRefresh());
+mo.observe(canvasRoot, { childList: <span class="k">true</span>, subtree: <span class="k">true</span> });
+<span class="k">this</span>.register(() =&gt; mo.disconnect());</pre>
+    <p class="hint">
+      <b>坑：</b>① 节点 id 在 DOM 上表现为 <span class="kv">data-node-id</span>，靠它定位；
+      ② 缩得太小时 canvas 不渲染节点内容（渲染断点），注入目标不存在；
+      ③ 注入前先检查自己的标记 class，避免 Observer 无限递归；
+      ④ 卸载插件时必须 <span class="kv">disconnect()</span> 并清掉注入的 DOM。
+    </p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">⑥ 迁移与兼容</h3>
+    <pre class="code"><span class="c">// v0.8.3 升级：把已有 callout 里的正文搬进 sidecar</span>
+async migrate083to084() {
+  <span class="k">const</span> data = (<span class="k">await</span> <span class="k">this</span>.loadData()) || {};
+  <span class="k">if</span> (data.version &gt;= <span class="n">2</span>) <span class="k">return</span>;
+
+  <span class="k">for</span> (<span class="k">const</span> file <span class="k">of</span> <span class="k">this</span>.app.vault.getFiles()) {
+    <span class="k">if</span> (file.extension !== <span class="s">"canvas"</span>) <span class="k">continue</span>;
+    <span class="k">const</span> json = JSON.parse(<span class="k">await</span> <span class="k">this</span>.app.vault.read(file));
+    <span class="k">for</span> (<span class="k">const</span> node <span class="k">of</span> json.nodes || []) {
+      <span class="k">const</span> parsed = ppdSplitNote(node.text);   <span class="c">// 沿用 v0.8.3 解析器</span>
+      <span class="k">if</span> (!parsed.hasNote) <span class="k">continue</span>;
+      <span class="c">// 正文 → sidecar，节点只留链接</span>
+      data.comments[file.path + <span class="s">"#"</span> + node.id] = { text: parsed.note };
+      node.text = ppdJoinNoteLink(parsed.body, node.id, file.path);
+    }
+    <span class="k">await</span> <span class="k">this</span>.app.vault.modify(file, JSON.stringify(json));
+  }
+  data.version = <span class="n">2</span>;
+  <span class="k">await</span> <span class="k">this</span>.saveData(data);   <span class="c">// 注意先 migrate 再 saveSettings</span>
+}</pre>
+    <p class="hint">
+      <b>坑：</b>迁移会改写 .canvas 文件 —— 一定要先提示用户备份，并提供「回滚到 callout」命令。
+      另外 <span class="kv">saveSettings()</span> 会整体覆写 data.json，
+      顺序必须是「先 migrate（读到旧数据）→ 再 saveSettings」，反过来会把评论冲掉。
+    </p>
+  </div>
+</div>
+
+<footer>
+  调研依据：Obsidian 官方开发者文档（Plugin.registerObsidianProtocolHandler / Canvas 卡片类型）、
+  Obsidian 官方 changelog（URI handler API 的引入）、官方帮助站 Obsidian URI 条目、
+  obsidianmd 论坛（canvas 链接点击行为、obsidian:// 在笔记内可点击的确认）、
+  blacksmithgu/obsidian-dataview issue #1655（canvas 里 dataviewjs 不工作）、
+  obsidian-extended-metadatacache 文档（canvas 不进 metadataCache）。
+  唯一的未证实项：canvas 内 obsidian:// 链接是否走应用内路由 —— 需在真机用
+  <span class="kv">console.log</span> 打点的 handler 验证一次。
+</footer>
+
+</div><!-- /wrap -->
+
+<!-- ==================== 模拟 Modal ==================== -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="m-head">
+      <span>添加评论 <span class="kv" style="color:var(--muted)">· PPDNoteModal</span></span>
+      <span class="x" id="btnCloseModal">&times;</span>
+    </div>
+    <div class="m-body">
+      <label>评论内容（写入 data.json 的 sidecar，不进 node.text）</label>
+      <textarea id="taComment" placeholder="写下你的想法..."></textarea>
+      <p class="hint">
+        真实实现里这里是 <span class="kv">class PPDNoteModal extends Modal</span>，
+        保存走 <span class="kv">plugin.saveData()</span>，然后调用 <span class="kv">refreshCanvas()</span>
+        把评论注入到 canvas 的 DOM 上。
+      </p>
+    </div>
+    <div class="m-foot">
+      <button class="btn" id="btnCancel">取消</button>
+      <button class="btn primary" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================================
+   pdf-plus-drag v0.8.4 设想 · 演示脚本
+   纯前端模拟，无任何外部依赖。所有 "Obsidian 行为" 都是用 DOM 模拟的近似值，
+   真实实现见各面板里的代码片段。
+   ========================================================================== */
+
+"use strict";
+
+/* ---------- 常量：与插件 main.js 保持一致 ---------- */
+var CANVAS_PATH = "摘录/第3章.canvas";
+var NODE_ID     = "7f3a1c2d9e8b45a6";
+var BLOCK_ID    = "^ex-7f3a1c";
+var QUOTE       = "因此，先验综合判断之所以可能，在于主体自身的\n形式条件同时构成了经验对象的条件。";
+
+/* ---------- 运行时状态 ---------- */
+var state = {
+  mode: "read",          // "read" | "edit"：canvas 卡片的两种模式
+  comment: "",           // sidecar 里的评论正文（模拟 data.json）
+  updated: 0,            // 更新时间戳
+  injected: false,       // 评论是否已注入到 canvas DOM（模拟插件注入）
+  step: 0                // 演示进度 0..4
+};
+
+/* ---------- DOM 引用 ---------- */
+function $(id) { return document.getElementById(id); }
+var elBodyA    = $("bodyA");
+var elBodyB    = $("bodyB");
+var elBodyLive = $("bodyLive");
+
+/* ============================================================================
+   1. 链接构造 —— 对应实现要点 ②
+   ========================================================================== */
+function buildNoteLink() {
+  // 真实实现里用 URLSearchParams 自动编码；这里手写以展示最终字符串
+  var q = "action=addNote"
+        + "&file=" + encodeURIComponent(CANVAS_PATH)
+        + "&node=" + encodeURIComponent(NODE_ID);
+  return "obsidian://pdf-plus-drag?" + q;
+}
+
+// 放进 node.text 的整行 markdown
+function buildNodeText() {
+  return QUOTE + "\n"
+       + BLOCK_ID + "\n"
+       + "\n"
+       + "[💬 添加评论](" + buildNoteLink() + ")";
+}
+
+/* ============================================================================
+   2. 渲染 A 卡（v0.8.3 callout 方案）
+   ========================================================================== */
+function renderA() {
+  var quoteHtml = '<div class="n-quote">' + esc(QUOTE).replace(/\n/g, "<br>") + "</div>";
+
+  if (state.mode === "read") {
+    // 阅读模式：callout 被 Obsidian 渲染成一个好看的框
+    elBodyA.innerHTML =
+        quoteHtml
+      + '<div class="n-blockid">' + BLOCK_ID + '</div>'
+      + '<div class="callout">'
+      +   '<div class="ct">💬 添加评论</div>'
+      +   '<div class="cb">点击此处写下你的想法...</div>'
+      + '</div>'
+      + '<div class="clean">✓ 阅读模式：callout 渲染成框，视觉 OK</div>';
+  } else {
+    // 编辑模式：露出 callout 的 markdown 源码 —— 用户抱怨的「丑」就在这里
+    elBodyA.innerHTML =
+        quoteHtml
+      + '<pre class="md-src">'
+      +   esc(QUOTE) + "\n"
+      +   '<span class="c">' + BLOCK_ID + '</span>\n'
+      +   "\n"
+      +   '<span class="k">&gt; [!ppd-note] 💬 添加评论</span>\n'
+      +   '<span class="k">&gt;</span> <span class="c">点击此处写下你的想法...</span>'
+      + '</pre>'
+      + '<div class="ugly">✗ 编辑模式：用户看到的是 callout 源码 + 占位提示行（现状的痛点）</div>';
+  }
+}
+
+/* ============================================================================
+   3. 渲染 B 卡（v0.8.4 纯链接方案）—— A/B 对比区那一版
+   ========================================================================== */
+function renderB() {
+  var quoteHtml = '<div class="n-quote">' + esc(QUOTE).replace(/\n/g, "<br>") + "</div>";
+
+  if (state.mode === "read") {
+    elBodyB.innerHTML =
+        quoteHtml
+      + '<div class="n-blockid">' + BLOCK_ID + '</div>'
+      + '<a class="linkbtn" href="#">💬 添加评论</a>'
+      + '<div class="clean">✓ 阅读模式：一行可点击的链接</div>';
+  } else {
+    // 编辑模式：整段源码只有 "一行"，而且这一行语义清楚
+    elBodyB.innerHTML =
+        quoteHtml
+      + '<pre class="md-src">'
+      +   '<span class="c">' + BLOCK_ID + '</span>\n'
+      +   "\n"
+      +   '[<span class="c">💬 添加评论</span>](<span class="u">obsidian://pdf-plus-drag?action=addNote'
+      +   '&amp;file=' + esc(encodeURIComponent(CANVAS_PATH))
+      +   '&amp;node=' + NODE_ID + '</span>)'
+      + '</pre>'
+      + '<div class="clean">✓ 编辑模式：只有一行链接，没有 callout 源码、没有占位行</div>';
+  }
+}
+
+/* ============================================================================
+   4. 渲染交互演示区的卡片（可点击 + 评论注入）
+   ========================================================================== */
+function renderLive() {
+  var quoteHtml = '<div class="n-quote">' + esc(QUOTE).replace(/\n/g, "<br>") + "</div>";
+  var hasComment = !!state.comment;
+
+  // 链接文案：有评论时变成「查看/编辑评论」
+  var label = hasComment ? "💬 查看评论" : "💬 添加评论";
+  var cls   = hasComment ? "linkbtn done" : "linkbtn";
+
+  if (state.mode === "edit") {
+    // 编辑模式下链接不可点（同 Obsidian：编辑模式点链接不跳转）
+    cls = "linkbtn disabled";
+  }
+
+  var link = '<a class="' + cls + '" id="lnkNote" href="#">' + label + "</a>";
+
+  var html = quoteHtml + '<div class="n-blockid">' + BLOCK_ID + "</div>" + link;
+
+  // 评论正文：模拟插件往 canvas DOM 注入的那一块
+  if (hasComment && state.injected) {
+    html +=
+        '<div class="injected">'
+      +   '<span class="badge">⚠ 插件 DOM 注入（非 canvas 原生渲染）</span>'
+      +   '<div class="txt">' + esc(state.comment).replace(/\n/g, "<br>") + "</div>"
+      +   '<div class="meta">来源：data.json sidecar · '
+      +     (state.updated ? new Date(state.updated).toLocaleString("zh-CN") : "-")
+      +   "</div>"
+      + "</div>";
+  } else if (hasComment && !state.injected) {
+    html +=
+        '<div class="injected" style="border-style:solid;border-color:#543033;background:#241a1c">'
+      +   '<span class="badge" style="color:var(--danger);border-color:#543033">'
+      +     "✗ canvas 重新渲染，注入的 DOM 被冲掉了"
+      +   "</span>"
+      +   '<div class="meta">sidecar 里的评论还在（数据没丢），但画布上看不见 —— '
+      +     "需要 MutationObserver 重新注入，或重新打开画布</div>"
+      + "</div>";
+  }
+
+  elBodyLive.innerHTML = html;
+
+  // 绑定点击（阅读模式才可点）
+  var a = $("lnkNote");
+  if (a && state.mode === "read") {
+    a.addEventListener("click", function (e) {
+      e.preventDefault();
+      openModal();
+    });
+  }
+}
+
+/* ============================================================================
+   5. 面板输出：data.json / node.text / handler params
+   ========================================================================== */
+function renderPanels() {
+  // --- data.json ---
+  var outData = $("outData");
+  if (!state.comment) {
+    outData.innerHTML = '<span class="c">// 尚无评论</span>\n{\n  <span class="s">"version"</span>: <span class="n">2</span>,'
+                      + '\n  <span class="s">"comments"</span>: {}\n}';
+  } else {
+    outData.innerHTML =
+        "{\n"
+      + '  <span class="s">"version"</span>: <span class="n">2</span>,\n'
+      + '  <span class="s">"comments"</span>: {\n'
+      + '    <span class="s">"' + esc(CANVAS_PATH) + "#" + NODE_ID + '"</span>: {\n'
+      + '      <span class="s">"text"</span>: <span class="s">"' + esc(state.comment).replace(/\n/g, "\\n") + '"</span>,\n'
+      + '      <span class="s">"updated"</span>: <span class="n">' + state.updated + "</span>\n"
+      + "    }\n  }\n}";
+  }
+
+  // --- node.text（注意：永远不包含评论正文，这是本方案的核心） ---
+  var nt = buildNodeText();
+  $("outNodeText").innerHTML =
+      '<span class="c">// 无论有没有评论，node.text 里只有这一行链接</span>\n'
+    + esc(QUOTE) + "\n"
+    + '<span class="c">' + BLOCK_ID + "</span>\n"
+    + "\n"
+    + '[<span class="c">💬 添加评论</span>](<span class="k">obsidian://pdf-plus-drag?action=addNote'
+    + '&amp;file=' + esc(encodeURIComponent(CANVAS_PATH))
+    + '&amp;node=' + NODE_ID + "</span>)";
+
+  // --- sidecar 状态标签 ---
+  var tag = $("tagSidecar");
+  tag.textContent = state.comment ? "sidecar：1 条评论" : "sidecar：空";
+  tag.className = state.comment ? "tag ok" : "tag";
+
+  // --- 渲染方式标签 ---
+  var tr = $("tagRender");
+  tr.textContent = state.injected ? "DOM 注入渲染（脆弱）" : "canvas 原生渲染";
+  tr.className = state.injected ? "tag mid" : "tag";
+}
+
+/* ============================================================================
+   6. 步骤指示器
+   ========================================================================== */
+function renderSteps() {
+  var spans = $("steps").getElementsByClassName("step");
+  for (var i = 0; i < spans.length; i++) {
+    var n = parseInt(spans[i].getAttribute("data-s"), 10);
+    var c = "step";
+    if (n === state.step) c += " cur";
+    else if (n < state.step) c += " done";
+    spans[i].className = c;
+  }
+}
+
+/* ============================================================================
+   7. Modal 交互
+   ========================================================================== */
+function openModal() {
+  state.step = 1;
+  renderSteps();
+
+  // 第 2 步：模拟 handler 解析 params（用真实 URL 走一遍 URLSearchParams）
+  var url = buildNoteLink();
+  var qs  = new URLSearchParams(url.split("?")[1] || "");
+  var params = { action: qs.get("action"), file: qs.get("file"), node: qs.get("node") };
+  $("outParams").innerHTML =
+      '<span class="c">// handler 收到的 params（已解码）</span>\n'
+    + "{\n"
+    + '  <span class="s">"action"</span>: <span class="s">"' + esc(String(params.action)) + '"</span>,\n'
+    + '  <span class="s">"file"</span>:   <span class="s">"' + esc(String(params.file)) + '"</span>,\n'
+    + '  <span class="s">"node"</span>:   <span class="s">"' + esc(String(params.node)) + '"</span>\n'
+    + "}";
+
+  // 回到阅读模式，否则卡片上的链接是 disabled 状态
+  if (state.mode !== "read") setMode("read");
+
+  state.step = 2;
+  renderSteps();
+
+  $("taComment").value = state.comment;
+  $("overlay").className = "overlay show";
+  $("taComment").focus();
+}
+
+function closeModal() {
+  $("overlay").className = "overlay";
+}
+
+function saveComment() {
+  var v = $("taComment").value.trim();
+  state.comment = v;
+  state.updated = Date.now();
+  state.injected = !!v;      // 模拟 refreshCanvas() 把评论注入到 DOM
+  state.step = v ? 4 : 0;
+  closeModal();
+  renderAll();
+}
+
+/* ============================================================================
+   8. 工具函数
+   ========================================================================== */
+function esc(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function setMode(m) {
+  state.mode = m;
+  $("btnMode").textContent = (m === "read")
+    ? "当前：阅读模式（点击切换到编辑模式）"
+    : "当前：编辑模式（点击切回阅读模式）";
+  $("btnMode").className = (m === "read") ? "btn" : "btn on";
+}
+
+/* 整体重绘 */
+function renderAll() {
+  renderA();
+  renderB();
+  renderLive();
+  renderPanels();
+  renderSteps();
+}
+
+/* ============================================================================
+   9. 事件绑定
+   ========================================================================== */
+$("btnMode").addEventListener("click", function () {
+  setMode(state.mode === "read" ? "edit" : "read");
+  renderAll();
+});
+
+// 「模拟 canvas 重新渲染」：canvas 回收/重绘节点时，插件注入的 DOM 会消失
+$("btnRerender").addEventListener("click", function () {
+  state.injected = false;
+  renderAll();
+});
+
+$("btnClear").addEventListener("click", function () {
+  state.comment = "";
+  state.updated = 0;
+  state.injected = false;
+  state.step = 0;
+  $("outParams").innerHTML = '<span class="c">// 点击链接后填充</span>';
+  renderAll();
+});
+
+$("btnCloseModal").addEventListener("click", closeModal);
+$("btnCancel").addEventListener("click", closeModal);
+$("btnSave").addEventListener("click", saveComment);
+
+// 点遮罩关闭（但不点在 modal 上）
+$("overlay").addEventListener("click", function (e) {
+  if (e.target === $("overlay")) closeModal();
+});
+
+// Esc 关闭
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape" && $("overlay").className === "overlay show") closeModal();
+});
+
+/* ---------- 初始渲染 ---------- */
+setMode("read");
+renderAll();
+</script>
+</body>
+</html>

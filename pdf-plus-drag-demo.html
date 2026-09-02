@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF++ 拖拽摘录 — MarginNote 风格同步演示</title>
+<style>
+  :root{
+    --bg:#16181d; --panel:#20242b; --panel2:#262b34; --line:#343a46;
+    --txt:#d7dce4; --dim:#8b93a1; --accent:#7c6cf0; --accent2:#4da3ff;
+    --green:#3fbf7f; --orange:#e8a34c; --red:#e05c5c;
+    --quote-bg:#2a2438; --sel:#7c6cf055;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden;}
+  header{padding:10px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; flex-shrink:0;}
+  header h1{font-size:16px; font-weight:600;}
+  header .tag{font-size:11px; color:var(--accent); border:1px solid var(--accent); border-radius:10px; padding:2px 10px;}
+  header button{margin-left:auto; background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:5px 14px; cursor:pointer; font-size:12px;}
+  header button:hover{border-color:var(--accent);}
+  #guide{padding:7px 18px; font-size:12.5px; color:var(--dim); background:#1c1f26; border-bottom:1px solid var(--line); flex-shrink:0;}
+  #guide b{color:var(--orange);}
+  main{flex:1; display:grid; grid-template-columns:400px 1fr; gap:10px; padding:10px; min-height:0;}
+  .pane{background:var(--panel); border:1px solid var(--line); border-radius:10px; display:flex; flex-direction:column; min-height:0; overflow:hidden;}
+  .pane-head{padding:8px 14px; font-size:12px; color:var(--dim); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; background:var(--panel2); flex-shrink:0;}
+  .pane-head .fname{color:var(--txt); font-weight:600;}
+  .right-col{display:grid; grid-template-rows:minmax(160px,30%) 1fr; gap:10px; min-height:0;}
+
+  /* ---------- PDF pane ---------- */
+  #pdfBody{flex:1; overflow-y:auto; padding:18px 22px; user-select:none;}
+  #pdfBody h3{font-size:15px; margin:6px 0 12px; text-align:center;}
+  #pdfBody p{font-size:13px; line-height:2.0; color:#c4cad4; margin-bottom:14px; text-align:justify;}
+  #pdfBody .t{border-radius:2px; transition:background .1s; cursor:text;}
+  #pdfBody .t.sel{background:var(--sel);}
+  #pdfBody .t.sel-last{outline:1px solid var(--accent);}
+  .figure-wrap{margin:10px 0 6px; text-align:center;}
+  .figure{display:inline-block; background:#1b2733; border:1px solid #2e4a63; border-radius:8px; padding:10px 14px; cursor:grab; transition:border-color .15s, box-shadow .15s;}
+  .figure:hover{border-color:var(--accent2); box-shadow:0 0 0 3px #4da3ff22;}
+  .figure .cap{font-size:11px; color:var(--dim); margin-top:6px;}
+
+  /* ---------- selection chip & ghost ---------- */
+  #chip{position:fixed; z-index:1000; background:var(--accent); color:#fff; font-size:12px; padding:6px 12px; border-radius:16px; cursor:grab; box-shadow:0 4px 14px #0008; display:none; white-space:nowrap; user-select:none;}
+  #chip:active{cursor:grabbing;}
+  #chip .n{background:#ffffff33; border-radius:8px; padding:0 6px; margin-right:6px; font-size:11px;}
+  #ghost{position:fixed; z-index:1001; pointer-events:none; max-width:280px; background:var(--quote-bg); border:1px solid var(--accent); border-radius:8px; padding:8px 12px; font-size:12px; box-shadow:0 8px 24px #000a; display:none; line-height:1.6; color:var(--txt);}
+  #ghost.img{background:#1b2733; border-color:var(--accent2); text-align:center;}
+  .drop-hover{outline:2px solid var(--accent); background:#7c6cf014 !important; box-shadow:inset 0 0 30px #7c6cf022;}
+
+  /* ---------- MD editor ---------- */
+  #mdBody{flex:1; overflow-y:auto; padding:12px 16px; font-family:Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.9;}
+  .md-line{white-space:pre-wrap; color:#b9c2cf;}
+  .md-line.h{color:var(--txt); font-weight:700;}
+  .md-line.fm{color:var(--orange);}
+  .md-line.quote{color:#b7a8e8; background:#7c6cf00f; border-left:2px solid var(--accent); padding-left:8px; margin:2px 0;}
+  .md-line.embed{color:var(--green);}
+  .caret{display:inline-block; width:2px; height:14px; background:var(--accent2); animation:blink 1s steps(1) infinite; vertical-align:middle;}
+  @keyframes blink{50%{opacity:0;}}
+
+  /* ---------- Canvas ---------- */
+  #canvasArea{flex:1; position:relative; overflow:hidden; background:
+    radial-gradient(circle, #2c313b 1px, transparent 1px) 0 0/22px 22px, var(--panel);}
+  #canvasToolbar{position:absolute; top:8px; right:10px; z-index:20; font-size:11px; color:var(--dim); background:#1c1f26e6; border:1px solid var(--line); border-radius:6px; padding:4px 10px; display:flex; align-items:center; gap:10px;}
+  #syncDot{display:inline-block; width:7px; height:7px; border-radius:50%; background:#5a6270; margin-right:4px; transition:background .2s, box-shadow .2s;}
+  #syncDot.on{background:var(--green); box-shadow:0 0 6px var(--green);}
+  #canvasToolbar button{background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:5px; font-size:11px; padding:2px 9px; cursor:pointer;}
+  #canvasToolbar button:hover{border-color:var(--accent);}
+  #canvasEmpty{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#525a68; font-size:13px; pointer-events:none;}
+
+  /* ---------- excerpt cards ---------- */
+  .card{position:absolute; width:auto; max-width:360px; min-width:170px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; box-shadow:0 6px 18px #0007; font-size:12px; overflow:hidden; animation:pop .25s ease;}
+  .card.img{max-width:380px;}
+  @keyframes pop{from{transform:scale(.85); opacity:0;} to{transform:scale(1); opacity:1;}}
+  .card.new-flash{animation:pop .25s ease, flash 1.2s ease;}
+  @keyframes flash{0%,60%{box-shadow:0 0 0 3px var(--green);} 100%{box-shadow:0 6px 18px #0007;}}
+  .card-head{padding:6px 10px; background:#2b313c; display:flex; align-items:center; gap:6px; cursor:grab; font-size:11px; color:var(--dim); border-bottom:1px solid var(--line); user-select:none; white-space:nowrap;}
+  .card-head:active{cursor:grabbing;}
+  .card-head .ttl{color:var(--txt); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;}
+  .card-head .del{color:var(--dim); cursor:pointer; font-size:13px; padding:0 3px; border-radius:4px; line-height:1;}
+  .card-head .del:hover{color:var(--red); background:#e05c5c22;}
+  .card-body{padding:9px 11px; line-height:1.7; color:#cdd3dd; outline:none; overflow:visible; max-height:none; white-space:pre-wrap; word-break:break-word;}
+  .card-body:focus{box-shadow:inset 0 0 0 1px var(--accent);}
+  .card .src{display:block; font-size:10.5px; color:var(--accent2); margin-top:6px; cursor:pointer;}
+  .card .src:hover{text-decoration:underline;}
+  .card .bid{font-size:10px; color:#5a6270; font-family:Consolas,monospace;}
+  .card.img .fig{padding:6px;}
+  .card.img .fig svg{display:block; width:100%; height:auto; border-radius:5px; cursor:pointer; transition:box-shadow .15s;}
+  .card.img .fig:hover svg{box-shadow:0 0 0 3px #4da3ff55;}
+  .card.img .fig .jump-tip{font-size:10px; color:var(--accent2); text-align:center; margin-top:3px; cursor:pointer;}
+  .card.img .fig .jump-tip:hover{text-decoration:underline;}
+  .card.img .cap-edit{padding:4px 10px 8px; outline:none; color:var(--dim); font-size:11px;}
+
+  /* jump-back flash on PDF source */
+  .t.jump-flash{background:#7c6cf0aa !important; transition:background .25s;}
+  .figure.jump-flash{border-color:var(--accent) !important; box-shadow:0 0 0 4px #7c6cf066 !important; transition:box-shadow .2s;}
+
+  /* ---------- back-reference markers in PDF ---------- */
+  .ref-mark{color:var(--orange); cursor:pointer; font-size:10.5px; margin-left:3px; user-select:none; background:#e8a34c22; border:1px solid #e8a34c55; border-radius:8px; padding:0 5px; vertical-align:super; line-height:1.4; white-space:nowrap;}
+  .ref-mark:hover{background:#e8a34c45; box-shadow:0 0 6px #e8a34c55;}
+  #refPopup{position:fixed; z-index:1500; background:#262b34; border:1px solid var(--line); border-radius:9px; box-shadow:0 12px 34px #000b; min-width:250px; max-width:330px; display:none; overflow:hidden; animation:pop .18s ease;}
+  #refPopup .ph{padding:7px 12px; font-size:11px; color:var(--orange); border-bottom:1px solid var(--line); background:#2b313c;}
+  #refPopup .it{padding:8px 13px; font-size:12px; cursor:pointer; display:flex; gap:8px; align-items:center; border-bottom:1px solid #2c313a;}
+  #refPopup .it:last-child{border-bottom:none;}
+  #refPopup .it:hover{background:#7c6cf026;}
+  #refPopup .it .sub{color:var(--dim); font-size:10.5px; margin-left:auto;}
+  .md-jump{color:var(--accent2); cursor:pointer;}
+  .md-jump:hover{text-decoration:underline;}
+  .md-jump-flash{background:#7c6cf040 !important;}
+  .card.locate-flash{box-shadow:0 0 0 3px var(--orange) !important;}
+  .doc-entry.locate-flash{box-shadow:0 0 0 2px var(--orange);}
+
+  /* ---------- excerpt doc drawer ---------- */
+  #drawer{position:absolute; top:0; right:0; bottom:0; width:47%; min-width:320px; background:#1b1e24; border-left:1px solid var(--line); transform:translateX(102%); transition:transform .3s ease; z-index:30; display:flex; flex-direction:column; box-shadow:-10px 0 30px #0008;}
+  #drawer.open{transform:translateX(0);}
+  #drawerHead{padding:9px 14px; font-size:12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; background:var(--panel2); flex-shrink:0;}
+  #drawerHead .fname{color:var(--txt); font-weight:600;}
+  #drawerHead .hint{color:var(--dim); font-size:10.5px; margin-left:auto;}
+  #drawerHead .close{cursor:pointer; color:var(--dim); padding:0 5px; border-radius:4px;}
+  #drawerHead .close:hover{color:var(--txt); background:#ffffff14;}
+  #docBody{flex:1; overflow-y:auto; padding:14px 16px; font-family:Consolas,"Courier New",monospace; font-size:12px; line-height:1.85;}
+  .doc-fm{color:var(--orange);}
+  .doc-entry{margin:10px 0; padding:6px 10px; border-left:2px solid var(--accent); background:#7c6cf00a; border-radius:0 6px 6px 0; transition:background .3s;}
+  .doc-entry.img{border-left-color:var(--green); background:#3fbf7f0a;}
+  .doc-entry .lnk{color:var(--accent2);}
+  .doc-entry .bid{color:#5a6270; font-size:10.5px;}
+  .doc-entry.updated{background:#3fbf7f26;}
+  .doc-empty{color:#525a68; text-align:center; margin-top:30px;}
+
+  /* ---------- toast ---------- */
+  #toasts{position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:2000; display:flex; flex-direction:column; gap:8px; align-items:center;}
+  .toast{background:#2b313c; border:1px solid var(--line); border-left:3px solid var(--accent); color:var(--txt); font-size:12.5px; padding:9px 18px; border-radius:8px; box-shadow:0 6px 20px #000a; animation:pop .2s ease; max-width:520px;}
+  .toast.ok{border-left-color:var(--green);}
+  .toast.warn{border-left-color:var(--orange);}
+
+  /* ---------- principle section ---------- */
+  details{flex-shrink:0; margin:0 10px 10px; background:var(--panel); border:1px solid var(--line); border-radius:10px;}
+  details summary{padding:9px 16px; cursor:pointer; font-size:13px; color:var(--dim); user-select:none;}
+  details summary b{color:var(--txt);}
+  details .inner{padding:4px 18px 14px; font-size:12.5px; line-height:1.9; color:#b9c2cf;}
+  details table{border-collapse:collapse; width:100%; margin:6px 0;}
+  details th, details td{border:1px solid var(--line); padding:6px 10px; font-size:12px; text-align:left; vertical-align:top;}
+  details th{background:var(--panel2); color:var(--txt);}
+  details code{background:#1b1e24; color:var(--accent2); padding:1px 5px; border-radius:4px; font-size:11.5px;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PDF++ 拖拽摘录 <span style="font-size:12px;color:var(--dim);font-weight:400;">MarginNote 4 风格</span></h1>
+  <span class="tag">交互演示 v2</span>
+  <span style="font-size:12px;color:var(--dim)">画布只放摘录卡片 · 卡片可直接编辑 · 后台摘录文档实时同步</span>
+  <button onclick="resetAll()">↺ 重置演示</button>
+</header>
+
+<div id="guide"><b>①</b> 在左侧 PDF 里按住鼠标拖选一段文字</div>
+
+<main>
+  <!-- ============ PDF PANE ============ -->
+  <div class="pane" id="pdfPane">
+    <div class="pane-head">📕 <span class="fname">深度学习入门.pdf</span> · 第 12 页 <span style="margin-left:auto;font-size:11px;">文字可拖选 · 图表可直接拖</span></div>
+    <div id="pdfBody">
+      <h3>3.2 注意力机制的瓶颈</h3>
+      <p><span class="t">自注意力机制的核心在于计算序列中任意两个位置之间的关联权重。</span><span class="t">然而，标准的二次复杂度使得长序列建模的显存开销随长度平方增长。</span><span class="t">当上下文窗口超过 8K 时，KV 缓存成为推理阶段最主要的显存瓶颈。</span></p>
+      <p><span class="t">稀疏注意力通过限制每个查询只关注固定的键子集，将复杂度降至线性。</span><span class="t">但这类方法在需要全局信息的任务（如长文摘要）上表现明显退化。</span><span class="t">如何兼顾效率与全局感受野，仍是开放问题。</span></p>
+      <div class="figure-wrap">
+        <div class="figure" id="figure1" data-imgname="深度学习入门-P12-图1.webp">
+          <svg width="240" height="120" viewBox="0 0 240 120">
+            <rect x="0" y="0" width="240" height="120" fill="#1b2733" rx="4"/>
+            <polyline points="15,95 45,70 75,78 105,50 135,58 165,35 195,42 225,20" fill="none" stroke="#4da3ff" stroke-width="2.5"/>
+            <polyline points="15,100 45,92 75,94 105,85 135,88 165,80 195,83 225,75" fill="none" stroke="#3fbf7f" stroke-width="2.5"/>
+            <text x="15" y="18" fill="#8b93a1" font-size="10">图 1 · 显存占用对比（8K→64K）</text>
+            <line x1="15" y1="105" x2="225" y2="105" stroke="#343a46"/>
+          </svg>
+          <div class="cap">图 1：标准注意力 vs 稀疏注意力显存曲线</div>
+        </div>
+      </div>
+      <p><span class="t">本文提出的分块线性注意力在 64K 上下文下将峰值显存降低 71%。</span><span class="t">同时，在 LongBench 长文摘要基准上仅损失 1.8 个百分点。</span></p>
+    </div>
+  </div>
+
+  <!-- ============ RIGHT COLUMN ============ -->
+  <div class="right-col">
+    <!-- MD editor -->
+    <div class="pane" id="mdPane">
+      <div class="pane-head">📝 <span class="fname">阅读笔记.md</span> <span style="margin-left:auto;font-size:11px;">拖到这里 → 直接插入引用块（原有流程不变）</span></div>
+      <div id="mdBody">
+        <div class="md-line h"># 深度学习入门 · 阅读笔记</div>
+        <div class="md-line fm">---</div>
+        <div class="md-line fm">tags: [读书, attention]</div>
+        <div class="md-line fm">---</div>
+        <div class="md-line"> </div>
+        <div class="md-line">## 第 3 章 注意力机制</div>
+        <div class="md-line"><span class="caret"></span></div>
+      </div>
+    </div>
+
+    <!-- Canvas -->
+    <div class="pane" id="canvasPane">
+      <div class="pane-head">🖼 <span class="fname">知识画布.canvas</span> <span style="margin-left:auto;font-size:11px;">拖到这里 → 只生成摘录卡片，可直接编辑</span></div>
+      <div id="canvasArea">
+        <div id="canvasEmpty">把选中的文字或图片拖进来 — 画布上只会出现摘录卡片</div>
+        <div id="canvasToolbar">
+          <span><span id="syncDot"></span><span id="docState">摘录文档：未创建</span></span>
+          <button id="drawerToggle">📄 查看摘录文档</button>
+        </div>
+
+        <!-- excerpt doc drawer -->
+        <div id="drawer">
+          <div id="drawerHead">
+            📄 <span class="fname">深度学习入门-摘录.md</span>
+            <span class="hint">由画布自动同步 · canvas 是主本</span>
+            <span class="close" id="drawerClose">✕</span>
+          </div>
+          <div id="docBody">
+            <div class="doc-fm">---<br>PDF: [[深度学习入门.pdf]]<br>---</div>
+            <div class="doc-empty" id="docEmpty">（摘录文档为空 — 拖入卡片后自动生成）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<details>
+  <summary><b>🔬 演示动作 → 真实插件实现原理</b>（MarginNote 4 同步模型）</summary>
+  <div class="inner">
+    <table>
+      <tr><th style="width:26%">演示里的动作</th><th>真实 Obsidian 中的实现</th></tr>
+      <tr>
+        <td>画布上<b>只出现摘录卡片</b>，无 PDF 卡、无绑定 md 卡、无连线</td>
+        <td>MarginNote 4 的核心模型：<b>摘录卡片是一等公民</b>。卡片本身就是「选区引用」（真实插件中点击 <code>【文件-P.12】</code> 跳回 PDF 原文并高亮），不需要中转节点。画布 = MarginNote 的思维导图画布。</td>
+      </tr>
+      <tr>
+        <td>后台「摘录文档」自动创建</td>
+        <td>第一次拖入时静默创建 <code>深度学习入门-摘录.md</code>（frontmatter 含 <code>PDF: [[深度学习入门.pdf]]</code>，兼容 PDF++ proxy MD）。<b>用户不感知、画布上不显示</b>，但它让摘录可被全局搜索、可被 Dataview 统计、可导出。</td>
+      </tr>
+      <tr>
+        <td>卡片上直接改文字 → 摘录文档实时同步</td>
+        <td>真实插件监听 <code>.canvas</code> 文件的 <code>modify</code> 事件（Obsidian 对 canvas 的每次编辑都会写 JSON），把每个摘录卡片对应为一个带稳定块 ID 的段落写回摘录 md：<code>&gt; [!quote] 【文件-P.12】</code> + <code>^ex-xxxx</code>。块 ID 保证卡片与 md 段落一一对应，<b>canvas 是主本、md 是同步视图</b>，单向同步避免回写死循环。</td>
+      </tr>
+      <tr>
+        <td>拖图片 → webp 附件 + 图片卡</td>
+        <td>复用 PDF++ 现成的矩形选区→附件管线（你已配置 <code>rectImageFormat:"file"</code>、<code>rectImageExtension:"webp"</code>），摘录 md 中同步为 <code>![[...webp]]</code> 嵌入行。</td>
+      </tr>
+      <tr>
+        <td>拖到右上 md 编辑器</td>
+        <td>插入与你 copyCommands 中 Quote 一致的模板 <code>&gt; ({{linkWithDisplay}})\n&gt; {{text}}</code>，链接可点击跳回 PDF 原文；<b>同时自动写入画布摘录文档</b>（MarginNote 式统一归集：无论摘录到哪里，摘录文档始终是全量汇总）。</td>
+      </tr>
+      <tr>
+        <td>PDF 原文处出现 <b style="color:var(--orange)">📌n</b> 标记</td>
+        <td><b>反向引用（Obsidian 原生能力）</b>：每个引用块带 <code>^block-id</code>。📌 弹层只列<b>真实引用落点</b>（md 引用块 / canvas 卡片）——摘录文档是画布与 md 的同步镜像，<b>不计入引用</b>，避免双重计数。与 PDF++ 的 <code>highlightBacklinks</code> / <code>selectionBacklinkVisualizeStyle</code> 同源，只是把反向链接面板收敛成原位徽标。</td>
+      </tr>
+    </table>
+    <div>⚠️ <b>已知边界</b>：① 双向同步（在 md 里改字回写到卡片）MarginNote 也没有做完整，v1 先做 <b>canvas→md 单向主本</b>，稳妥且无冲突；② <code>app.dragManager</code> 是内部 API，风险与 PDF++ 本体同步；③ 移动端无原生拖拽。</div>
+  </div>
+</details>
+
+<div id="chip"><span class="n" id="chipN">1 句</span>📑 按住我拖到右侧</div>
+<div id="ghost"></div>
+<div id="refPopup"></div>
+<div id="toasts"></div>
+
+<script>
+(function(){
+  "use strict";
+  var LINK_DISPLAY = "【深度学习入门-P.12】";
+  var chip = document.getElementById("chip");
+  var ghost = document.getElementById("ghost");
+  var guide = document.getElementById("guide");
+  var mdBody = document.getElementById("mdBody");
+  var canvasArea = document.getElementById("canvasArea");
+  var drawer = document.getElementById("drawer");
+  var docBody = document.getElementById("docBody");
+  var docEmpty = document.getElementById("docEmpty");
+  var docState = document.getElementById("docState");
+  var syncDot = document.getElementById("syncDot");
+  var canvasEmpty = document.getElementById("canvasEmpty");
+
+  var selected = [];
+  var dragging = null;
+  var docCreated = false;
+  var cards = [];        // {id, kind, entryEl, el}
+  var cardSeq = 0;
+
+  /* ================= toast / guide ================= */
+  function toast(msg, cls, ms){
+    var t = document.createElement("div");
+    t.className = "toast " + (cls||"");
+    t.innerHTML = msg;
+    document.getElementById("toasts").appendChild(t);
+    setTimeout(function(){ t.style.opacity="0"; t.style.transition="opacity .4s"; }, (ms||2600));
+    setTimeout(function(){ t.remove(); }, (ms||2600)+450);
+  }
+  function setStep(html){ guide.innerHTML = html; }
+
+  /* ================= text selection ================= */
+  var pdfBody = document.getElementById("pdfBody");
+  var selAnchor = null, selecting = false;
+
+  function clearSelection(){
+    selected.forEach(function(s){ s.classList.remove("sel","sel-last"); });
+    selected = [];
+    chip.style.display = "none";
+  }
+  pdfBody.addEventListener("mousedown", function(e){
+    if(e.target.closest(".figure")) return;
+    clearSelection();
+    selecting = true; selAnchor = null;
+    markAt(e);
+  });
+  document.addEventListener("mousemove", function(e){ if(selecting) markAt(e); });
+  document.addEventListener("mouseup", function(e){
+    if(!selecting) return;
+    selecting = false;
+    if(selected.length > 0){
+      selected[selected.length-1].classList.add("sel-last");
+      chip.style.display = "block";
+      chip.style.left = Math.min(e.clientX + 10, window.innerWidth - 190) + "px";
+      chip.style.top  = (e.clientY + 14) + "px";
+      document.getElementById("chipN").textContent = selected.length + " 句";
+      setStep("<b>②</b> 按住标签拖到下方 <b>画布</b>（生成可编辑摘录卡）或右上 <b>md 编辑器</b>（插入引用块）");
+    }
+  });
+  function markAt(e){
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if(!el || !el.classList || !el.classList.contains("t")) return;
+    if(!selAnchor){
+      selAnchor = el;
+      if(!el.classList.contains("sel")){ el.classList.add("sel"); selected.push(el); }
+      return;
+    }
+    var spans = Array.prototype.slice.call(pdfBody.querySelectorAll("span.t"));
+    var a = spans.indexOf(selAnchor), b = spans.indexOf(el);
+    if(a < 0 || b < 0) return;
+    var lo = Math.min(a,b), hi = Math.max(a,b);
+    selected.forEach(function(s){ s.classList.remove("sel","sel-last"); });
+    selected = [];
+    for(var i=lo;i<=hi;i++){ spans[i].classList.add("sel"); selected.push(spans[i]); }
+  }
+
+  /* ================= drag ================= */
+  function startDrag(e, kind, payload){
+    e.preventDefault();
+    dragging = {kind: kind, payload: payload};
+    ghost.className = kind === "img" ? "img" : "";
+    if(kind === "img"){
+      ghost.innerHTML = "🖼 图 1 · 释放后存为 <b style='color:var(--green)'>webp 附件</b>";
+    } else {
+      var txt = payload.map(function(s){ return s.textContent; }).join("");
+      ghost.textContent = txt.length > 60 ? txt.slice(0,60) + "…" : txt;
+    }
+    ghost.style.display = "block";
+    moveGhost(e);
+    document.body.style.cursor = "grabbing";
+  }
+  function dropTargetAt(e){
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if(!el) return null;
+    var md = el.closest("#mdPane"); if(md) return md;
+    var cv = el.closest("#canvasArea"); if(cv) return cv;
+    return null;
+  }
+  function moveGhost(e){
+    ghost.style.left = (e.clientX + 14) + "px";
+    ghost.style.top  = (e.clientY + 14) + "px";
+    [document.getElementById("mdPane"), canvasArea].forEach(function(z){ z.classList.remove("drop-hover"); });
+    var over = dropTargetAt(e);
+    if(over) over.classList.add("drop-hover");
+  }
+  function endDrag(e){
+    if(!dragging) return;
+    document.body.style.cursor = "";
+    ghost.style.display = "none";
+    var target = dropTargetAt(e);
+    var d = dragging; dragging = null;
+    [document.getElementById("mdPane"), canvasArea].forEach(function(z){ z.classList.remove("drop-hover"); });
+    if(!target) return;
+    if(target.id === "mdPane") dropToMd(d); else dropToCanvas(d, e);
+    clearSelection();
+    setStep("<b>③</b> 卡片可直接编辑并同步摘录文档；回到左侧 PDF 看被引用处的 <b style='color:var(--orange)'>📌</b> 标记 — 点击可选择跳转到所有引用位置");
+  }
+
+  chip.addEventListener("mousedown", function(e){ startDrag(e, "text", selected.slice()); });
+  document.getElementById("figure1").addEventListener("mousedown", function(e){
+    startDrag(e, "img", {name: this.dataset.imgname});
+  });
+  document.addEventListener("mousemove", function(e){ if(dragging) moveGhost(e); });
+  document.addEventListener("mouseup", endDrag);
+
+  /* ================= drop → MD ================= */
+  function appendLine(cls, html){
+    var caret = mdBody.querySelector(".caret").parentNode;
+    var div = document.createElement("div");
+    div.className = "md-line " + cls;
+    div.innerHTML = html;
+    mdBody.insertBefore(div, caret);
+    mdBody.scrollTop = mdBody.scrollHeight;
+    return div;
+  }
+  function dropToMd(d){
+    if(d.kind === "text"){
+      var txt = d.payload.map(function(s){ return s.textContent; }).join("");
+      var spans = d.payload.slice();
+      appendLine("", "");
+      var l1 = appendLine("quote", "");
+      var link = document.createElement("span");
+      link.className = "md-jump";
+      link.textContent = "> (" + LINK_DISPLAY + ")";
+      link.title = "点击跳回 PDF 原文";
+      link.addEventListener("click", function(){ jumpToSpans(spans); });
+      l1.appendChild(link);
+      var l2 = appendLine("quote", "&gt; " + txt);
+      registerRef(spans[spans.length-1], "📝 阅读笔记.md · 引用块", "跳到 md",
+        function(){
+          [l1,l2].forEach(function(el){ flashLocate(el, "md-jump-flash"); });
+          l1.scrollIntoView({behavior:"smooth", block:"center"});
+          toast("已跳到 阅读笔记.md 的引用块", "ok", 1600);
+        });
+      // 同时写入画布摘录文档（MarginNote 式统一归集）
+      addDocEntry("text", function(c){ c.text = function(){ return txt; }; });
+      toast("已插入引用块（可点击回跳 PDF）· <b style='color:var(--green)'>同时写入摘录文档</b> · 原文处已加 📌", "ok");
+    } else {
+      appendLine("", "");
+      var le = appendLine("embed", "![[" + d.payload.name + "]]");
+      registerRef(document.querySelector("#figure1 .cap"), "📝 阅读笔记.md · 图片嵌入", "跳到 md",
+        function(){
+          flashLocate(le, "md-jump-flash");
+          le.scrollIntoView({behavior:"smooth", block:"center"});
+          toast("已跳到 阅读笔记.md 的图片嵌入行", "ok", 1600);
+        });
+      addDocEntry("img", function(c){ c.imgname = d.payload.name; c.caption = function(){ return ""; }; });
+      toast("图片已嵌入 · <b style='color:var(--green)'>同时写入摘录文档</b> · PDF 图表处已加 📌", "ok");
+    }
+  }
+
+  /* ================= excerpt doc (background, auto-sync) ================= */
+  function ensureDoc(){
+    if(docCreated) return;
+    docCreated = true;
+    docState.textContent = "深度学习入门-摘录.md · 已自动创建";
+    syncDot.classList.add("on");
+  }
+  function pulseSync(){
+    syncDot.classList.add("on");
+    docState.innerHTML = "深度学习入门-摘录.md · <b style='color:var(--green)'>已同步</b>";
+    clearTimeout(pulseSync._t);
+    pulseSync._t = setTimeout(function(){
+      docState.textContent = "深度学习入门-摘录.md · 已自动创建";
+    }, 1400);
+  }
+  function bidOf(id){ return "ex-" + id.toString(36).padStart(4,"0"); }
+
+  function renderEntry(c){
+    var e = c.entryEl;
+    if(c.kind === "text"){
+      e.innerHTML = '<span class="lnk">&gt; [!quote] ' + LINK_DISPLAY + "</span><br>" +
+        "&gt; " + c.text().replace(/\n/g,"<br>&gt; ") +
+        "<br><span class='bid'>^" + bidOf(c.id) + "</span>";
+    } else {
+      e.innerHTML = '<span class="lnk">![[' + c.imgname + ']]</span><br>' +
+        (c.caption() ? "&gt; " + c.caption() + "<br>" : "") +
+        "<span class='bid'>^" + bidOf(c.id) + "</span>";
+    }
+    e.classList.add("updated");
+    clearTimeout(e._t);
+    e._t = setTimeout(function(){ e.classList.remove("updated"); }, 900);
+  }
+
+  function syncCard(c){
+    ensureDoc();
+    if(!c.entryEl){
+      c.entryEl = document.createElement("div");
+      c.entryEl.className = "doc-entry" + (c.kind==="img" ? " img" : "");
+      docBody.appendChild(c.entryEl);
+    }
+    renderEntry(c);
+    docEmpty.style.display = "none";
+    pulseSync();
+  }
+  function removeCard(c){
+    if(c.entryEl) c.entryEl.remove();
+    var left = docBody.querySelectorAll(".doc-entry").length;
+    if(left === 0){
+      docEmpty.style.display = "block";
+      docState.textContent = "深度学习入门-摘录.md · 已自动创建（空）";
+    } else pulseSync();
+  }
+
+  /* md 落点同时写入摘录文档（无画布卡的镜像条目） */
+  var docOnly = [];
+  function addDocEntry(kind, setup){
+    ensureDoc();
+    var c = {id: ++cardSeq, kind: kind, el: null, entryEl: null};
+    setup(c);
+    syncCard(c);
+    docOnly.push(c);
+  }
+
+  document.getElementById("drawerToggle").addEventListener("click", function(){
+    drawer.classList.toggle("open");
+  });
+  document.getElementById("drawerClose").addEventListener("click", function(){
+    drawer.classList.remove("open");
+  });
+
+  /* ================= jump back to PDF source ================= */
+  function jumpToSpans(spans){
+    if(!spans || !spans.length) return;
+    spans.forEach(function(s){ s.classList.add("jump-flash"); });
+    spans[0].scrollIntoView({behavior:"smooth", block:"center"});
+    setTimeout(function(){ spans.forEach(function(s){ s.classList.remove("jump-flash"); }); }, 1400);
+    toast("已跳回 PDF 原文位置（真实插件中为深度链接 #page=12&offset=…，精确高亮选区）", "ok", 2000);
+  }
+  function jumpToFigure(){
+    var fig = document.getElementById("figure1");
+    fig.scrollIntoView({behavior:"smooth", block:"center"});
+    fig.classList.add("jump-flash");
+    setTimeout(function(){ fig.classList.remove("jump-flash"); }, 1400);
+    toast("已跳回 PDF 原文：图 1 所在位置（真实插件中为 #page=12 矩形选区定位）", "ok", 2000);
+  }
+
+  /* ================= back-reference registry (PDF → 引用目标) ================= */
+  var refMap = new Map();   // anchorEl -> {items:[{label, sub, goto}], mark}
+  var refPopup = document.getElementById("refPopup");
+
+  function flashLocate(el, cls){
+    el.classList.add(cls);
+    setTimeout(function(){ el.classList.remove(cls); }, 1300);
+  }
+
+  function registerRef(anchorEl, label, sub, gotoFn){
+    if(!anchorEl) return;
+    var rec = refMap.get(anchorEl);
+    if(!rec){ rec = {items:[], mark:null}; refMap.set(anchorEl, rec); }
+    rec.items.push({label:label, sub:sub, goto:gotoFn});
+    if(!rec.mark){
+      rec.mark = document.createElement("sup");
+      rec.mark.className = "ref-mark";
+      anchorEl.after(rec.mark);
+      rec.mark.addEventListener("mousedown", function(e){ e.stopPropagation(); });
+      rec.mark.addEventListener("click", function(e){
+        e.stopPropagation();
+        showRefPopup(rec.mark, rec.items);
+      });
+    }
+    rec.mark.textContent = "📌" + rec.items.length;
+    rec.mark.title = "此处被引用 " + rec.items.length + " 处，点击查看并跳转";
+  }
+
+  function showRefPopup(anchorEl, items){
+    refPopup.innerHTML = "";
+    var h = document.createElement("div");
+    h.className = "ph";
+    h.textContent = "此段共有 " + items.length + " 处引用 → 选择跳转目标";
+    refPopup.appendChild(h);
+    items.forEach(function(it){
+      var d = document.createElement("div");
+      d.className = "it";
+      d.innerHTML = '<span>' + it.label + '</span><span class="sub">' + it.sub + '</span>';
+      d.addEventListener("click", function(){
+        hideRefPopup();
+        it.goto();
+      });
+      refPopup.appendChild(d);
+    });
+    var r = anchorEl.getBoundingClientRect();
+    refPopup.style.display = "block";
+    var w = refPopup.offsetWidth, hgt = refPopup.offsetHeight;
+    refPopup.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 10)) + "px";
+    refPopup.style.top  = (r.bottom + 6 + hgt > window.innerHeight ? r.top - hgt - 6 : r.bottom + 6) + "px";
+  }
+  function hideRefPopup(){ refPopup.style.display = "none"; }
+  document.addEventListener("mousedown", function(e){
+    if(!refPopup.contains(e.target) && !(e.target.classList && e.target.classList.contains("ref-mark"))) hideRefPopup();
+  });
+
+  /* ================= excerpt cards on canvas ================= */
+  function makeCard(type, x, y, headHtml, bodyHtml, extraCls){
+    var n = document.createElement("div");
+    n.className = "card " + type + (extraCls ? " " + extraCls : "");
+    n.style.left = Math.max(8, Math.min(x, canvasArea.clientWidth - 250)) + "px";
+    n.style.top  = Math.max(8, Math.min(y, canvasArea.clientHeight - 130)) + "px";
+    n.innerHTML = '<div class="card-head"><span class="ttl">' + headHtml + '</span><span class="del" title="删除摘录（同步移除文档段落）">✕</span></div>' +
+                  bodyHtml;
+    canvasArea.appendChild(n);
+    canvasEmpty.style.display = "none";
+    return n;
+  }
+  function makeDraggable(obj){
+    var head = obj.el.querySelector(".card-head");
+    head.addEventListener("mousedown", function(e){
+      if(e.target.classList.contains("del")) return;
+      e.stopPropagation();
+      var sx = e.clientX - obj.el.offsetLeft, sy = e.clientY - obj.el.offsetTop;
+      function mv(ev){
+        obj.el.style.left = Math.max(0, Math.min(ev.clientX - sx, canvasArea.clientWidth - obj.el.offsetWidth)) + "px";
+        obj.el.style.top  = Math.max(0, Math.min(ev.clientY - sy, canvasArea.clientHeight - obj.el.offsetHeight)) + "px";
+      }
+      function up(){ document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up); }
+      document.addEventListener("mousemove", mv);
+      document.addEventListener("mouseup", up);
+    });
+    obj.el.querySelector(".del").addEventListener("click", function(ev){
+      ev.stopPropagation();
+      obj.el.remove();
+      cards = cards.filter(function(c){ return c !== obj; });
+      removeCard(obj);
+      toast("摘录已删除，文档段落 <code style='color:var(--accent2)'>^" + bidOf(obj.id) + "</code> 同步移除", "warn", 1800);
+      if(cards.length === 0) canvasEmpty.style.display = "flex";
+    });
+  }
+  function editableDiv(cls, text){
+    var d = document.createElement("div");
+    d.className = cls;
+    try { d.contentEditable = "plaintext-only"; } catch(_) { d.contentEditable = "true"; }
+    if(d.contentEditable !== "plaintext-only" && d.contentEditable !== "true") d.contentEditable = "true";
+    d.spellcheck = false;
+    d.textContent = text;
+    return d;
+  }
+
+  /* 提取卡片正文文本：遍历子节点直到 src 链接为止，兼容编辑后浏览器产生的 <div>/<br>/多文本节点结构 */
+  function bodyText(bd){
+    var out = "";
+    for(var i=0; i<bd.childNodes.length; i++){
+      var n = bd.childNodes[i];
+      if(n.nodeType === 1){
+        if(n.classList && n.classList.contains("src")) break;
+        if(n.tagName === "BR"){ out += "\n"; continue; }
+        out += n.textContent;
+      } else {
+        out += n.textContent;
+      }
+    }
+    return out.replace(/\s+$/,"");
+  }
+
+  function addTextCard(x, y, txt, spans){
+    var id = ++cardSeq;
+    var body = editableDiv("card-body", txt);
+    body.textContent = txt;
+    var src = document.createElement("span");
+    src.className = "src"; src.textContent = "🔗 " + LINK_DISPLAY + " · 点击跳回 PDF 原文";
+    src.title = "深度链接 + 页内高亮定位";
+    src.addEventListener("click", function(){ jumpToSpans(spans); });
+    body.appendChild(document.createElement("br"));
+    body.appendChild(src);
+    var el = makeCard("", x, y, "💬 引用摘录 · P.12", "", "new-flash");
+    el.appendChild(body);
+    var c = {id:id, kind:"text", el:el, text:function(){ return bodyText(body); }, entryEl:null};
+    // 编辑实时同步：input 事件直接绑在卡片本体上（比全局委托可靠）
+    body.addEventListener("input", function(){ syncCard(c); });
+    makeDraggable(c);
+    cards.push(c);
+    syncCard(c);
+    registerRef(spans[spans.length-1], "🖼 知识画布 · 摘录卡", "^" + bidOf(id),
+      function(){
+        c.el.scrollIntoView({behavior:"smooth", block:"center"});
+        flashLocate(c.el, "locate-flash");
+      });
+    // 摘录文档是画布的同步镜像，不计入 PDF 反向引用（避免双重计数）
+    if(!drawer.classList.contains("open")) drawer.classList.add("open"); // 首次展示同步效果
+    toast("摘录卡片已创建 · 摘录文档后台同步 · PDF 原文处已加 📌 标记", "ok");
+    return c;
+  }
+  function addImgCard(x, y, name){
+    var id = ++cardSeq;
+    var fig = document.createElement("div");
+    fig.className = "fig";
+    fig.innerHTML = document.getElementById("figure1").querySelector("svg").outerHTML;
+    var tip = document.createElement("div");
+    tip.className = "jump-tip";
+    tip.textContent = "🔗 点击图片跳回 PDF 原文位置";
+    fig.appendChild(tip);
+    var doJump = function(){ jumpToFigure(); };
+    fig.addEventListener("click", doJump);
+    var cap = editableDiv("cap-edit", "图 1 · 点击可编辑说明文字");
+    var el = makeCard("img", x, y, "🖼 " + name, "", "new-flash");
+    el.appendChild(fig);
+    el.appendChild(cap);
+    var c = {id:id, kind:"img", el:el, imgname:name, caption:function(){ return cap.textContent.replace(/^图 1 · 点击可编辑说明文字$/,"").trim(); }, entryEl:null};
+    makeDraggable(c);
+    cards.push(c);
+    syncCard(c);
+    registerRef(document.querySelector("#figure1 .cap"), "🖼 知识画布 · 图片卡", "^" + bidOf(id),
+      function(){
+        c.el.scrollIntoView({behavior:"smooth", block:"center"});
+        flashLocate(c.el, "locate-flash");
+      });
+    // 摘录文档镜像不计入 PDF 反向引用
+    if(!drawer.classList.contains("open")) drawer.classList.add("open");
+    toast("图片卡已创建（附件：" + name + "）· PDF 图表处已加 📌 标记", "ok");
+    // sync on caption edit
+    cap.addEventListener("input", function(){ syncCard(c); });
+    return c;
+  }
+
+  function dropToCanvas(d, e){
+    var rect = canvasArea.getBoundingClientRect();
+    var x = e.clientX - rect.left + 10, y = e.clientY - rect.top - 20;
+    if(d.kind === "text"){
+      var txt = d.payload.map(function(s){ return s.textContent; }).join("");
+      addTextCard(x, y, txt, d.payload.slice());
+    } else {
+      addImgCard(x, y, d.payload.name);
+    }
+  }
+
+  /* ================= reset ================= */
+  window.resetAll = function(){
+    cards.forEach(function(c){ c.el.remove(); });
+    cards = []; cardSeq = 0;
+    docCreated = false;
+    refMap.forEach(function(rec){ if(rec.mark) rec.mark.remove(); });
+    refMap.clear();
+    hideRefPopup();
+    docOnly.forEach(function(c){ if(c.entryEl) c.entryEl.remove(); });
+    docOnly = [];
+    docBody.querySelectorAll(".doc-entry").forEach(function(e){ e.remove(); });
+    docEmpty.style.display = "block";
+    docState.textContent = "摘录文档：未创建";
+    syncDot.classList.remove("on");
+    drawer.classList.remove("open");
+    canvasEmpty.style.display = "flex";
+    mdBody.innerHTML =
+      '<div class="md-line h"># 深度学习入门 · 阅读笔记</div>' +
+      '<div class="md-line fm">---</div>' +
+      '<div class="md-line fm">tags: [读书, attention]</div>' +
+      '<div class="md-line fm">---</div>' +
+      '<div class="md-line"> </div>' +
+      '<div class="md-line">## 第 3 章 注意力机制</div>' +
+      '<div class="md-line"><span class="caret"></span></div>';
+    clearSelection();
+    setStep("<b>①</b> 在左侧 PDF 里按住鼠标拖选一段文字");
+    toast("演示已重置", "", 1400);
+  };
+})();
+</script>
+</body>
+</html>

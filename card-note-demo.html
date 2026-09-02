@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>摘录卡片「补充描述」· 演示</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b9cff; --accent2:#7ee0a8;
+    --warn:#ffcf6b; --danger:#ff7b7b; --edge:#8a93a6;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{display:flex;flex-direction:column;height:100%}
+  header{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{margin:0;font-size:16px;font-weight:600}
+  header p{margin:6px 0 0;font-size:12.5px;color:var(--muted);line-height:1.6}
+  header p b{color:var(--text)}
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 18px;
+    border-bottom:1px solid var(--line);background:var(--panel2);font-size:12.5px}
+  .btn{background:#262b36;color:var(--text);border:1px solid var(--line);border-radius:7px;
+    padding:6px 11px;cursor:pointer;font-size:12.5px;transition:.15s}
+  .btn:hover{background:#303644;border-color:#3a4250}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.danger:hover{background:#3a262c;border-color:#5a3238;color:var(--danger)}
+  .sep{width:1px;height:22px;background:var(--line);margin:0 2px}
+  label.ctl{display:flex;align-items:center;gap:6px;color:var(--muted)}
+  select{background:#262b36;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;accent-color:var(--accent)}
+  input[type=checkbox]{accent-color:var(--accent)}
+  .readout{margin-left:auto;font-size:11.5px;color:var(--muted);
+    background:#141821;border:1px solid var(--line);border-radius:6px;padding:4px 9px}
+  .readout b{color:var(--accent2)}
+
+  .stage{position:relative;flex:1;min-height:260px;overflow:auto;background:
+    radial-gradient(circle at 20% 20%, #141821 0, #0f1115 60%)}
+  #edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+
+  /* ---------- 卡片 ---------- */
+  .card{position:absolute;width:300px;border-radius:10px;
+    background:linear-gradient(160deg,#242936,#1d212a);
+    border:1px solid #3a4250;box-shadow:0 6px 18px rgba(0,0,0,.35);
+    display:flex;flex-direction:column;padding:11px 12px 12px;cursor:grab;
+    transition:height .16s ease;}
+  .card.dragging{cursor:grabbing;z-index:50;box-shadow:0 10px 26px rgba(0,0,0,.5);transition:none}
+  .card.active{border-color:var(--accent)}
+  .card.kid{background:linear-gradient(160deg,#222634,#1b1f28)}
+  .c-head{display:flex;justify-content:space-between;align-items:center;
+    font-size:11px;color:var(--muted);margin-bottom:6px}
+  .c-head .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px}
+  .c-head .exid{font-family:"SFMono-Regular",Consolas,monospace;font-size:10.5px;opacity:.75}
+  /* 主体：PDF 摘录原文（引用块样式） */
+  .quote{border-left:3px solid var(--accent);background:rgba(91,156,255,.07);
+    border-radius:0 6px 6px 0;padding:7px 9px;font-size:13px;line-height:1.6;
+    color:var(--text);white-space:pre-wrap;word-break:break-word}
+  .quote .src{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
+
+  /* ---------- 补充描述区（与主体视觉分离） ---------- */
+  .note-wrap{margin-top:9px}
+  .note-add{width:100%;background:transparent;border:1px dashed #3d4553;color:var(--muted);
+    border-radius:7px;padding:6px 8px;font-size:11.5px;cursor:pointer;transition:.15s;text-align:left}
+  .note-add:hover{border-color:var(--accent2);color:var(--accent2);background:rgba(126,224,168,.06)}
+  .note-box{background:#141821;border:1px solid #2f3542;border-left:3px solid var(--accent2);
+    border-radius:6px;padding:6px 8px 7px}
+  .note-head{display:flex;justify-content:space-between;align-items:center;
+    font-size:10.5px;color:var(--muted);margin-bottom:3px;letter-spacing:.3px}
+  .note-head .ops{display:flex;gap:4px}
+  .mini{background:#262b36;border:1px solid var(--line);color:var(--muted);
+    border-radius:5px;font-size:10.5px;padding:1px 6px;cursor:pointer;line-height:1.5}
+  .mini:hover{background:#303644;color:var(--text)}
+  .note-body{font-size:12px;line-height:1.65;color:#cbd3e1;white-space:pre-wrap;
+    word-break:break-word;outline:none;min-height:19px;cursor:text}
+  .note-body:empty:before{content:"写下你的想法…";color:#5f6b7d}
+  .note-body:focus{background:rgba(126,224,168,.05);border-radius:4px}
+  /* 折叠后的指示条 */
+  .note-chip{display:flex;justify-content:space-between;align-items:center;gap:6px;
+    background:#141821;border:1px solid #2f3542;border-left:3px solid var(--accent2);
+    border-radius:6px;padding:4px 8px;font-size:11px;color:var(--muted);cursor:pointer}
+  .note-chip:hover{border-color:var(--accent2);color:var(--text)}
+  .note-chip .lines{color:var(--accent2);font-size:10.5px}
+
+  /* ---------- 底部：存储预览 / 日志 / 说明 ---------- */
+  .dock{display:none;border-top:1px solid var(--line);background:#0c0e13;max-height:34vh;overflow:auto}
+  .dock.cols{display:flex;gap:0}
+  .dock .pane{flex:1;min-width:0;padding:10px 14px;border-right:1px solid var(--line)}
+  .dock .pane:last-child{border-right:none}
+  .dock h4{margin:0 0 6px;font-size:11.5px;color:var(--accent);font-weight:600}
+  .dock pre{margin:0;font-size:11.5px;line-height:1.6;color:#cfd6e4;white-space:pre-wrap;
+    word-break:break-all;font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+  .dock .danger-t{color:var(--danger)}
+  .dock .ok-t{color:var(--accent2)}
+
+  .log{padding:8px 18px;border-top:1px solid var(--line);background:var(--panel);
+    font-size:12px;color:var(--muted);max-height:112px;overflow:auto;line-height:1.7}
+  .log b{color:var(--text)}
+  .log .ok{color:var(--accent2)} .log .mv{color:var(--warn)} .log .bad{color:var(--danger)}
+
+  #notes,#code{display:none;border-top:1px solid var(--line);background:var(--panel);
+    max-height:46vh;overflow:auto;padding:14px 18px;font-size:12.5px;line-height:1.75;color:#cfd6e4}
+  #notes h3{margin:0 0 8px;font-size:13px;color:var(--accent)}
+  #notes h4{margin:14px 0 5px;font-size:12.5px;color:var(--text)}
+  #notes p,#notes li{margin:4px 0}
+  #notes ul{margin:4px 0;padding-left:20px}
+  #notes code{background:#0c0e13;border:1px solid var(--line);border-radius:4px;
+    padding:0 4px;font-size:11.5px;color:var(--accent2)}
+  #notes table{border-collapse:collapse;width:100%;margin:6px 0;font-size:12px}
+  #notes th,#notes td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+  #notes th{background:#1e222b;color:var(--text)}
+  #notes .pick{color:var(--accent2);font-weight:600}
+  #notes .no{color:var(--danger)}
+  #code pre{margin:0;font-size:12px;line-height:1.65;color:#cfd6e4;
+    font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;white-space:pre}
+  #code .cm{color:#5f6b7d} #code .kw{color:#c792ea} #code .fn{color:#82aaff}
+  #code .st{color:#c3e88d} #code .nm{color:#f78c6c}
+  .legend{position:absolute;right:14px;bottom:14px;font-size:11px;color:var(--muted);
+    background:rgba(20,24,31,.7);border:1px solid var(--line);border-radius:8px;padding:8px 10px;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>摘录卡片「补充描述（note）」演示</h1>
+    <p>每张卡片分两个<b>视觉分离</b>的区域：上方是 PDF 摘录原文（不可改的引用块），下方是<b>自己的补充描述</b>（可编辑、可折叠、卡片高度随内容自适应）。
+       核心难点：canvas 的 text 节点<b>只有一个 text 字段</b>，没有独立的补充描述字段——切到工具栏的「存储方案」并打开「原始存储预览」，可以直接看到同一张卡在三种方案下写进 <code>.canvas</code> 的内容差别，以及摘录文档会不会被污染。</p>
+  </header>
+
+  <div class="toolbar">
+    <button class="btn primary" id="btnAdd">＋ 新卡片</button>
+    <button class="btn" id="btnExpandAll">全部展开</button>
+    <button class="btn" id="btnCollapseAll">全部折叠</button>
+    <div class="sep"></div>
+    <label class="ctl">存储方案
+      <select id="selScheme">
+        <option value="B">B · HTML 注释包裹（推荐）</option>
+        <option value="A">A · 分隔符 --- 内联</option>
+        <option value="C">C · 插件 data.json sidecar</option>
+      </select>
+    </label>
+    <label class="ctl"><input type="checkbox" id="chkStrip" checked /> 摘录文档剥离补充描述</label>
+    <button class="btn danger" id="btnBreak">模拟标记被破坏</button>
+    <div class="sep"></div>
+    <button class="btn" id="btnDock">显示原始存储预览</button>
+    <button class="btn" id="btnNotes">隐藏实现要点</button>
+    <button class="btn" id="btnCode">显示实现代码</button>
+    <button class="btn" id="btnReset">重置</button>
+    <div class="readout" id="readout">点任意卡片选中：—</div>
+  </div>
+
+  <div class="stage" id="stage">
+    <svg id="edges"></svg>
+    <div class="legend">蓝左框=摘录原文 · 绿左框=补充描述<br/>拖动卡片标题/空白处可移动；绿框内可直接打字</div>
+  </div>
+
+  <div class="dock" id="dock">
+    <div class="pane">
+      <h4>canvas 节点原始存储（node.text）</h4>
+      <pre id="preCanvas"></pre>
+    </div>
+    <div class="pane">
+      <h4>插件 data.json（sidecar，按 node.id）</h4>
+      <pre id="preSidecar"></pre>
+    </div>
+    <div class="pane">
+      <h4>&lt;PDF名&gt;-摘录.md 同步结果</h4>
+      <pre id="preMd"></pre>
+    </div>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <div id="notes">
+    <h3>实现要点（落地到真实 Obsidian canvas 时怎么办）</h3>
+
+    <h4>1. 数据存哪：三个方案对比</h4>
+    <p>约束：canvas 的 text 节点 JSON 只有 <code>{id,type,text,x,y,width,height}</code>，<b>没有</b>独立的补充描述字段。因此补充描述要么塞进 <code>text</code>，要么存在 canvas 之外。</p>
+    <table>
+      <tr><th style="width:15%">方案</th><th style="width:30%">做法</th><th style="width:27%">优点</th><th style="width:28%">缺点 / 代价</th></tr>
+      <tr>
+        <td>A 分隔符内联</td>
+        <td><code>text = 原文 + "\n\n---\n\n" + 补充描述</code></td>
+        <td>单字段自包含；Obsidian 全文搜索能搜到补充描述；导出/复制卡片不丢。</td>
+        <td>需要解析；用户手改正文极易破坏分隔符（<code>---</code> 也是 markdown 分割线，语义撞车）；卡片进入编辑模式会看到原始标记。</td>
+      </tr>
+      <tr>
+        <td class="pick">B HTML 注释包裹 ★</td>
+        <td><code>text = 原文 + "\n&lt;!-- ppd-note-start --&gt;\n" + 补充描述 + "\n&lt;!-- ppd-note-end --&gt;"</code></td>
+        <td>仍是单字段自包含、可搜索；阅读模式/预览下 HTML 注释<b>不渲染</b>，卡片看起来干净；起止标记成对出现，解析可靠、易做容错（缺闭合标记就吃到结尾）；与 markdown 语法零冲突。</td>
+        <td>双击进卡片编辑模式能看到注释源码；删除卡片时标记一起走（这反而是优点）；需要同时维护一个极小的 sidecar 存「折叠状态」（见第 4 点）。</td>
+      </tr>
+      <tr>
+        <td>C 插件 data.json sidecar</td>
+        <td>canvas 的 <code>text</code> 完全不动，补充描述按 <code>node.id</code> 存进 <code>.obsidian/plugins/pdf-plus-drag/data.json</code></td>
+        <td>零污染 canvas、不干扰用户手改正文、不会被 <code>---</code> 之类的正文内容误伤。</td>
+        <td class="no">卡片不自包含：复制卡片/导出 canvas/分享给别人，补充描述全丢；<code>node.id</code> 在 duplicate 时会变，映射断裂；data.json 通常不在同步范围或同步时机不一致，多设备会错位；搜索不到。</td>
+      </tr>
+    </table>
+    <p><b>推荐方案 B</b>，理由：摘录卡片的核心价值是「原文 + 我的想法」绑定在一起，自包含是刚需；而 B 同时拿到了自包含、可搜索、解析可靠三个好处，代价只有「编辑模式能看到注释源码」这一条，可以通过命令「编辑补充描述」（弹 Modal 输入）绕开，让用户几乎不用直接碰源码。<br/>
+    <b>代价与兜底：</b>① 解析器必须同时兼容 A 的 <code>---</code> 分隔符，便于将来从 A 迁移；② 必须容错（缺闭合标记、标记重复、标记出现在原文里）→ 优先取<b>最后一对</b>标记，缺闭合就吃到结尾，并把异常写日志不抛错；③ 折叠状态这类纯 UI 态不进 <code>text</code>，存 data.json 即可（内容自包含 + UI 态外置，是 B 与 C 的折中）。</p>
+
+    <h4>2. 卡片高度怎么算</h4>
+    <p>沿用插件已有的 <code>estimateSizeFor</code> 思路：<b>离屏 span 测宽 → 算换行行数 → 行高 × 行数 + padding</b>，再叠加补充描述区的高度。</p>
+    <ul>
+      <li>离屏测宽：建一个 <code>position:fixed;left:-9999px;white-space:pre;visibility:hidden</code> 的 span，用<b>和卡片渲染完全相同的 font-size / font-family</b>，逐行 <code>getBoundingClientRect().width</code>；</li>
+      <li>行数：<code>lines += Math.max(1, Math.ceil(measuredW / innerW))</code>，<code>innerW = width - padX - 左边框/缩进</code>；</li>
+      <li>总高：<code>h = padY + 原文行高×原文行数 + 间距 + 补充描述区高</code>，补充描述区高 = <code>noteLineH × noteLines + notePadY + 头部行高</code>；折叠时退化为一个 chip 的固定高（约 26px）；</li>
+      <li>宽度策略：<code>width</code> 只由原文决定（补充描述不撑宽卡片，否则一动整张卡就晃），只让高度自适应；</li>
+      <li>图片卡（<code>![[]]</code>）同理：<code>图片等比高 + 回跳行 + 补充描述区高</code>；</li>
+      <li>幂等保护：抄 <code>fitNode</code> 的做法——对 <code>text</code> 取 <code>simpleHash</code> 存起来，hash 未变就不重算（用户手动调过高度不被反复覆盖），只有 size 变化超过 2px 才真正写回。</li>
+    </ul>
+    <p>演示里工具栏右侧读数同时给出<b>估算值</b>（离屏测宽那套）和<b>实测值</b>（真实 DOM 高度，作为验收基准），两者应当接近。</p>
+
+    <h4>3. 与「摘录文档同步」的冲突（重点）</h4>
+    <p>现状：<code>main.js</code> 的 canvas→md 同步，是把 <code>node.text</code> 去掉 <code>^ex-xxxx</code> 那一行后整段作为条目正文写进 <code>&lt;PDF名&gt;-摘录.md</code>。<b>如果补充描述混进了 text，摘录文档一定会被污染</b>——你的私人想法会被当成原文一起写进摘录文档，还会跟着条目的嵌套引用一起出现在大纲里。</p>
+    <p>处理：在同步链路的<b>入口处</b>先做一次剥离，插件里现在的 <code>body</code> 提取处（<code>node.text.split("\n").filter(l =&gt; !/^\s*\^ex-…$/)</code>）改成：</p>
+    <ul>
+      <li><code>const { quote } = splitNote(node.text);</code> 先切掉补充描述段；</li>
+      <li>再对 <code>quote</code> 做原有的「去 <code>^ex</code> 行 + trim」；</li>
+      <li>关闭「剥离」开关时预览面板会标红，就是未剥离时摘录文档被污染的样子（工具栏那个复选框可来回切）。</li>
+    </ul>
+    <p>另有两个连带问题：① 反方向（md → canvas）目前是整文件重写、单向覆盖，补充描述绝不能参与反向同步，否则会被 md 覆盖丢失；② 摘录 md 里<b>要不要</b>输出补充描述是产品选择——建议<b>默认不输出</b>，另开一个开关「摘录文档也带补充描述」，带上时用 <code>&gt; [!note]</code> callout 或缩进块区分，避免和原文混淆。</p>
+
+    <h4>4. 折叠状态与编辑状态的存放</h4>
+    <ul>
+      <li>折叠/展开是<b>纯 UI 态</b>，不能写进 <code>text</code>（会污染内容与 hash），存 data.json：<code>notes[node.id] = {collapsed:true}</code>；</li>
+      <li>编辑入口两条：卡片上直接编辑（contenteditable / 劫持 canvas 的编辑态），或命令「编辑补充描述」弹 Modal——后者更稳，不依赖 canvas 内部 DOM；</li>
+      <li>写回 canvas 要用插件既有的 <code>selfWritten</code> 标志防回环：插件自己写的 canvas 文件变更不能再触发一次同步；</li>
+      <li>输入防抖（建议 600~800ms）后再重写 canvas 文件，避免每敲一个字就整文件 IO。</li>
+    </ul>
+
+    <h4>5. 落地清单（最小实现）</h4>
+    <ul>
+      <li>纯函数 <code>splitNote(text)</code> / <code>composeNote(quote, note)</code> / <code>stripNoteForExcerpt(text)</code> → 可单测，放在 <code>ppdDiffCanvasNodes</code> 那批导出函数旁边；</li>
+      <li>渲染：canvas 是 Obsidian 自绘的，插件改不了节点内部 DOM，所以「绿框」效果只能靠 <b>markdown 本身</b>表达（callout <code>&gt; [!ppd-note]</code> 或引用块 + 高亮 <code>==…==</code>），本演示的绿框对应真实环境里的 callout 渲染结果；</li>
+      <li>命令：添加/编辑补充描述、切换折叠、清除补充描述、批量展开/折叠；</li>
+      <li>旧卡兼容：<code>splitNote</code> 找不到标记时返回 <code>note=""</code>，老卡片零改动照常工作；</li>
+      <li>迁移：若日后从 A 换到 B，写一次性命令扫描所有 canvas 重写 <code>text</code>；反向解析保持兼容即可平滑过渡。</li>
+    </ul>
+  </div>
+
+  <div id="code"></div>
+</div>
+
+<script>
+/* =========================================================================
+   核心逻辑（纯函数，与插件同源思路，便于直接搬进 main.js + 单测）
+   一张摘录卡的数据：{ id, exId, quote, note, collapsed, x, y, w, h, parent }
+   canvas 上真正的字段只有 text，所以补充描述必须编码进 text（方案 A/B）
+   ========================================================================= */
+
+// —— 标记常量（方案 B）——
+const MARK_START = '<!-- ppd-note-start -->';
+const MARK_END   = '<!-- ppd-note-end -->';
+// —— 分隔符（方案 A）：\n --- \n，允许行尾空白 ——
+const SEP_RE     = /\n[ \t]*---[ \t]*\n/;
+// —— 摘录 id 行（^ex-xxxx，main.js 里同步 md 时要剔除的那行）——
+const EX_LINE_RE = /^\s*\^ex-[0-9a-z]{4,8}\s*$/;
+
+/** 数据 → canvas node.text：按方案把补充描述编码进单字段 text */
+function composeText(card, scheme){
+  const ex = '^' + card.exId;
+  const body = card.quote + '\n' + ex;
+  const note = (card.note || '').trim();
+  if (!note) return body;                                   // 无补充描述：完全不动原格式
+  if (scheme === 'A') return body + '\n\n---\n\n' + note;   // A：分隔符内联
+  if (scheme === 'B') return body + '\n' + MARK_START + '\n' + note + '\n' + MARK_END;
+  return body;                                              // C：补充描述不进 text
+}
+
+/** node.text → { quote, note }：同时兼容 B / A，并做容错（供迁移与手改后降级） */
+function splitText(text){
+  const t = String(text == null ? '' : text);
+  // 优先 B：取最后一对标记，正文里若意外出现标记也不会误切
+  const s = t.lastIndexOf(MARK_START);
+  if (s >= 0){
+    const rest = t.slice(s + MARK_START.length);
+    const e = rest.indexOf(MARK_END);
+    // 容错：缺闭合标记时，其后全部视为补充描述
+    const note = (e >= 0 ? rest.slice(0, e) : rest).replace(/^\n+|\n+$/g, '');
+    return { quote: t.slice(0, s).replace(/\n+$/, ''), note: note };
+  }
+  // 退化 A：分隔符
+  const m = t.match(SEP_RE);
+  if (m){
+    return { quote: t.slice(0, m.index).replace(/\n+$/, ''),
+             note: t.slice(m.index + m[0].length).replace(/^\n+|\n+$/g, '') };
+  }
+  return { quote: t.replace(/\n+$/, ''), note: '' };
+}
+
+/** 摘录文档用：先剥离补充描述，再去 ^ex 行——顺序不能反 */
+function toExcerptBody(text, strip){
+  const parts = splitText(text);
+  const src = strip ? parts.quote : String(text);
+  return src.split('\n').filter(function(l){ return !EX_LINE_RE.test(l); }).join('\n').trim();
+}
+
+/* ---------- 高度估算：离屏 span 测宽（同 estimateSizeFor 思路） ---------- */
+const CARD_W = 300, PAD_X = 24, PAD_Y = 23, HEAD_H = 17, GAP = 9;
+const QUOTE_FONT = 13, QUOTE_LH = 20.8, QUOTE_PAD = 14, QUOTE_BORDER = 3;
+const NOTE_FONT = 12, NOTE_LH = 19.8, NOTE_PAD = 13, NOTE_BORDER = 3, NOTE_HEAD = 16;
+const CHIP_H = 26;
+
+/** 测一段文字在给定字号下的像素宽度（离屏、不回流页面） */
+function measureWidth(s, fontPx, bold){
+  const span = document.createElement('span');
+  span.style.cssText = 'position:fixed;left:-9999px;top:0;white-space:pre;visibility:hidden;' +
+    'font-size:' + fontPx + 'px;font-weight:' + (bold ? 600 : 400) +
+    ";font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;";
+  span.textContent = s || ' ';
+  document.body.appendChild(span);
+  const w = span.getBoundingClientRect().width;
+  span.remove();
+  return w;
+}
+/** 一段文本在 innerW 内会占几行（逐行测宽后向上取整累加） */
+function countLines(text, fontPx, innerW){
+  const lines = String(text || '').split('\n');
+  let n = 0;
+  for (const l of lines) n += Math.max(1, Math.ceil(measureWidth(l, fontPx) / Math.max(40, innerW)));
+  return n;
+}
+/** 估算整卡高度：原文块 + 补充描述块（折叠时退化成 chip） */
+function estimateCardH(card, collapsed){
+  const innerW = CARD_W - PAD_X;
+  // 原文区：引用块左右内边距 + 左边框
+  const qInner = innerW - QUOTE_PAD - QUOTE_BORDER;
+  let h = PAD_Y + HEAD_H + GAP;
+  h += QUOTE_PAD + countLines(card.quote, QUOTE_FONT, qInner) * QUOTE_LH;
+  const hasNote = (card.note || '').trim().length > 0;
+  if (hasNote && !collapsed){
+    // 补充描述区：头部 + 内容行 + 内边距
+    const nInner = innerW - NOTE_PAD - NOTE_BORDER;
+    h += GAP + NOTE_HEAD + countLines(card.note, NOTE_FONT, nInner) * NOTE_LH + NOTE_PAD;
+  } else if (hasNote){
+    h += GAP + CHIP_H;
+  }
+  return Math.ceil(h);
+}
+
+/* ===================== 以下为演示交互层 ===================== */
+const stage = document.getElementById('stage');
+const svg = document.getElementById('edges');
+const logEl = document.getElementById('log');
+const readout = document.getElementById('readout');
+let cards = [];
+let scheme = 'B';
+let stripNote = true;
+let activeId = null;
+let seq = 0;
+
+function log(msg, cls){
+  const t = new Date().toLocaleTimeString('zh-CN', {hour12:false});
+  logEl.insertAdjacentHTML('afterbegin',
+    '<div><span style="color:#5f6b7d">' + t + '</span> ' +
+    (msg ? '<span class="' + (cls || '') + '">' + msg + '</span>' : '') + '</div>');
+}
+function esc(s){
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function uid(){ return 'n' + (++seq) + Date.now().toString(36).slice(-3); }
+function exId(){ return 'ex-' + Math.random().toString(36).slice(2, 8); }
+function findCard(id){ return cards.filter(function(c){ return c.id === id; })[0]; }
+
+/* ---------- 示例数据 ---------- */
+function seed(){
+  cards = []; seq = 0;
+  const a = mk({
+    x: 40, y: 30,
+    quote: '> 设计的本质不是让东西变好看，而是让它变得可用、可理解、可预期。',
+    src: '设计心理学 · P.42',
+    note: '这段可以解释我们为什么把「拖拽即成卡」做成零配置：用户不需要先理解数据结构，先得到结果。'
+  });
+  const b = mk({
+    x: 40, y: 210, parent: a.id,
+    quote: '> 当系统的状态不可见时，用户会被迫在脑内维护一份心智模型，出错率随之上升。',
+    src: '设计心理学 · P.88',
+    note: '对应插件的 chip 提示：拖拽过程中必须让「将要发生什么」可见，否则用户不敢松手。'
+  });
+  mk({
+    x: 400, y: 30,
+    quote: '> 一次只做一件事，并把它做完。上下文切换的代价远高于直觉估计。',
+    src: '深度工作 · P.15',
+    note: ''
+  });
+  mk({
+    x: 400, y: 190, collapsed: true,
+    quote: '> 摘录若不回到自己的语言里重新表述一遍，它只是一段被搬运的字符。',
+    src: '卡片笔记写作法 · P.63',
+    note: '这就是这个功能存在的理由：摘录负责忠实，补充描述负责理解，两者必须在同一张卡上相遇。\n（点右侧「展开」或直接点指示条可展开）'
+  });
+}
+
+function mk(o){
+  const c = {
+    id: uid(), exId: exId(), quote: o.quote || '> （示例摘录）', src: o.src || '示例.pdf · P.1',
+    note: o.note == null ? '' : o.note, collapsed: !!o.collapsed,
+    x: o.x || 40, y: o.y || 40, w: CARD_W, h: 100, parent: o.parent || null
+  };
+  cards.push(c);
+  return c;
+}
+
+/* ---------- 渲染 ---------- */
+function render(){
+  const old = stage.querySelectorAll('.card');
+  for (let i = 0; i < old.length; i++) old[i].remove();
+  for (const c of cards) stage.appendChild(buildCard(c));
+  drawEdges();
+  for (const c of cards) fit(c);   // 先建 DOM 再量高度
+  drawEdges();
+  updateDock();
+  updateReadout();
+}
+
+function buildCard(c){
+  const el = document.createElement('div');
+  el.className = 'card' + (c.parent ? ' kid' : '') + (c.id === activeId ? ' active' : '');
+  el.style.left = c.x + 'px';
+  el.style.top = c.y + 'px';
+  el.dataset.id = c.id;
+
+  const note = (c.note || '').trim();
+  let noteHtml = '';
+  if (!note){
+    // 空：显示添加入口
+    noteHtml = '<div class="note-wrap"><button class="note-add" data-act="add">＋ 添加补充描述</button></div>';
+  } else if (c.collapsed){
+    // 有内容但折叠：显示摘要指示
+    const ln = countLines(note, NOTE_FONT, CARD_W - PAD_X - NOTE_PAD - NOTE_BORDER);
+    noteHtml = '<div class="note-wrap"><div class="note-chip" data-act="expand">' +
+      '<span>补充描述 · 已折叠</span><span class="lines">' + ln + ' 行</span></div></div>';
+  } else {
+    noteHtml = '<div class="note-wrap"><div class="note-box">' +
+      '<div class="note-head"><span>补充描述</span><span class="ops">' +
+        '<button class="mini" data-act="collapse">折叠</button>' +
+        '<button class="mini" data-act="clear">清除</button>' +
+      '</span></div>' +
+      '<div class="note-body" contenteditable="true" spellcheck="false"></div>' +
+      '</div></div>';
+  }
+
+  el.innerHTML =
+    '<div class="c-head"><span><span class="dot" style="background:' +
+      (c.parent ? 'var(--muted)' : 'var(--accent)') + '"></span>摘录卡</span>' +
+      '<span class="exid">' + esc(c.src) + ' · ^' + esc(c.exId) + '</span></div>' +
+    '<div class="quote"><span class="src">摘录原文（只读）</span>' + esc(c.quote.replace(/^>\s?/gm, '')) + '</div>' +
+    noteHtml;
+
+  if (note && !c.collapsed){
+    // 用 textContent 写入，避免 innerHTML 转义问题与 caret 丢失
+    const body = el.querySelector('.note-body');
+    body.textContent = note;
+    body.addEventListener('input', function(){
+      c.note = body.innerText.replace(/\n$/, '');
+      fit(c); drawEdges(); updateDock(); updateReadout();
+    });
+    body.addEventListener('focus', function(){ activeId = c.id; markActive(); updateReadout(); });
+    body.addEventListener('keydown', function(e){
+      e.stopPropagation();
+      if (e.key === 'Escape') body.blur();
+    });
+  }
+
+  el.addEventListener('pointerdown', function(ev){
+    if (ev.target.closest('.note-body') || ev.target.closest('button')) return;  // 编辑区/按钮不触发拖拽
+    activeId = c.id; markActive(); updateReadout();
+    startDrag(ev, el, c);
+  });
+  el.addEventListener('click', function(ev){
+    const btn = ev.target.closest('[data-act]');
+    if (!btn) return;
+    ev.stopPropagation();
+    const act = btn.dataset.act;
+    if (act === 'add'){
+      c.note = ''; c.collapsed = false;
+      render();
+      const body = stage.querySelector('.card[data-id="' + c.id + '"] .note-body');
+      if (body) body.focus();
+      log('卡片 ^' + c.exId + '：新增补充描述（空），卡片高度 +' +
+        (Math.round(estimateCardH(c, false) - estimateCardH({quote:c.quote, note:''}, false))) + 'px', 'ok');
+    } else if (act === 'collapse'){
+      c.collapsed = true; render();
+      log('卡片 ^' + c.exId + '：补充描述已折叠，卡片高度 ' + c.h + 'px', 'mv');
+    } else if (act === 'expand'){
+      c.collapsed = false; render();
+      const body = stage.querySelector('.card[data-id="' + c.id + '"] .note-body');
+      if (body) body.focus();
+      log('卡片 ^' + c.exId + '：补充描述已展开', 'ok');
+    } else if (act === 'clear'){
+      c.note = ''; c.collapsed = false; render();
+      log('卡片 ^' + c.exId + '：补充描述已清除（text 恢复为纯原文）', 'mv');
+    }
+  });
+  return el;
+}
+
+function markActive(){
+  const all = stage.querySelectorAll('.card');
+  for (let i = 0; i < all.length; i++){
+    all[i].classList.toggle('active', all[i].dataset.id === activeId);
+  }
+}
+
+/** 高度自适应：真实 DOM 量一次，同时给出离屏估算值做交叉验证 */
+function fit(c){
+  const el = stage.querySelector('.card[data-id="' + c.id + '"]');
+  if (!el) return;
+  el.style.height = 'auto';
+  const measured = el.offsetHeight;
+  el.style.height = measured + 'px';
+  c.h = measured;
+  c.hEst = estimateCardH(c, c.collapsed);
+}
+
+function updateReadout(){
+  const c = activeId ? findCard(activeId) : null;
+  if (!c){ readout.textContent = '点任意卡片选中：—'; return; }
+  readout.innerHTML = '选中 ^' + esc(c.exId) + '：实测 <b>' + c.h + 'px</b> / 估算 <b>' +
+    (c.hEst || 0) + 'px</b>（差 ' + Math.abs(c.h - (c.hEst || 0)) + 'px）';
+}
+
+/* ---------- 拖拽 ---------- */
+let drag = null;
+function startDrag(ev, el, c){
+  ev.preventDefault();
+  const r = stage.getBoundingClientRect();
+  drag = { c: c, el: el, offX: ev.clientX - r.left - c.x, offY: ev.clientY - r.top - c.y, moved: false };
+  el.classList.add('dragging');
+  el.setPointerCapture(ev.pointerId);
+  el.addEventListener('pointermove', onDragMove);
+  el.addEventListener('pointerup', onDragUp);
+}
+function onDragMove(ev){
+  if (!drag) return;
+  const r = stage.getBoundingClientRect();
+  drag.c.x = Math.max(0, ev.clientX - r.left - drag.offX);
+  drag.c.y = Math.max(0, ev.clientY - r.top - drag.offY);
+  drag.moved = true;
+  drag.el.style.left = drag.c.x + 'px';
+  drag.el.style.top = drag.c.y + 'px';
+  drawEdges();
+}
+function onDragUp(){
+  if (!drag) return;
+  drag.el.classList.remove('dragging');
+  drag.el.removeEventListener('pointermove', onDragMove);
+  drag.el.removeEventListener('pointerup', onDragUp);
+  drag = null;
+}
+
+/* ---------- 父子连线 ---------- */
+function drawEdges(){
+  let s = '';
+  for (const c of cards){
+    if (!c.parent) continue;
+    const p = findCard(c.parent);
+    if (!p) continue;
+    s += '<line x1="' + (p.x + p.w / 2) + '" y1="' + (p.y + p.h) +
+         '" x2="' + (c.x + c.w / 2) + '" y2="' + c.y +
+         '" stroke="var(--edge)" stroke-width="1.6" opacity="0.7"/>';
+  }
+  svg.innerHTML = s;
+  // svg 尺寸跟随内容，保证连线不被裁剪
+  let maxX = 0, maxY = 0;
+  for (const c of cards){ maxX = Math.max(maxX, c.x + c.w + 20); maxY = Math.max(maxY, c.y + c.h + 20); }
+  svg.setAttribute('width', maxX);
+  svg.setAttribute('height', maxY);
+}
+
+/* ---------- 底部原始存储预览 ---------- */
+function updateDock(){
+  const dock = document.getElementById('dock');
+  if (dock.style.display !== 'block') return;
+  const c = activeId ? findCard(activeId) : cards[0];
+  if (!c){ return; }
+
+  const text = composeText(c, scheme);
+  const h1 = '<span style="color:#5f6b7d">// 方案 ' + scheme + '</span>\n';
+  document.getElementById('preCanvas').innerHTML = h1 + esc(text);
+
+  // sidecar：方案 C 存完整补充描述；方案 A/B 只存折叠状态（UI 态外置）
+  const side = { notes: {} };
+  if (scheme === 'C'){
+    side.notes[c.id] = { note: c.note, collapsed: !!c.collapsed };
+  } else {
+    side.notes[c.id] = { collapsed: !!c.collapsed };
+  }
+  document.getElementById('preSidecar').innerHTML =
+    esc(JSON.stringify(side, null, 2));
+
+  // 摘录 md：对比「剥离」与「不剥离」
+  const clean = toExcerptBody(text, true);
+  const dirty = toExcerptBody(text, false);
+  const md = '## P.1\n\n> ' + (stripNote ? clean : dirty).split('\n').join('\n> ') + '\n';
+  const flag = stripNote
+    ? '<span class="ok-t">// 已剥离补充描述：摘录文档干净</span>\n'
+    : '<span class="danger-t">// 未剥离：补充描述被当成原文写进摘录文档（污染！）</span>\n';
+  document.getElementById('preMd').innerHTML = flag + esc(md);
+}
+
+/* ---------- 绑定 ---------- */
+document.getElementById('btnAdd').onclick = function(){
+  const c = mk({ x: 40 + Math.random() * 320, y: 40 + Math.random() * 120,
+    quote: '> 这是一张新摘录卡，点「＋ 添加补充描述」试试。', src: '新建.pdf · P.1', note: '' });
+  activeId = c.id;
+  render();
+  log('新建卡片 ^' + c.exId, 'ok');
+};
+document.getElementById('btnExpandAll').onclick = function(){
+  let n = 0;
+  for (const c of cards){ if (c.collapsed){ c.collapsed = false; n++; } }
+  render(); log('已展开 ' + n + ' 张卡的补充描述', 'ok');
+};
+document.getElementById('btnCollapseAll').onclick = function(){
+  let n = 0;
+  for (const c of cards){ if ((c.note || '').trim() && !c.collapsed){ c.collapsed = true; n++; } }
+  render(); log('已折叠 ' + n + ' 张卡的补充描述（空的保持「添加」入口）', 'mv');
+};
+document.getElementById('selScheme').onchange = function(e){
+  scheme = e.target.value;
+  updateDock();
+  const tip = {
+    A: '方案 A：补充描述内联在 text 里，用 \\n---\\n 分隔。编辑模式可见，且正文里的 --- 会误伤解析。',
+    B: '方案 B：HTML 注释包裹，阅读模式不渲染、解析可靠；折叠状态仍走 data.json。',
+    C: '方案 C：text 完全干净，但复制/导出卡片会丢补充描述，多设备同步可能错位。'
+  }[scheme];
+  log('切换存储方案 → <b>' + scheme + '</b>：' + tip, scheme === 'B' ? 'ok' : 'mv');
+};
+document.getElementById('chkStrip').onchange = function(e){
+  stripNote = e.target.checked;
+  updateDock();
+  log(stripNote ? '摘录文档：剥离补充描述（推荐，防止污染）' : '摘录文档：未剥离 —— 补充描述会被当成原文写进去', stripNote ? 'ok' : 'bad');
+};
+document.getElementById('btnBreak').onclick = function(){
+  // 演示方案 A/B 被破坏后的容错：把当前卡的闭合标记/分隔符删掉
+  const c = activeId ? findCard(activeId) : cards[0];
+  if (!c) return;
+  if (scheme === 'C'){
+    log('方案 C 下补充描述不进 text，不存在标记被破坏的问题（这是 C 的优点）', 'ok');
+    return;
+  }
+  log('模拟：用户手改卡片时删掉了' + (scheme === 'B' ? '闭合注释' : '分隔符') +
+      ' → 解析器容错降级，把其后内容<b>全部</b>当作补充描述', 'bad');
+  const text = composeText(c, scheme).replace(MARK_END, '').replace(SEP_RE, '\n');
+  const parsed = splitText(text);
+  log('容错解析结果：原文 ' + parsed.quote.split('\n').length + ' 行 / 补充描述 ' +
+      (parsed.note ? parsed.note.split('\n').length + ' 行' : '空'), 'mv');
+};
+document.getElementById('btnDock').onclick = function(){
+  const dock = document.getElementById('dock');
+  const open = dock.style.display !== 'block';
+  dock.style.display = open ? 'block' : 'none';
+  dock.classList.toggle('cols', true);
+  this.textContent = open ? '隐藏原始存储预览' : '显示原始存储预览';
+  updateDock();
+};
+document.getElementById('btnNotes').onclick = function(){
+  const box = document.getElementById('notes');
+  const open = box.style.display !== 'block';
+  box.style.display = open ? 'block' : 'none';
+  this.textContent = open ? '隐藏实现要点' : '显示实现要点';
+};
+document.getElementById('btnCode').onclick = function(){
+  const box = document.getElementById('code');
+  const open = box.style.display !== 'block';
+  box.style.display = open ? 'block' : 'none';
+  if (open && !box.dataset.filled){ box.innerHTML = CODE_HTML; box.dataset.filled = '1'; }
+  this.textContent = open ? '隐藏实现代码' : '显示实现代码';
+};
+document.getElementById('btnReset').onclick = function(){
+  seed(); activeId = null; render();
+  log('已重置示例场景','ok');
+};
+
+/* ---------- 代码面板（高亮为演示用，非执行） ---------- */
+const CODE_HTML = `<pre><span class="cm">// ===== 1. 编码 / 解析（纯函数，可直接搬进 main.js） =====</span>
+<span class="kw">const</span> MARK_START = <span class="st">'&lt;!-- ppd-note-start --&gt;'</span>;
+<span class="kw">const</span> MARK_END   = <span class="st">'&lt;!-- ppd-note-end --&gt;'</span>;
+<span class="kw">const</span> SEP_RE     = <span class="nm">/\\n[ \\t]*---[ \\t]*\\n/</span>;   <span class="cm">// 方案 A 兼容</span>
+
+<span class="kw">function</span> <span class="fn">composeText</span>(quote, exId, note, scheme){
+  <span class="kw">const</span> body = quote + <span class="st">'\\n^'</span> + exId;
+  <span class="kw">if</span> (!note || !note.trim()) <span class="kw">return</span> body;   <span class="cm">// 无补充描述 → 零改动</span>
+  <span class="kw">if</span> (scheme === <span class="st">'A'</span>) <span class="kw">return</span> body + <span class="st">'\\n\\n---\\n\\n'</span> + note;
+  <span class="kw">if</span> (scheme === <span class="st">'B'</span>) <span class="kw">return</span> body + <span class="st">'\\n'</span> + MARK_START + <span class="st">'\\n'</span> + note + <span class="st">'\\n'</span> + MARK_END;
+  <span class="kw">return</span> body;                                    <span class="cm">// C：不进 text</span>
+}
+
+<span class="kw">function</span> <span class="fn">splitText</span>(text){
+  <span class="kw">const</span> t = <span class="fn">String</span>(text || <span class="st">''</span>);
+  <span class="kw">const</span> s = t.<span class="fn">lastIndexOf</span>(MARK_START);            <span class="cm">// 取最后一对，正文里有标记也不误切</span>
+  <span class="kw">if</span> (s &gt;= 0){
+    <span class="kw">const</span> rest = t.<span class="fn">slice</span>(s + MARK_START.length);
+    <span class="kw">const</span> e = rest.<span class="fn">indexOf</span>(MARK_END);
+    <span class="cm">// 容错：缺闭合标记 → 其后全部视为补充描述</span>
+    <span class="kw">const</span> note = (e &gt;= 0 ? rest.<span class="fn">slice</span>(0, e) : rest).<span class="fn">replace</span>(<span class="nm">/^\\n+|\\n+$/g</span>, <span class="st">''</span>);
+    <span class="kw">return</span> { quote: t.<span class="fn">slice</span>(0, s).<span class="fn">replace</span>(<span class="nm">/\\n+$/</span>, <span class="st">''</span>), note };
+  }
+  <span class="kw">const</span> m = t.<span class="fn">match</span>(SEP_RE);                       <span class="cm">// 退化：方案 A</span>
+  <span class="kw">if</span> (m) <span class="kw">return</span> { quote: t.<span class="fn">slice</span>(0, m.index).<span class="fn">replace</span>(<span class="nm">/\\n+$/</span>, <span class="st">''</span>),
+                   note: t.<span class="fn">slice</span>(m.index + m[0].length).<span class="fn">trim</span>() };
+  <span class="kw">return</span> { quote: t.<span class="fn">replace</span>(<span class="nm">/\\n+$/</span>, <span class="st">''</span>), note: <span class="st">''</span> };   <span class="cm">// 老卡片：note 为空</span>
+}
+
+<span class="cm">// ===== 2. 摘录 md 同步入口：先剥离，再去 ^ex 行（顺序不能反） =====</span>
+<span class="kw">function</span> <span class="fn">toExcerptBody</span>(text){
+  <span class="kw">const</span> { quote } = <span class="fn">splitText</span>(text);          <span class="cm">// 关键：不剥离就会污染摘录文档</span>
+  <span class="kw">return</span> quote.<span class="fn">split</span>(<span class="st">'\\n'</span>)
+              .<span class="fn">filter</span>(l =&gt; !<span class="nm">/^\\s*\\^ex-[0-9a-z]{4,8}\\s*$/</span>.<span class="fn">test</span>(l))
+              .<span class="fn">join</span>(<span class="st">'\\n'</span>).<span class="fn">trim</span>();
+}
+
+<span class="cm">// ===== 3. 高度估算：离屏 span 测宽 → 行数 × 行高 + padding =====</span>
+<span class="kw">function</span> <span class="fn">measureWidth</span>(s, fontPx){
+  <span class="kw">const</span> span = document.<span class="fn">createElement</span>(<span class="st">'span'</span>);
+  span.style.<span class="fn">cssText</span> = <span class="st">'position:fixed;left:-9999px;white-space:pre;visibility:hidden;'</span>
+              + <span class="st">'font-size:'</span> + fontPx + <span class="st">'px'</span>;      <span class="cm">// 字体须与卡片一致</span>
+  span.textContent = s || <span class="st">' '</span>;
+  document.body.<span class="fn">appendChild</span>(span);
+  <span class="kw">const</span> w = span.<span class="fn">getBoundingClientRect</span>().width;
+  span.<span class="fn">remove</span>();
+  <span class="kw">return</span> w;
+}
+<span class="kw">function</span> <span class="fn">countLines</span>(text, fontPx, innerW){
+  <span class="kw">let</span> n = 0;
+  <span class="kw">for</span> (<span class="kw">const</span> l <span class="kw">of</span> <span class="fn">String</span>(text || <span class="st">''</span>).<span class="fn">split</span>(<span class="st">'\\n'</span>))
+    n += Math.<span class="fn">max</span>(1, Math.<span class="fn">ceil</span>(<span class="fn">measureWidth</span>(l, fontPx) / innerW));
+  <span class="kw">return</span> n;
+}
+<span class="kw">function</span> <span class="fn">estimateCardH</span>(card, collapsed){
+  <span class="kw">const</span> innerW = card.w - PAD_X;
+  <span class="kw">let</span> h = PAD_Y + HEAD_H + GAP + QUOTE_PAD
+        + <span class="fn">countLines</span>(card.quote, 13, innerW - 17) * 20.8;
+  <span class="kw">if</span> (!card.note) <span class="kw">return</span> Math.<span class="fn">ceil</span>(h);
+  <span class="kw">if</span> (collapsed) <span class="kw">return</span> Math.<span class="fn">ceil</span>(h + GAP + 26);            <span class="cm">// 折叠 → chip 固定高</span>
+  <span class="kw">return</span> Math.<span class="fn">ceil</span>(h + GAP + 16 + <span class="fn">countLines</span>(card.note, 12, innerW - 16) * 19.8 + 13);
+}
+<span class="cm">// 幂等：抄 fitNode 的 simpleHash —— text 没变就不重算，用户手动调过的高度不被覆盖</span>
+<span class="kw">function</span> <span class="fn">fitNode</span>(node, store){
+  <span class="kw">const</span> hash = <span class="fn">simpleHash</span>(node.text);
+  <span class="kw">const</span> prev = store.<span class="fn">get</span>(node.id);
+  <span class="kw">if</span> (prev &amp;&amp; prev.hash === hash) <span class="kw">return</span> <span class="nm">null</span>;
+  <span class="kw">const</span> size = <span class="fn">estimateCardH</span>(<span class="fn">splitText</span>(node.text), <span class="nm">false</span>);
+  store.<span class="fn">set</span>(node.id, { hash, h: size });
+  <span class="kw">if</span> (prev &amp;&amp; Math.<span class="fn">abs</span>(prev.h - size) &lt; 2) <span class="kw">return</span> <span class="nm">null</span>;
+  <span class="kw">return</span> size;
+}</pre>`;
+
+/* ---------- 启动 ---------- */
+seed();
+render();
+document.getElementById('notes').style.display = 'block';
+log('就绪：点「＋ 添加补充描述」开始写；绿框内直接打字，卡片高度会跟着变。切「存储方案」+ 开「原始存储预览」看三种写法差别。','ok');
+</script>
+</body>
+</html>

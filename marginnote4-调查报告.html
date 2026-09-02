@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MarginNote 4 深度调查 — 可吸取与可改进之处（对照 PDF++ 插件）</title>
+<style>
+  :root{
+    --bg:#14161b; --panel:#1d2027; --panel2:#242832; --line:#333a47;
+    --txt:#d9dee6; --dim:#8b93a1; --accent:#7c6cf0; --accent2:#4da3ff;
+    --green:#3fbf7f; --orange:#e8a34c; --red:#e05c5c; --yellow:#d8c34a;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif; line-height:1.75; padding:0 0 80px;}
+  .wrap{max-width:1060px; margin:0 auto; padding:0 22px;}
+
+  header{border-bottom:1px solid var(--line); background:linear-gradient(180deg,#1a1d24,#14161b); padding:44px 0 30px; margin-bottom:34px;}
+  header h1{font-size:26px; font-weight:700; letter-spacing:.5px;}
+  header .sub{color:var(--dim); font-size:13.5px; margin-top:10px;}
+  header .sub b{color:var(--accent2); font-weight:600;}
+  .chips{display:flex; gap:8px; flex-wrap:wrap; margin-top:16px;}
+  .chip{font-size:11.5px; border:1px solid var(--line); border-radius:12px; padding:2px 12px; color:var(--dim);}
+  .chip.hot{border-color:var(--accent); color:var(--accent);}
+
+  h2{font-size:20px; margin:46px 0 6px; padding-left:12px; border-left:4px solid var(--accent);}
+  h2 .en{font-size:12px; color:var(--dim); font-weight:400; margin-left:10px;}
+  h3{font-size:15.5px; margin:26px 0 8px; color:var(--accent2);}
+  p{margin:10px 0; font-size:14px; color:#c6ccd6;}
+  p b, li b{color:var(--txt);}
+  .lead{font-size:15px; color:var(--txt);}
+
+  .callout{background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px; padding:16px 20px; margin:18px 0; font-size:14px;}
+  .callout.green{border-left-color:var(--green);}
+  .callout.red{border-left-color:var(--red);}
+  .callout.orange{border-left-color:var(--orange);}
+  .callout .ttl{font-weight:700; margin-bottom:6px;}
+
+  /* verdict cards */
+  .verdicts{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; margin:20px 0;}
+  .vcard{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px;}
+  .vcard .num{font-size:11px; color:var(--dim); letter-spacing:1px;}
+  .vcard .t{font-weight:700; font-size:14.5px; margin:4px 0 8px;}
+  .vcard .d{font-size:12.8px; color:#b7bfca;}
+  .vcard.good{border-top:3px solid var(--green);}
+  .vcard.warn{border-top:3px solid var(--red);}
+
+  /* tables */
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13px;}
+  th,td{border:1px solid var(--line); padding:8px 12px; text-align:left; vertical-align:top;}
+  th{background:var(--panel2); color:var(--txt); font-weight:600; white-space:nowrap;}
+  td{color:#c0c7d1;}
+  td .ok{color:var(--green); font-weight:600;}
+  td .no{color:var(--red); font-weight:600;}
+  td .mid{color:var(--orange); font-weight:600;}
+  tr:nth-child(even) td{background:#191c22;}
+
+  /* feature map */
+  .fmap{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; margin:18px 0;}
+  .fcol{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden;}
+  .fcol .fh{padding:9px 14px; font-size:13px; font-weight:700; background:var(--panel2); border-bottom:1px solid var(--line);}
+  .fcol .fh .tag{float:right; font-size:10px; font-weight:400; color:var(--dim);}
+  .fcol ul{list-style:none; padding:8px 14px 12px;}
+  .fcol li{font-size:12.6px; color:#b7bfca; padding:3.5px 0; border-bottom:1px dashed #2a2f3a;}
+  .fcol li:last-child{border-bottom:none;}
+  .fcol li .new{color:var(--orange); font-size:10px; border:1px solid var(--orange); border-radius:6px; padding:0 5px; margin-left:4px;}
+
+  /* steal items */
+  .steal{background:var(--panel); border:1px solid var(--line); border-radius:12px; margin:14px 0; overflow:hidden;}
+  .steal .sh{display:flex; align-items:center; gap:10px; padding:11px 18px; background:var(--panel2); border-bottom:1px solid var(--line);}
+  .steal .sh .idx{width:26px; height:26px; border-radius:50%; background:var(--accent); color:#fff; font-size:13px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;}
+  .steal .sh .t{font-weight:700; font-size:14.5px; flex:1;}
+  .steal .sh .badge{font-size:10.5px; border-radius:10px; padding:1px 10px; white-space:nowrap;}
+  .badge.have{border:1px solid var(--green); color:var(--green);}
+  .badge.todo{border:1px solid var(--orange); color:var(--orange);}
+  .badge.idea{border:1px solid var(--accent2); color:var(--accent2);}
+  .steal .sb{padding:12px 18px 14px; font-size:13.2px; color:#bfc6d0;}
+  .steal .sb .row{display:grid; grid-template-columns:96px 1fr; gap:10px; margin:7px 0;}
+  .steal .sb .row .k{color:var(--dim); font-size:12px; padding-top:1px; white-space:nowrap;}
+  .steal .sb code{background:#15181e; color:var(--accent2); padding:1px 6px; border-radius:4px; font-size:12px;}
+
+  /* pitfall items */
+  .pit{display:grid; grid-template-columns:200px 1fr; gap:0; background:var(--panel); border:1px solid var(--line); border-radius:10px; margin:10px 0; overflow:hidden;}
+  .pit .pk{padding:13px 16px; background:var(--panel2); border-right:1px solid var(--line); font-weight:700; font-size:13.5px;}
+  .pit .pk .sev{display:block; font-size:10.5px; font-weight:400; margin-top:4px;}
+  .sev.high{color:var(--red);} .sev.mid{color:var(--orange);} .sev.low{color:var(--yellow);}
+  .pit .pv{padding:13px 16px; font-size:13px; color:#bfc6d0;}
+  .pit .pv .ev{display:block; margin-top:6px; font-size:11.8px; color:var(--dim); border-top:1px dashed #2a2f3a; padding-top:6px;}
+
+  /* priority list */
+  .pri{counter-reset:p; margin:16px 0;}
+  .pri .pitem{display:flex; gap:14px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 18px; margin:9px 0; align-items:flex-start;}
+  .pri .tag{font-size:11px; font-weight:700; border-radius:8px; padding:2px 11px; flex-shrink:0; margin-top:2px;}
+  .pri .p0 .tag{background:#e05c5c22; color:var(--red); border:1px solid var(--red);}
+  .pri .p1 .tag{background:#e8a34c22; color:var(--orange); border:1px solid var(--orange);}
+  .pri .p2 .tag{background:#4da3ff22; color:var(--accent2); border:1px solid var(--accent2);}
+  .pri .body{flex:1;}
+  .pri .body .t{font-weight:700; font-size:14px;}
+  .pri .body .d{font-size:12.8px; color:#b0b8c4; margin-top:3px;}
+
+  ul.plain{margin:8px 0 8px 20px;}
+  ul.plain li{font-size:13.5px; color:#c0c7d1; margin:5px 0;}
+
+  .srcs{font-size:12px; color:var(--dim); margin-top:8px;}
+  .srcs li{margin:3px 0;}
+  .foot{margin-top:44px; padding-top:18px; border-top:1px solid var(--line); font-size:12px; color:var(--dim);}
+
+  .svgbox{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; margin:16px 0; text-align:center;}
+  .svgbox .cap{font-size:11.5px; color:var(--dim); margin-top:6px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>MarginNote 4 深度调查报告</h1>
+    <div class="sub">结论先行 · 面向 <b>Obsidian PDF++ 拖拽摘录插件（pdf-plus-drag-plugin）</b> · 调查时间 2026-09-01</div>
+    <div class="chips">
+      <span class="chip hot">MN 4.4（4.0→4.4：AI@4.2 · 备份@4.3 · 沉浸模式@4.4）</span>
+      <span class="chip">iPad + Mac，无 Windows 版</span>
+      <span class="chip">App Store 4.5★（665+ 评）</span>
+      <span class="chip">2013 年至今 13 年迭代</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- ================= TL;DR ================= -->
+<h2>① 一句话结论</h2>
+<div class="callout">
+  <b>MN4 的灵魂不是任何一个具体功能，而是一条架构决策：「卡片轴心」——一段摘录只有一个数据本体（带稳定 ID），文档高亮、脑图节点、闪卡都只是这同一个对象的三种渲染。</b>
+  你的插件已经用 <code style="color:var(--accent2)">^ex-xxxx</code> 块 ID + canvas→md 单向同步走到了这条路上的一半；剩下真正值得抄的是 <b>标题链接（旧知识自动浮现）</b>、<b>摘录自动归位到目录上下文</b>、和 <b>Recall 式主动回忆视图</b>。而 MN4 最该绕开的坑恰恰是它的三大重灾区：<b>iCloud 同步、大体量性能、私有格式锁定</b>——这三样 Obsidian 的 markdown-native 架构天然免疫，是你最大的后发优势。
+</div>
+
+<div class="verdicts">
+  <div class="vcard good"><div class="num">最值得吸取</div><div class="t">卡片轴心 + 稳定 ID</div><div class="d">一次摘录三处生效（高亮/节点/闪卡），全靠一个 ID 串起来。你已有雏形（^ex- 块 ID），方向正确。</div></div>
+  <div class="vcard good"><div class="num">最值得吸取</div><div class="t">旧知识自动浮现</div><div class="d">新文档里读到旧概念，过去的卡片自动点亮——不搜索、不手动链接。这是 MN4 官网四大卖点之二。</div></div>
+  <div class="vcard warn"><div class="num">最该绕开的坑</div><div class="t">同步是老大难</div><div class="d">2026 年 2 月论坛还有人发帖「syncing is still terrible」。手写多的学习集一次同步 4 小时。</div></div>
+  <div class="vcard warn"><div class="num">最该绕开的坑</div><div class="t">私有格式锁定</div><div class="d">笔记数据存在 app 本地私有库，不落在 iCloud 文件夹。官方 FAQ 自己都承认「native format is our own」。</div></div>
+</div>
+
+<!-- ================= 全景 ================= -->
+<h2>② MN4 功能全景<span class="en">What it actually does</span></h2>
+<p>MN4 定位是「深度阅读工具」：阅读 → 摘录 → 组织 → 复忆一条龙。官方把它拆成四大模块，外加 2026 年新官网主推的六个场景剧本（PhD 文献综述 / USMLE / 法学院 / 语言学习 / Zettelkasten 等）。按你的插件视角，真正相关的功能分布如下：</p>
+
+<div class="fmap">
+  <div class="fcol">
+    <div class="fh">📖 阅读与摘录</div>
+    <ul>
+      <li>PDF / EPUB / 网页 / 视频音频，统一进「学习集」</li>
+      <li>极速 OCR：公式、表格、手写识别</li>
+      <li>留白 Extended Note <span class="new">4.0+</span>：长按任意位置长出写作空间（嵌入/页边/折叠三态）</li>
+      <li>书籍重编：折叠章节、跨书拼接页面</li>
+      <li>双文对照：两文档同步滚动</li>
+      <li>手写图层：墨迹随开随关，一本书多轮精读</li>
+    </ul>
+  </div>
+  <div class="fcol">
+    <div class="fh">🗺 组织与连接</div>
+    <ul>
+      <li>卡片轴心：摘录 = 高亮 = 脑图节点 = 闪卡</li>
+      <li>10 种脑图样式（树/鱼骨/时间线/概念图/矩阵…）</li>
+      <li>大纲视图：同一数据换一种渲染</li>
+      <li>标题链接 Title Link <span class="new">4.0</span>：旧笔记在新文档自动浮现</li>
+      <li>条件脑图：按颜色/标签等 10 种属性自动生成结构</li>
+      <li>多层脑图图层 + 回链（页码/脑图位置/手写时间戳）</li>
+    </ul>
+  </div>
+  <div class="fcol">
+    <div class="fh">🔁 复习与记忆</div>
+    <ul>
+      <li>FSRS 间隔重复（open-spaced-repetition 开源算法，Anki 23.10+ 同款默认）</li>
+      <li>沉浸模式 <span class="new">4.4</span>：读/写/忆三态；Recall 态摘录高斯模糊，主动回忆才点开</li>
+      <li>文档回忆：隐藏高亮和墨迹，重读变重记</li>
+      <li>卡片盒看板：按颜色/标签多级分组的 Zettelkasten 式卡片墙</li>
+      <li>Apple Intelligence 端侧提示（iOS 26+，断网自动兜底）</li>
+    </ul>
+  </div>
+  <div class="fcol">
+    <div class="fh">🤖 AI 与分享</div>
+    <ul>
+      <li>AI 拆书 / 翻译 / 问答 / 卡片生成 <span class="new">4.2</span>，官方立场「可接受可拒绝，AI 起草你决定」</li>
+      <li>AI OCR 模板、公式/图表一键提取为卡片</li>
+      <li>Markdown / OPML / Anki 导出（原生格式仍是私有的）</li>
+      <li>iCloud 同步（唯一选项）+ WebDAV/百度网盘/Google Drive 备份 <span class="new">4.3</span></li>
+      <li>URL Scheme 深链跳转 + 端到端加密学习集分享</li>
+    </ul>
+  </div>
+</div>
+
+<h3>核心架构：卡片轴心（Card Axis）</h3>
+<p>这是整份报告最重要的一张图。MN4 的最小数据单位不是「PDF 高亮 + 笔记 + Anki 卡」三样东西，而是<b>一张卡片</b>：</p>
+
+<div class="svgbox">
+<svg width="660" height="270" viewBox="0 0 660 270">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c6cf0"/><stop offset="1" stop-color="#4da3ff"/>
+    </linearGradient>
+  </defs>
+  <!-- center card -->
+  <rect x="255" y="90" width="150" height="90" rx="12" fill="url(#g1)" opacity="0.92"/>
+  <text x="330" y="122" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">一张卡片</text>
+  <text x="330" y="142" text-anchor="middle" fill="#ffffffcc" font-size="10.5">唯一数据本体 · 稳定 ID</text>
+  <text x="330" y="158" text-anchor="middle" fill="#ffffffaa" font-size="9.5">（原文位置 + 内容 + 颜色/标签）</text>
+  <!-- three renders -->
+  <rect x="30" y="20" width="160" height="58" rx="10" fill="#242832" stroke="#3fbf7f"/>
+  <text x="110" y="44" text-anchor="middle" fill="#d9dee6" font-size="12.5" font-weight="bold">📄 文档高亮</text>
+  <text x="110" y="62" text-anchor="middle" fill="#8b93a1" font-size="10">PDF 原文选区 + 反向引用</text>
+  <rect x="30" y="192" width="160" height="58" rx="10" fill="#242832" stroke="#4da3ff"/>
+  <text x="110" y="216" text-anchor="middle" fill="#d9dee6" font-size="12.5" font-weight="bold">🖼 脑图节点</text>
+  <text x="110" y="234" text-anchor="middle" fill="#8b93a1" font-size="10">无限画布 / 大纲 / 卡片墙</text>
+  <rect x="470" y="105" width="160" height="58" rx="10" fill="#242832" stroke="#e8a34c"/>
+  <text x="550" y="129" text-anchor="middle" fill="#d9dee6" font-size="12.5" font-weight="bold">🎴 闪卡</text>
+  <text x="550" y="147" text-anchor="middle" fill="#8b93a1" font-size="10">FSRS 调度 · 原位编辑正反面</text>
+  <!-- connectors -->
+  <path d="M 190 60 C 230 70, 240 85, 258 100" fill="none" stroke="#3fbf7f" stroke-width="1.6" opacity=".7"/>
+  <path d="M 190 215 C 230 205, 240 190, 258 172" fill="none" stroke="#4da3ff" stroke-width="1.6" opacity=".7"/>
+  <path d="M 405 135 L 470 135" fill="none" stroke="#e8a34c" stroke-width="1.6" opacity=".7"/>
+  <text x="330" y="215" text-anchor="middle" fill="#8b93a1" font-size="11">一次摘录，三处生效 —— 改一处，三处同步</text>
+  <text x="330" y="238" text-anchor="middle" fill="#5a6270" font-size="10">你的插件：canvas 卡片 = 节点渲染 · 摘录 md 引用块 = 高亮镜像 · 闪卡 = 未做</text>
+</svg>
+<div class="cap">MN4 的「卡片轴心」：不是三个功能共享数据，而是同一数据的三个视图。你的 <code>^ex-xxxx</code> 块 ID 正是这个 ID 位。</div>
+</div>
+
+<!-- ================= 值得吸取 ================= -->
+<h2>③ 值得吸取的 8 个设计<span class="en">Steal these</span></h2>
+<p>每一条都标注了「对照你的插件」现状：<span class="badge have" style="font-size:10.5px">已有</span> = 已落地或方向一致；<span class="badge todo" style="font-size:10.5px">可落地</span> = 技术上在你的插件里能直接做；<span class="badge idea" style="font-size:10.5px">远期</span> = 值得记下但不急。</p>
+
+<div class="steal">
+  <div class="sh"><div class="idx">1</div><div class="t">卡片轴心 + 稳定块 ID</div><span class="badge have">已有雏形</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>摘录只有一个本体，高亮/节点/闪卡是三种渲染。删除、编辑、链接都作用在本体上。</div></div>
+    <div class="row"><div class="k">你的现状</div><div><code>^ex-xxxx</code> 已经是卡片本体 ID，canvas 是主本、摘录 md 是同步镜像——与 MN4 同构，且你选的单向同步比 MN 更干净（MN 自己都没做完双向）。</div></div>
+    <div class="row"><div class="k">补强建议</div><div>把 <code>exId</code> 的生成从 <code>Math.random()</code> 换成内容哈希（对选区文本+页码+偏移取短哈希），同一选区重复摘录时能识别为「已有卡片」而不是再造一张——这是卡片轴心发挥威力的前提。</div></div>
+  </div>
+</div>
+
+<div class="steal">
+  <div class="sh"><div class="idx">2</div><div class="t">标题链接：旧知识自动浮现</div><span class="badge todo">可落地</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>卡片标题成为关键词；读新文档时，命中旧卡片的词自动在页面上点亮——「不点击、不搜索、不手动建链」。</div></div>
+    <div class="row"><div class="k">落地建议</div><div>Obsidian 有全库搜索 API，这是 MN 做不到的（它只有自己库内数据）。在你创建摘录卡时，顺手用选区文本做一次 vault 检索，卡片底部加一行 <code>🔗 库内已有 3 条相关笔记</code>，点击展开链接列表。零 AI 依赖、纯本地、成本极低。</div></div>
+  </div>
+</div>
+
+<div class="steal">
+  <div class="sh"><div class="idx">3</div><div class="t">摘录精确归位到目录上下文</div><span class="badge todo">可落地</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>MN3→MN4 最大的口碑提升点之一：摘录能精确插入到正确的目录节点下（MN3 时代两个节点挨得近就会归错，用户天天手动拖回）。官方论坛老用户明确说「这次升级值回票价」主要就指这个。</div></div>
+    <div class="row"><div class="k">教训</div><div><b>摘录默认落在哪，是这类产品的第一 UX 决策</b>，比任何炫功能都重要。</div></div>
+    <div class="row"><div class="k">落地建议</div><div>摘录 md 的同步条目里，把 PDF 当前页对应的<b>目录/章节路径</b>（PDF++ 能拿到 outline）写成条目头，如 <code>## 3.2 注意力机制的瓶颈</code>，让摘录文档天然按文档结构聚簇，而不是时间序平铺。</div></div>
+  </div>
+</div>
+
+<div class="steal">
+  <div class="sh"><div class="idx">4</div><div class="t">沉浸 Recall：高斯模糊 → 主动回忆</div><span class="badge idea">远期</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>4.4 的招牌：UI 全部折走，只留一个胶囊；Recall 态下摘录自动高斯模糊，用户主动回忆后才点击揭示。把「复习」嵌进了阅读界面本身，而不是跳去另一个 app。</div></div>
+    <div class="row"><div class="k">落地建议</div><div>CSS <code>filter: blur()</code> 就能做：给摘录卡片加「回忆模式」开关，正文模糊、来源链接保持可见，点击揭示并记录「想起来了吗」。不用做完整 FSRS 调度（那是 obsidian-spaced-repetition 的地盘），做成「把今天的 canvas 卡片模糊重过一遍」就够独特。</div></div>
+  </div>
+</div>
+
+<div class="steal">
+  <div class="sh"><div class="idx">5</div><div class="t">一份数据，多种视图</div><span class="badge idea">远期</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>同一批卡片可渲染成脑图、大纲、卡片墙（按颜色/标签分组的看板）。用户不需要「导出到大纲工具」，切个视图就行。</div></div>
+    <div class="row"><div class="k">落地建议</div><div>你的摘录 md 本来就是结构化文本——加一个「大纲视图」命令，把摘录文档按章节/颜色渲染成 Obsidian outline 即可，成本几乎为零。卡片墙可借助 Dataview 查询文档，不必自己做 UI。</div></div>
+  </div>
+</div>
+
+<div class="steal">
+  <div class="sh"><div class="idx">6</div><div class="t">颜色即语义（知识编码）</div><span class="badge todo">可落地</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>官方把自定义工具栏描述为「让批注成为知识编码过程」：颜色、标签、cloze 各代表一类概念；条件脑图、卡片墙分组都建立在这套语义色之上。CSDN 上的科研工作流文也在用同一套（黄=核心观点/绿=方法/蓝=存疑…）。</div></div>
+    <div class="row"><div class="k">落地建议</div><div>摘录卡片把 PDF++ 的高亮颜色带进 md（frontmatter 或 callout 颜色），并允许用户在设置里自定义「颜色 → 含义」映射表。这样摘录文档可以直接被 Dataview 按「所有蓝色=存疑处」查询。</div></div>
+  </div>
+</div>
+
+<div class="steal">
+  <div class="sh"><div class="idx">7</div><div class="t">AI 只做起草，用户拍板</div><span class="badge idea">远期</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>「AI 作为助手而不是替代——每个建议都可以接受、编辑或拒绝后再进入知识图谱」。Apple Intelligence 模式下甚至全端侧生成、笔记不出设备。</div></div>
+    <div class="row"><div class="k">落地建议</div><div>你的定位应该更克制：pdf++ 插件的一切 AI 能力（比如「为摘录生成一句话标题」「相关笔记聚类」）都走「建议暂存区」，用户点了才写入 md。这与 MN 的立场一致，也符合 Obsidian 社区对隐私的偏好。</div></div>
+  </div>
+</div>
+
+<div class="steal">
+  <div class="sh"><div class="idx">8</div><div class="t">深链回跳要带全上下文</div><span class="badge have">已有</span></div>
+  <div class="sb">
+    <div class="row"><div class="k">MN4 做法</div><div>反向链接不只记页码，还记脑图位置和手写时间戳；URL Scheme 能跳回「当时的那一刻」。</div></div>
+    <div class="row"><div class="k">你的现状</div><div><code>【文件-P.12】</code> 深链 + 页内高亮定位已经覆盖了核心场景；📌 反向引用弹层也做了。</div></div>
+    <div class="row"><div class="k">补强建议</div><div>摘录 md 条目的 frontmatter 里补记 <code>created</code> 时间戳和颜色/标签——为未来的时间轴视图和 FSRS 打底，成本一行。</div></div>
+  </div>
+</div>
+
+<!-- ================= 短板 ================= -->
+<h2>④ MN4 的短板与教训<span class="en">What to avoid</span></h2>
+<p>以下每条都有真实用户证据（官方论坛 / App Store 评论 / 中文社区），不是猜测：</p>
+
+<div class="pit">
+  <div class="pk"> iCloud 同步不可靠<span class="sev high">严重 · 最大槽点</span></div>
+  <div class="pv">多设备同步慢、卡住、需反复手动触发；手写内容多的学习集一次上传可达 4 小时；2026 年 2 月论坛仍有「Syncing is still terrible between Mac and iPad」的帖子，且有老用户因此转投 LiquidText。iCloud 还是唯一云选项。
+    <span class="ev">证据：forum.marginnote.com/t/10373（2025-07 至 2026-02 持续更新）；bbs.marginnote.com.cn/t/topic/57092「同步还是老大难，有时候需要手动同步很多次才能同步上」</span></div>
+</div>
+<div class="pit">
+  <div class="pk">大体量学习集性能崩<span class="sev high">严重</span></div>
+  <div class="pv">大教材 + 图片多的学习集在 M1 8GB MacBook Air 上「太慢、 glitchy、丢过工作」；2019 年 Intel Mac 用户称「卡的不行」。数据全部存在 app 私有库里，量大之后没有逃生通道。
+    <span class="ev">证据：App Store 评论 ahclevername（2025-02，★☆☆☆☆ 级吐槽）；bbs 57092 评论区 Intel Mac 反馈</span></div>
+</div>
+<div class="pit">
+  <div class="pk">私有格式锁定<span class="sev mid">中等 · 长期风险</span></div>
+  <div class="pv">iCloud 文件夹只存 PDF 原始文件，笔记数据不存在里面（官方客服原话确认）；官方 FAQ 承认「our native format is our own」，导出只是桥梁。有用户因此立誓「永远不再依赖单一私有批注格式」。
+    <span class="ev">证据：bbs.marginnote.com.cn/t/topic/51521 客服问答；官方 scenarios/reading.html 对比表自述</span></div>
+</div>
+<div class="pit">
+  <div class="pk">功能堆砌 + 学习曲线陡<span class="sev mid">中等</span></div>
+  <div class="pv">老用户评价 MN4「更多的是功能的堆砌」；工具栏的翻译/朗读/研究等按钮无法关闭；4K 显示器下布局失控；学习集只能平铺不能建文件夹；版本号碎片化（「连重度老用户都看得云里雾里」）。App Store 高赞评论也承认「learning curve, but the best once you get the hang of it」。
+    <span class="ev">证据：bbs 51521 / 57092；App Store 评论（4.2.3）</span></div>
+</div>
+<div class="pit">
+  <div class="pk">基础 PDF 操作反而缺失<span class="sev low">轻度 · 但扎心</span></div>
+  <div class="pv">用户列的恶心清单：不能整页复制/粘贴/移动/删除、导出 PDF 不能选页、没有直线工具、从电脑导入 PDF 步骤繁琐、EPUB 支持弱、Anki 导出是未渲染的 markdown。功能大而全，基本功反而漏风。
+    <span class="ev">证据：spark.mwm.ai 收录的 App Store 中文差评（4.2.3）；bbs 57092</span></div>
+</div>
+
+<div class="callout orange">
+  <div class="ttl">给你的三条「反面教训」转译</div>
+  ① <b>单向同步不是妥协，是护城河</b>——MN 一直没修好双向同步的冲突问题，你 v1 的 canvas→md 单向主本是对的，别急着做反向。② <b>性能上限在设计期就定了</b>——MN 的慢源于私有库 + 全量渲染；你的插件要坚持：markdown 文本文件为主体、canvas 监听做 debounce、大画布卡片懒渲染。③ <b>克制是功能</b>——MN 被「堆砌」反噬；插件的每一个新按钮都要问一句「能不能不做」。
+</div>
+
+<!-- ================= 对比 ================= -->
+<h2>⑤ 定位对比：MN4 vs 你的 PDF++ 插件<span class="en">Positioning</span></h2>
+<p>MN4 是完整 app（¥328 Max 买断档），你做的是 Obsidian 生态里的摘录-组织插件。两者不正面竞争，但各自的架构基因决定了天花板：</p>
+
+<table>
+  <tr><th style="width:22%">维度</th><th>MarginNote 4</th><th>你的 pdf++ 插件（Obsidian）</th></tr>
+  <tr><td><b>数据本体</b></td><td><span class="mid">私有格式</span>（app 本地库，导出是桥梁）</td><td><span class="ok">Markdown + canvas + ^block-id</span>，纯文本、git 可版本化、永远可读</td></tr>
+  <tr><td><b>同步</b></td><td><span class="no">iCloud 单选，多设备老大难</span></td><td><span class="ok">无自有同步层</span>——Obsidian Sync / git / 网盘任选，冲突交给 md 合并</td></tr>
+  <tr><td><b>知识组织</b></td><td><span class="ok">脑图 10 样式 + 大纲 + 卡片墙，一体感最强</span></td><td><span class="mid">canvas 画布 + 全库双链</span>——组织自由度更高（全库范围），但脑图自动布局需自己做</td></tr>
+  <tr><td><b>旧知识浮现</b></td><td><span class="ok">标题链接，库内自动点亮</span></td><td><span class="mid">未做</span>——但 vault 检索 API 能做到跨全库，理论上限更高</td></tr>
+  <tr><td><b>复习记忆</b></td><td><span class="ok">FSRS 内置 + 沉浸 Recall 模糊回忆</span></td><td><span class="no">未做</span>——可借 Recall 视图切入，FSRS 交给 obsidian-spaced-repetition 生态</td></tr>
+  <tr><td><b>OCR / 手写 / PDF 细节</b></td><td><span class="ok">强</span>（公式表格 OCR、手写图层、书籍重编）</td><td><span class="no">不碰</span>——OCR 可后续接外部方案，别自研</td></tr>
+  <tr><td><b>平台</b></td><td>仅 iPad + Mac（无 Windows！）</td><td><span class="ok">Obsidian 全平台</span>（含 Windows / Linux / 移动端）</td></tr>
+  <tr><td><b>成本</b></td><td>Max 买断 ¥328 档</td><td><span class="ok">免费</span>，依赖 Obsidian + PDF++ 本体</td></tr>
+</table>
+
+<!-- ================= 行动清单 ================= -->
+<h2>⑥ 对插件的行动清单<span class="en">Next steps</span></h2>
+<div class="pri">
+  <div class="pitem p0"><span class="tag">P0</span>
+    <div class="body"><div class="t">exId 换成内容寻址（选区文本+页码+偏移 的短哈希）</div>
+    <div class="d">同一选区重复拖拽能识别为已有卡片而非重复创建。这是「卡片轴心」从雏形变成真架构的分水岭，也是后续一切（去重、旧知识浮现、引用计数）的地基。改动极小：只动 <code>exId</code> 生成一处。</div></div>
+  </div>
+  <div class="pitem p0"><span class="tag">P0</span>
+    <div class="body"><div class="t">canvas modify 监听加 debounce + 摘录 md 原子写</div>
+    <div class="d">MN 的性能惨案证明「每次编辑全量重写」扛不住量。连续编辑卡片时应合并为一次写盘（建议 800ms debounce），写 md 时先写临时内容再替换，避免大库下的抖动。</div></div>
+  </div>
+  <div class="pitem p1"><span class="tag">P1</span>
+    <div class="body"><div class="t">摘录文档按目录结构归位（学 MN4 最受好评的改进）</div>
+    <div class="d">从 PDF++ 拿当前页的 outline 路径，写入摘录条目头，让摘录 md 长成「按章节聚簇」的结构而不是时间流水。同时回填 frontmatter：created 时间戳、高亮颜色、标签。</div></div>
+  </div>
+  <div class="pitem p1"><span class="tag">P1</span>
+    <div class="body"><div class="t">创建卡片时顺带做一次全库相关笔记检索（标题链接平替）</div>
+    <div class="d">用选区前若干关键词查 vault，卡片上显示「库内已有 N 条相关」+ 链接。零 AI、纯本地、几十行代码，是 MN4 标题链接在 Obsidian 里的超集版。</div></div>
+  </div>
+  <div class="pitem p1"><span class="tag">P1</span>
+    <div class="body"><div class="t">颜色语义映射表（设置项）</div>
+    <div class="d">用户自定义「高亮颜色 → 含义」（如 黄=核心观点 / 蓝=存疑），映射写入摘录 frontmatter，Dataview 即可按语义查询。MN 验证过这是高频刚需。</div></div>
+  </div>
+  <div class="pitem p2"><span class="tag">P2</span>
+    <div class="body"><div class="t">Recall 回忆视图：canvas 卡片高斯模糊重过</div>
+    <div class="d">CSS blur + 点击揭示 + 简单记住「想起来了/没想起」。不做完整 FSRS 调度，避免与 obsidian-spaced-repetition 重复造轮子。</div></div>
+  </div>
+  <div class="pitem p2"><span class="tag">P2</span>
+    <div class="body"><div class="t">摘录 md 大纲视图（命令面板一键渲染）</div>
+    <div class="d">MN「同一数据多种视图」的低成本版本：把摘录文档按章节渲染成层级大纲。卡片墙交给 Dataview。</div></div>
+  </div>
+</div>
+
+<div class="callout green">
+  <div class="ttl">明确不建议做的（MN 教训反推）</div>
+  ① 双向同步（md→canvas 回写）——MN 多年未解决，v1 单向即可；② 自研 OCR/手写——MN 的强项但与你的定位无关；③ 内置完整 FSRS 调度器——生态里已有成熟插件，做导出对接即可；④ 任何「存到插件私有存储」的数据——凡是卡片本体信息必须落在 md/canvas 明文里，这是你对 MN 最大的架构优势，别亲手丢掉。
+</div>
+
+<!-- ================= 来源 ================= -->
+<h2>⑦ 信息来源与诚实边界</h2>
+<ul class="srcs">
+  <li>MN 官网及 Features 页（marginnote.com / marginnote.com.cn，2026 版，含 4.0→4.4 时间线、卡片轴心、四大主打机制自述）</li>
+  <li>App Store 商店页（功能清单、订阅档位、版本历史）与第三方统计（apprank.io：月流水 ~$40K、4.5★/696 评）</li>
+  <li>MN 官方论坛 forum.marginnote.com / 中文社区 bbs.marginnote.com.cn：同步问题帖（t/10373，2025-07→2026-02）、用户月度体验帖（t/57092）、体验吐槽帖（t/51521）</li>
+  <li>App Store 用户评论（apprank.io / spark.mwm.ai 转载，含 2024-2025 中英文差评原文）</li>
+  <li>竞品对照：官方 scenarios 页自比表格（注意：官方自述对比表有立场倾向，已交叉核对）</li>
+</ul>
+<div class="callout" style="border-left-color:var(--yellow)">
+  <b>诚实边界声明：</b>① MN4 具体交互细节（如 Recall 模糊的确切触发方式、条件脑图的属性上限）基于官方文档与用户转述，未上手实测，个别参数可能有出入；② 用户差评存在幸存者偏差——满意的长尾用户更少发帖，MN4 的 4.5★ 整体口碑仍然是同品类第一梯队；③ 官网「FSRS 比传统 Anki 调度省 30% 时间」等宣传数字来自官方引用，未独立验证；④ 你的插件落地建议基于对 demo HTML 与 main.js 的静态阅读，未运行验证，动手前请按你的工作铁律先确认设计。
+</div>
+
+<div class="foot">报告生成于 2026-09-01 · 面向 pdf-plus-drag-plugin 项目 · 证据均可溯源至上述链接</div>
+</div>
+</body>
+</html>
