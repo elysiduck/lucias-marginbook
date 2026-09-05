@@ -94,11 +94,25 @@ function lmbAutoEdgeAlive(edge, byId) {
 }
 /**
  * v0.7.3：找出某张子卡当前的自动父边（用于「换父」时先摘掉旧的，避免同一张卡挂两条自动父子线）。
+ *   v0.11.1 兜底：当 sidecar 缺记录时（典型场景：instantAttach 早期 path2 还没拿到，
+ *   sidecar 漏登记；或在持久化档加载失败时），从 edges 里按 id 命名规范「e<base36>」
+ *   直接兜底识别 —— 这是一贯的自动边命名规则，绝不与 Obsidian 自动边或用户手动边
+ *   冲突（Obsidian 自动边通常是 16/32 位 hex，按 /e[0-9a-f]{8,}/ 排除）。
+ *   返回 null = 都不是（手动边或孤儿边）。
+ *   返回 { edge, reversed }：reversed=true 表示边方向是 child→parent（少见，但写法上要兜底）；
+ *   .fromNode/.fromSide 取自 edge.reversed ? toNode 与 toSide : fromNode 与 fromSide。
  */
 function lmbAutoParentEdgeOf(childId, edges, sidecar) {
   for (const ed of edges || []) {
-    if (!sidecar || !sidecar.has(ed.id)) continue;
-    if (ed.toNode === childId) return ed;
+    if (!ed || !ed.fromNode || !ed.toNode) continue;
+    if (ed.toNode !== childId && ed.fromNode !== childId) continue;
+    const reversed = ed.fromNode === childId;
+    if (sidecar && sidecar.has(ed.id)) return { edge: ed, reversed };
+    // v0.11.1 兜底：sidecar 没记录但 id 形如本插件自动边命名也认
+    if (typeof ed.id === "string" && /^e[0-9a-z]+$/.test(ed.id)
+        && !/^e[0-9a-f]{8,}$/i.test(ed.id)) {
+      return { edge: ed, reversed };
+    }
   }
   return null;
 }
@@ -119,6 +133,18 @@ function lmbSideEnds(side) {
   if (side === "left") return { fromSide: "left", toSide: "right" };
   if (side === "top") return { fromSide: "top", toSide: "bottom" };
   return { fromSide: "bottom", toSide: "top" }; // bottom
+}
+/**
+ * v0.11.1：side 取反。edge.fromSide 是「from 节点」视角的连出方向，
+ *   当 from 是子不是父时（reversed 边方向），需要翻一次得到父视角。
+ *   未知 side 原样返回（防御：旧数据可能缺字段）。
+ */
+function lmbSideFlip(side) {
+  if (side === "top") return "bottom";
+  if (side === "bottom") return "top";
+  if (side === "left") return "right";
+  if (side === "right") return "left";
+  return side;
 }
 /**
  * v0.6.0：从 edges 中导出指定父卡的所有子卡，按它们相对父卡的位置分组（right/left/top/bottom）。
@@ -190,27 +216,46 @@ function lmbLayoutGroup(parent, kids, side, gap = 30) {
  *   不再换父、不再自动新建（换父已移除；想换父请手动删线后重拖，手动边不参与锁定）。
  *   R4 改挂侧：nn 与 parent 之间已有边（自动或手动）→ reside：按落点方位改边端点 + 两侧组重排。
  *   create：nn 还没有任何自动边 → 首次自动建线（此后即锁定）。
+ *   v0.11.1 新增 recenter：sizeOnly=true（由调用方标识「只是尺寸变化、位置没动」）
+ *   → 保留原侧不翻转，专门修复 fitNode 把卡撑大后 lmbSideOf CURRENT 算出相反侧、
+ *   导致 lmbApplyReside 把「下」翻成「右」的对齐 bug。
  * 返回：
- *   { op: "skip" }                             — 不动作
- *   { op: "reside", edge, oldSide, newSide }   — 已有连线，改挂侧
- *   { op: "create", side }                     — 首次自动建线
+ *   { op: "skip" }                                — 不动作
+ *   { op: "reside", edge, oldSide, newSide }      — 已有连线，按当前落点改挂侧
+ *   { op: "recenter", edge, side }                — 尺寸变化，保留原侧重新居中（v0.11.1）
+ *   { op: "create", side }                        — 首次自动建线
  */
-function lmbPlanAutoLink(nn, parent, edges, sidecar) {
+function lmbPlanAutoLink(nn, parent, edges, sidecar, opts) {
   if (!nn || !parent || nn.id === parent.id) return { op: "skip" };
   const eds = Array.isArray(edges) ? edges : [];
   const auto = lmbAutoParentEdgeOf(nn.id, eds, sidecar);
-  if (auto && auto.fromNode !== parent.id) return { op: "skip" }; // R3：首连锁定
+  if (auto) {
+    // R3：首连锁定——已有自动父边且父不是本次压中的卡 → skip
+    // 「父」就是「非 nn 那端」：reversed 时 nn=fromNode 父=toNode，否则父=fromNode
+    const parentEnd = auto.reversed ? auto.edge.toNode : auto.edge.fromNode;
+    if (parentEnd !== parent.id) return { op: "skip" };
+  }
   let linkEdge = null;
+  let linkEdgeReversed = false;
   for (const ed of eds) {
     if (!ed || !ed.fromNode || !ed.toNode) continue;
-    if ((ed.fromNode === parent.id && ed.toNode === nn.id) ||
-        (ed.fromNode === nn.id && ed.toNode === parent.id)) { linkEdge = ed; break; }
+    if (ed.fromNode === parent.id && ed.toNode === nn.id) { linkEdge = ed; linkEdgeReversed = false; break; }
+    if (ed.fromNode === nn.id && ed.toNode === parent.id) { linkEdge = ed; linkEdgeReversed = true; break; }
   }
   if (linkEdge) {
-    const oldSide = (linkEdge.fromNode === parent.id) ? linkEdge.fromSide : linkEdge.toSide;
+    const parentFacingSide = linkEdgeReversed
+      ? lmbSideFlip(linkEdge.toSide)
+      : linkEdge.fromSide;
+    const oldSide = parentFacingSide || (linkEdgeReversed ? linkEdge.toSide : linkEdge.fromSide);
+
+    const sizeOnly = !!(opts && opts.sizeOnly);
+    // v0.11.1 sizeOnly：nn 是 fitNode 撑大的（位置没动），保留原侧避免翻转
+    if (sizeOnly) {
+      return { op: "recenter", edge: linkEdge, side: oldSide, oldSide };
+    }
     return { op: "reside", edge: linkEdge, oldSide: oldSide, newSide: lmbSideOf(nn, parent) };
   }
-  if (auto) return { op: "skip" }; // 理论不可达（自动边本身即 linkEdge），防御
+  if (auto) return { op: "skip" }; // 防御：auto 必然对应 linkEdge
   return { op: "create", side: lmbSideOf(nn, parent) };
 }
 /**
@@ -247,12 +292,20 @@ function lmbApplyReside(parent, nn, plan, nodes, edges) {
  */
 function lmbRecenterNode(nn, nodes, edges, sidecar) {
   if (!nn || !nodes || !edges) return false;
-  const auto = lmbAutoParentEdgeOf(nn.id, edges, sidecar || new Set());
-  if (!auto) return false;
-  const parentId = auto.fromNode;
+  // v0.11.1：lmbAutoParentEdgeOf 返回 { edge, reversed }；兜底识别 e<base36> 命名
+  const find = lmbAutoParentEdgeOf(nn.id, edges, sidecar || new Set());
+  if (!find) return false;
+  const auto = find.edge;
+  // 父 id：
+  //   reversed=true  ⇒ 边方向是 nn→parent（auto.fromNode===nn.id，auto.toNode 是 parent）
+  //   reversed=false ⇒ 边方向是 parent→nn（auto.fromNode 是 parent，auto.toNode===nn.id）
+  // 一言以蔽之：parentId = find.reversed ? auto.toNode : auto.fromNode
+  const parentId = find.reversed ? auto.toNode : auto.fromNode;
   const parent = nodes.find((n) => n && n.id === parentId);
   if (!parent || parent.type === "group") return false;
-  const side = auto.fromSide || lmbSideOf(nn, parent);
+  // side：fromSide 是「父端」对子方向的标识。原始代码假设 fromNode=parent，读 auto.fromSide；
+  //   reversed 时 fromNode=nn（即「子」端），所以 fromSide 不再是父视角，需要翻一次。
+  const side = find.reversed ? lmbSideFlip(auto.fromSide) : (auto.fromSide || lmbSideOf(nn, parent));
   const group = [];
   for (const e of edges) {
     if (!e || e === auto) continue;

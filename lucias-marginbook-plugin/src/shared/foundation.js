@@ -1,0 +1,476 @@
+/* ==================== P1：摘录索引层 ====================
+ * 动机：现有链路是 canvas → 摘录 md 的单向同步，打开 PDF 时无法知道「哪些段落
+ *   已经摘录过」。本层建立反向索引（摘录 md → PDF/页/选区），为 P2 回绘与
+ *   P3 跳转提供数据。
+ *
+ * 设计原则（与全插件一致）：
+ *   - 唯一真相源是摘录 md 本身，索引只是**可随时重建的缓存**，不写进 data.json
+ *   - 解析器写成纯函数 lmbParseExcerptDoc，挂 __test 供 node 冒烟离线验证
+ *   - 候选文件用 metadataCache.resolvedLinks 预筛，避免读全库 md 正文
+ * ===================================================================== */
+// 摘录回跳链接：[[x.pdf#page=21&selection=0,0,655,478|显示名]]
+//             或 [[x.pdf#page=21&rect=12.5,3.2,45,8|显示名]]（截图摘录，页面百分比，P3.5 新增）
+const LMB_LINK_RE = /\[\[([^#|\]]+\.pdf)#page=(\d+)(?:&selection=([\d,]+))?(?:&rect=([\d.,]+))?[^\]]*\]\]/g;
+// selection 参数：a,b,c,d（textLayer 直接子元素序号 + 字符偏移）
+const LMB_SEL_RE = /^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/;
+// rect 参数：l,t,w,h（相对 .page 的百分比，浮点）—— 截图摘录用，不依赖 textLayer
+const LMB_RECT_RE = /^\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*$/;
+// 高度测量的固定安全余量。用于吸收字体行高、margin 折叠和 CSS 像素取整误差。
+// 文本哈希闸门保证它只应用一次，不会因移动/resize 的 modify 事件反复累加。
+const LMB_HEIGHT_PAD = 20;
+const LMB_HEIGHT_PAD_COMMENT = 40;
+
+/**
+ * 测量渲染内容的固有高度，不受卡片当前高度与内部滚动位置影响。
+ * 叶节点 rect 已经包含祖先的顶部间距，因此这里只补叶节点 margin-bottom 和根容器底部间距；
+ * 不再逐层累加祖先 margin/padding，避免同一间距重复计算成大片留白。
+ */
+function lmbMeasureRenderedContent(contentEl, scale) {
+  try {
+    if (!contentEl || typeof contentEl.getBoundingClientRect !== "function") return 0;
+    scale = isFinite(scale) && scale > 0 ? scale : 1;
+    const rootRect = contentEl.getBoundingClientRect();
+    const scrollTop = Number(contentEl.scrollTop) || 0;
+    let maxBottom = 0;
+    const visibleKids = (el) => {
+      const kids = el && el.children ? Array.from(el.children) : [];
+      return kids.filter((kid) => {
+        try {
+          const cs = getComputedStyle(kid);
+          if (cs && (cs.display === "none" || cs.visibility === "hidden")) return false;
+          const r = kid.getBoundingClientRect();
+          return !!r && r.height > 0;
+        } catch (_) {
+          try { return kid.getBoundingClientRect().height > 0; } catch (_) { return false; }
+        }
+      });
+    };
+    const walk = (el) => {
+      const kids = visibleKids(el);
+      if (kids.length) {
+        for (const kid of kids) walk(kid);
+        return;
+      }
+      let r; try { r = el.getBoundingClientRect(); } catch (_) { return; }
+      if (!r || r.height <= 0) return;
+      let marginBottom = 0;
+      try { marginBottom = parseFloat(getComputedStyle(el).marginBottom) || 0; } catch (_) {}
+      const bottom = (r.bottom - rootRect.top) / scale + scrollTop + marginBottom;
+      if (bottom > maxBottom) maxBottom = bottom;
+    };
+    for (const kid of visibleKids(contentEl)) walk(kid);
+    if (maxBottom <= 0) return 0;
+    let rootBottom = 0;
+    try {
+      const cs = getComputedStyle(contentEl);
+      rootBottom = (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+    } catch (_) {}
+    return Math.ceil(maxBottom + rootBottom);
+  } catch (_) { return 0; }
+}
+
+function lmbFinalizeCardHeight(contentHeight, chromePad, hasComment, alreadyEstimated) {
+  const base = Number(contentHeight) || 0;
+  if (base <= 0) return 0;
+  const total = alreadyEstimated ? base : base + (Number(chromePad) || 0)
+    + (hasComment ? LMB_HEIGHT_PAD_COMMENT : LMB_HEIGHT_PAD);
+  return Math.max(60, Math.min(4000, Math.ceil(total)));
+}
+
+/** 返回实际产生纵向滚动条的像素差；只检查滚动宿主，不拿普通后代的 scrollHeight 误判。 */
+function lmbVerticalOverflow(contentEl) {
+  try {
+    if (!contentEl) return 0;
+    const candidates = [contentEl];
+    if (typeof contentEl.querySelectorAll === "function") {
+      for (const el of Array.from(contentEl.querySelectorAll(
+        ".markdown-preview-view, .markdown-rendered"
+      ))) candidates.push(el);
+    }
+    let overflow = 0;
+    for (const el of candidates) {
+      const scrollH = Number(el && el.scrollHeight) || 0;
+      const clientH = Number(el && el.clientHeight) || 0;
+      if (scrollH > 0 && clientH > 0) overflow = Math.max(overflow, scrollH - clientH);
+    }
+    return overflow > 0.5 ? Math.ceil(overflow) : 0;
+  } catch (_) { return 0; }
+}
+
+function lmbHeightAfterOverflow(currentHeight, overflow) {
+  const h = Number(currentHeight) || 0;
+  const extra = Number(overflow) || 0;
+  // 8px 用于去掉滚动条后文字宽度变化及 Canvas 小数像素舍入；只在确认溢出时增加。
+  return extra > 0 ? Math.max(60, Math.min(4000, Math.ceil(h + extra + 8))) : h;
+}
+
+// v0.16.12：在 Canvas 中直接读取当前节点会受到固定 height、overflow 和竖向滚动条影响。
+// 第一次 fit 后滚动条消失、可用宽度变化，文字会重新换行，于是相同内容第二次测出不同高度。
+// 这里克隆整张卡片到同一个 Canvas 容器中，保留主题/祖先选择器和最终外框宽度，但解除
+// 高度与 overflow 约束，让浏览器按“无滚动条的自然布局”计算整卡高度。
+function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
+  let clone = null;
+  try {
+    if (!wrapperEl || !contentEl || typeof wrapperEl.cloneNode !== "function") return 0;
+    const doc = wrapperEl.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const parent = wrapperEl.parentElement || (doc && doc.body);
+    if (!doc || !parent || typeof parent.appendChild !== "function") return 0;
+
+    // 用子节点索引定位 clone 中对应的 contentEl，比依赖某个 Obsidian 版本的 class 稳定。
+    const path = [];
+    let cursor = contentEl;
+    while (cursor && cursor !== wrapperEl) {
+      const p = cursor.parentElement;
+      if (!p || !p.children) return 0;
+      const index = Array.prototype.indexOf.call(p.children, cursor);
+      if (index < 0) return 0;
+      path.unshift(index);
+      cursor = p;
+    }
+    if (cursor !== wrapperEl) return 0;
+
+    scale = isFinite(scale) && scale > 0 ? scale : 1;
+    let outerWidth = Number(wrapperEl.offsetWidth) || 0;
+    if (outerWidth <= 0 && typeof wrapperEl.getBoundingClientRect === "function") {
+      const r = wrapperEl.getBoundingClientRect();
+      if (r && r.width > 0) outerWidth = r.width / scale;
+    }
+    if (outerWidth <= 0) return 0;
+
+    clone = wrapperEl.cloneNode(true);
+    try { clone.removeAttribute("id"); } catch (_) {}
+    try { clone.setAttribute("aria-hidden", "true"); } catch (_) {}
+    try { clone.inert = true; } catch (_) {}
+    const cs = clone.style;
+    cs.setProperty("position", "absolute", "important");
+    cs.setProperty("left", "-100000px", "important");
+    cs.setProperty("top", "0", "important");
+    cs.setProperty("transform", "none", "important");
+    cs.setProperty("width", `${outerWidth}px`, "important");
+    cs.setProperty("height", "auto", "important");
+    cs.setProperty("min-height", "0", "important");
+    cs.setProperty("max-height", "none", "important");
+    cs.setProperty("overflow", "visible", "important");
+    cs.setProperty("visibility", "hidden", "important");
+    cs.setProperty("pointer-events", "none", "important");
+    cs.setProperty("contain", "none", "important");
+
+    let cloneContent = clone;
+    const unlock = [clone];
+    for (const index of path) {
+      cloneContent = cloneContent && cloneContent.children ? cloneContent.children[index] : null;
+      if (!cloneContent) return 0;
+      unlock.push(cloneContent);
+    }
+    // 只解除 wrapper→content 这条布局链，不能把图片等内容元素的固有高度也改成 auto。
+    for (const el of unlock) {
+      if (!el || !el.style) continue;
+      el.style.setProperty("height", "auto", "important");
+      el.style.setProperty("min-height", "0", "important");
+      el.style.setProperty("max-height", "none", "important");
+      el.style.setProperty("overflow", "visible", "important");
+    }
+    // Obsidian Markdown 预览层有时自己承担滚动；一并解除这些纯容器的约束。
+    if (cloneContent.querySelectorAll) {
+      const layoutLayers = cloneContent.querySelectorAll(
+        ".markdown-preview-view, .markdown-preview-sizer, .markdown-preview-section, .markdown-rendered"
+      );
+      for (const el of Array.from(layoutLayers)) {
+        if (!el || !el.style) continue;
+        el.style.setProperty("height", "auto", "important");
+        el.style.setProperty("min-height", "0", "important");
+        el.style.setProperty("max-height", "none", "important");
+        el.style.setProperty("overflow", "visible", "important");
+      }
+    }
+
+    parent.appendChild(clone);
+    // 读取 layout 属性会同步触发布局。scrollHeight 包含完整溢出内容和容器 padding；
+    // 整卡 clone 的 scrollHeight 同时包含 content 外部的真实 chrome，不再靠 20/40px 猜测。
+    const contentHeight = Math.max(Number(cloneContent.scrollHeight) || 0,
+      Number(cloneContent.offsetHeight) || 0);
+    const liveOuterHeight = Number(wrapperEl.offsetHeight) || 0;
+    const liveContentHeight = Number(contentEl.clientHeight) || 0;
+    const measuredChrome = Math.max(0, liveOuterHeight - liveContentHeight);
+    const cloneHeight = Math.max(Number(clone.scrollHeight) || 0, Number(clone.offsetHeight) || 0);
+    // 活节点若已有滚动条，scrollHeight-clientHeight 是最直接的缺口。将它换算到外框高度
+    // 作为下限，可覆盖主题/flex 布局导致离屏 clone 与 Canvas 视口映射不完全一致的情况。
+    const liveOverflow = lmbVerticalOverflow(contentEl);
+    const liveOverflowFloor = liveOverflow > 0
+      ? lmbHeightAfterOverflow(liveOuterHeight, liveOverflow) : 0;
+    const natural = Math.max(cloneHeight, contentHeight + measuredChrome, liveOverflowFloor);
+    // 仅保留 4px 给小数像素取整/边框抗锯齿，不再按内容类型叠加大块经验余量。
+    return natural > 0 ? Math.max(60, Math.min(4000, Math.ceil(natural + 4))) : 0;
+  } catch (_) {
+    return 0;
+  } finally {
+    try { if (clone && clone.parentElement) clone.parentElement.removeChild(clone); } catch (_) {}
+  }
+}
+/* ==================== v0.8.0+：卡片补充描述（note） ====================
+ * v0.8.0 最初设计：HTML 注释锚点 + callout 解析。v0.8.3 改成**完全可见**：
+ *   - 砍掉 `<!-- ppd-note-start/end -->`（可疑失败点：要么被字面渲染破坏 callout，
+ *     要么破坏解析；用户"啥也看不到"的根因之一）
+ *   - callout 自身作为唯一标记（Obsidian 原生一定可见，原生一定渲染成框）
+ *   - 空 callout 用「💬 添加评论」标题 + 占位提示行，看起来就是一个按钮，
+ *     用户一眼能看到「卡片底部可以加评论」
+ *
+ * 落盘结构（v0.8.3）：
+ *   原文内容
+ *   ^ex-abc123
+ *   > [!ppd-note] 💬 添加评论              ← 空时标题（按钮样式）
+ *   > 点击此处写下你的想法...               ← 空时占位；用户写内容后被替换
+ *
+ * 向后兼容：旧 v0.8.0-v0.8.2 用 `<!-- ppd-note-start/end -->` 包围 callout，
+ *   解析时仍能识别（不丢用户已写内容）；但 emit 永远用新格式。
+ * ===================================================================== */
+const LMB_NOTE_START = "<!-- ppd-note-start -->";   // 保留旧锚点用于回退解析
+const LMB_NOTE_END = "<!-- ppd-note-end -->";
+const LMB_NOTE_PLACEHOLDER_TITLE = "💬 添加评论";   // 空 callout 的标题（看起来像按钮）
+const LMB_NOTE_PLACEHOLDER_HINT = "点击此处写下你的想法...";
+const NOTE_START_LINE_RE = /^\s*<!--\s*ppd-note-start\s*-->\s*$/;
+const NOTE_END_LINE_RE = /^\s*<!--\s*ppd-note-end\s*-->\s*$/;
+// callout 首行：> [!类型][+-]? 标题
+const NOTE_CALLOUT_RE = /^\s*>\s*\[!([^\]]+)\]\s*([+-]?)\s*(.*)$/;
+/* v0.16.6 P1-4：note 类型白名单的**历史默认值**。
+ *   背景：NOTE_CALLOUT_RE 的捕获组是 [^\]]+，匹配**任意** callout 类型 —— 旧版
+ *   lmbSplitNote 只排除 lmb-comment / lmb-view，于是用户自己写的 [!warning]、[!quote]、
+ *   [!tip] 全被当成「补充描述」，后果是 lmbStripNote 把它们**整段删掉**、lmbJoinNote
+ *   把类型改写成 noteCalloutType 并覆盖原文（真实内容丢失）。
+ *   修法：只认插件自有的 note 类型 = 历史默认 ppd-note + 用户当前配置的
+ *   settings.noteCalloutType（由调用方通过 lmbSplitNote 第二参传入）。
+ *   注意：白名单是「识别」范围，不是「渲染」范围 —— 用户自有 callout 现在原样留在 body 里。 */
+const LMB_NOTE_TYPE_DEFAULT = "ppd-note";
+/* ==================== v0.11.0：独立评论体系（lmb-comment） ====================
+ * 与「补充描述」（ppd-note）并存的第二套数据，仿 PDF Flow 的批注评论底栏：
+ *   空：> [!lmb-comment]- 添加评论     ← 折叠单行，渲染成底栏按钮
+ *   有：> [!lmb-comment] 评论          ← 展开显示内容
+ * 位置：永远在卡片文本最末（补充描述 callout 之后），渲染成卡片底栏。
+ * lmb-comment 是保留类型字面量（不做成设置项），解析器按字面量识别。 */
+const LMB_COMMENT_TYPE = "lmb-comment";
+const LMB_COMMENT_EMPTY_TITLE = "添加评论";
+const LMB_COMMENT_TITLE = "评论";
+const LMB_COMMENT_CALLOUT_RE = /^\s*>\s*\[!lmb-comment\]\s*([+-]?)\s*(.*)$/;
+/* ==================== v0.11.3：双重摘录（文字+截图）卡片视图切换 ====================
+ * 双重摘录卡 = 引用块（文字）+ 截图 embed 同时在卡里，卡上挂一个 lmb-view callout
+ * 作为「切换按钮」：点击在 文字视图 / 图片视图 之间切换（CSS 显隐，宽度不变）。
+ * 默认 = 文字视图（有文字则以文字摘录为主）。
+ * lmb-view 是 UI 开关不是内容，摘录 md 同步时会剥掉这一行。 */
+const LMB_VIEW_TYPE = "lmb-view";
+const LMB_VIEW_TITLE_TEXT = "📄 文字 · 点击切换";
+const LMB_VIEW_TITLE_IMG = "🖼 图片 · 点击切换";
+const LMB_VIEW_CALLOUT_RE = /^\s*>\s*\[!lmb-view\]\s*([+-]?)\s*(.*)$/;
+
+/* ============================================================
+ * 11-styles —— 全部注入式 CSS（v0.12.1 从 30-plugin-core.js 的 injectStyles() 抽出）
+ * 修改注意：
+ *   1. 本文件是**纯字符串数组**，不含任何逻辑；injectStyles() 只做 LMB_STYLES.join("")。
+ *      拼接后就是一整段 CSS，元素顺序 == 注入顺序 == 层叠顺序，别随意搬家。
+ *   2. 大量片段是「一条 CSS 规则被拆成多个数组元素」的产物（原样搬运，没有合并）。
+ *      改某一条规则时必须把上下相邻的几个元素一起看，只改一半会留下不配对的花括号，
+ *      从而吃掉后面所有规则。
+ *   3. 带反斜杠转义的片段（如 "\\1F50D"）必须保持转义原样，少一个反斜杠就变成乱码字符。
+ *   4. 分组注释（// ===== xxx =====）保留且顺序不变，它是人肉索引，也是版本演进记录。
+ *   5. per-view-type 的适配统一放本文件末尾的「per-view-type 适配层」，加新视图类型
+ *      只加一段 CSS，不改 JS（借鉴 editing-toolbar v4.1.1 的经验）。
+ *   6. 只有 CSS 能定的东西放这里；任何需要 JS 新增 / 移除 class 才生效的规则都不要写进来。
+ * ============================================================ */
+
+const LMB_STYLES = [
+  ".lmb-chip{position:fixed;z-index:1000;",
+  "background:var(--interactive-accent,#7c6cf0);color:var(--text-on-accent,#fff);",
+  "font-size:12px;padding:6px 12px;border-radius:16px;cursor:grab;",
+  "box-shadow:0 4px 14px rgba(0,0,0,.5);user-select:none;white-space:nowrap;}",
+  ".lmb-chip:active{cursor:grabbing}",
+  ".lmb-rect{position:fixed;z-index:999;",
+  "border:2px dashed var(--interactive-accent,#7c6cf0);",
+  "background:rgba(124,108,240,.15);pointer-events:none;}",
+  ".lmb-btn.is-active{color:var(--text-on-accent);background:var(--interactive-accent);}",
+  // v0.8.1：动作按钮（补充描述）在不可用上下文里灰显，区别于「模式已开启」的 is-active
+  ".lmb-btn.is-idle{opacity:.35;}",
+  ".lmb-btn{cursor:pointer;}",
+  // ===== 补丁 C：Recall 回忆模式 =====
+  ".lmb-recall-blur{position:relative;cursor:pointer;}",
+  ".lmb-recall-blur>*{filter:blur(6px);transition:filter .25s;}",
+  ".lmb-recall-blur.lmb-recall-reveal>*{filter:none;}",
+  // ::after 挂在容器上（blur 只作用于子元素 > *，提示本身不会被糊掉）
+  ".lmb-recall-blur::after{content:'\\1F50D  点击回忆';position:absolute;top:6px;right:10px;", // Bugfix: 转义后首空格被 CSS 吃掉，补一个
+  "font-size:11px;line-height:1.4;color:var(--text-muted);",
+  "background:var(--background-secondary);border:1px solid var(--background-modifier-border);",
+  "border-radius:10px;padding:1px 8px;opacity:.85;pointer-events:none;}",
+  ".lmb-recall-blur.lmb-recall-reveal::after{display:none;}",
+  // ===== P2：摘录回绘标记 =====
+  // 关键：百分比定位 + .page 相对定位 → 覆盖层随页面缩放自动跟随，
+  //       完全不需要监听 zoom 事件重算（P0 实测 span 索引与缩放无关）。
+  'div[data-type="pdf"] .page{position:relative !important;}',
+  // 标记保持 pointer-events:none（见下）：单击/划选穿透，双击才跳转（P3）。
+  // 原因：标记覆盖在已摘录文字上，若单击可交互，会吃掉划选的起笔事件，
+  //       而"在 PDF 上划选拖拽"是本插件的主工作流，不能破坏。
+  ".lmb-mark{position:absolute;pointer-events:none;border-radius:2px;",
+  "mix-blend-mode:multiply;box-sizing:border-box;}",
+  // 降级标记：selection 缺失或 span 对不上时画页顶细条，宁可不准也不消失
+  '.lmb-mark[data-fallback="1"]{left:0 !important;right:0 !important;',
+  "top:0 !important;height:3px !important;width:auto !important;opacity:.75;}",
+  // ===== P3：跳转闪烁 =====
+  // 跳到目标选区后闪 3 次（0.5s × 3 = 1.5s），动画结束 opacity 回 0，2.2s 后 JS 移除节点
+  ".lmb-flash{position:absolute;pointer-events:none;border-radius:2px;",
+  "background:var(--interactive-accent,#7c6cf0);mix-blend-mode:multiply;",
+  "animation:lmb-flash-anim .5s ease-in-out 3;}",
+  "@keyframes lmb-flash-anim{0%,100%{opacity:0}45%,55%{opacity:.6}}",
+  // ===== v0.11.0：评论栏（仿 PDF Flow 批注底栏） =====
+  // v0.12.0：图标改冒泡 message-square（用户要求与原 ppd-note 的 💬 视觉一致，
+  //          替换 Obsidian 给未知 callout 的默认铅笔 ✎）；
+  //          padding/margin 压紧（用户要求排布更紧凑）
+  '.callout[data-callout="lmb-comment"]{--callout-icon:message-square;',
+  "background:var(--background-secondary,transparent);",
+  "border:none !important;border-top:1px solid var(--background-modifier-border) !important;",
+  "border-radius:0 !important;box-shadow:none !important;padding:4px 8px !important;margin-top:2px;}",
+  '.callout[data-callout="lmb-comment"] .callout-title{gap:6px;}',
+  '.callout[data-callout="lmb-comment"] .callout-title-inner{color:var(--text-muted);font-weight:400;font-size:12.5px;}',
+  '.callout[data-callout="lmb-comment"] .callout-icon{color:var(--text-faint);}',
+  // 折叠箭头推到最右（PDF Flow 的「›」位置）；lmb-comment-clickable 供 JS/测试识别
+  '.callout[data-callout="lmb-comment"] .callout-fold{margin-left:auto;}',
+  // ===== v0.11.2：PDF 工具栏收紧 + 框选按钮 =====
+  // 用户反馈顶部工具栏元素间距过大：把原生 .pdf-toolbar 的 gap / 按钮边距压紧
+  // （只作用于完整 PDF 视图，不动 md 里的 .pdf-embed 迷你工具栏）
+  '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar{gap:2px !important;',
+  "padding:2px 8px !important;}",
+  '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar .clickable-icon{',
+  "margin:0 1px !important;padding:3px 5px !important;}",
+  // 注入的框选按钮：激活态高亮（与 ribbon is-active 同一套主题色语义）
+  ".lmb-toolbar-crop.is-active{color:var(--text-on-accent)!important;",
+  "background:var(--interactive-accent)!important;}",
+  // 框选模式开启时，PDF 页面光标换十字，给「正在框选」的即时视觉反馈
+  'body.lmb-rect-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair !important;}',
+  // ===== v0.11.3：双重摘录卡（文字+截图）视图切换 =====
+  // v0.12.0：切换按钮图标化——文字视图=文档图标 / 图片视图=图片图标（CSS 变量随
+  //   host 的 lmb-view-img 切换），标题文字/折叠箭头整个隐藏；
+  //   float:right 让它与下方的评论栏共享同一行（用户要求「小工具同一行」），
+  //   容器 ::after 清浮动防止图标条溢出卡片底边。
+  '.callout[data-callout="lmb-view"]{--callout-icon:file-text;',
+  "background:var(--background-secondary,transparent);",
+  "border:none !important;border-radius:0 !important;box-shadow:none !important;",
+  "float:right;margin:0 0 2px 8px;padding:2px 6px !important;cursor:pointer;}",
+  '.lmb-view-img .callout[data-callout="lmb-view"]{--callout-icon:image;}',
+  '.callout[data-callout="lmb-view"] .callout-title{gap:4px;}',
+  '.callout[data-callout="lmb-view"] .callout-title-inner{display:none;}',
+  '.callout[data-callout="lmb-view"] .callout-fold{display:none;}',
+  '.callout[data-callout="lmb-view"] .callout-icon{color:var(--text-faint);}',
+  '.canvas-node-content:has(.callout[data-callout="lmb-view"])::after,',
+  '.markdown-rendered:has(.callout[data-callout="lmb-view"])::after{',
+  'content:"";display:block;clear:both;}',
+  // 双重卡默认 = 文字视图：藏截图 embed。
+  //   v0.16.1 判据再改版：**判定权完全收回 JS**（37-plugin-canvasbar.js lmbMarkDualCards）。
+  //   历史：v0.11.3~v0.15.0 靠卡里那行 `> [!lmb-view]` callout 当判据 → 有效；
+  //   v0.16.0 换成 `:has(a[href*=".pdf#page="]):has(img)` → **实测不命中**（用户 Bug5：
+  //   双重卡文字视图下图文并存）。根因：canvas 里指向 .pdf 的 internal-link 是**非 md 文件**，
+  //   Obsidian 渲染时很可能丢弃 #page= 子路径（href/data-href 只剩 "xxx.pdf"）→
+  //   属性选择器匹配不上。猜 DOM 结构不如不让 CSS 猜。
+  //   现行方案：JS 用 lmbPickBarActions().view（markdown 层：pdf 引用行 + 截图 embed）
+  //   判双重卡，把 lmb-dual 打在 **nodeEl** 上（contentEl 会被 markdown 重渲染重建，
+  //   class 会丢；nodeEl 生命周期 = 节点生命周期，稳定）。
+  //   同源的好处：JS 给「视图」按钮的判据 = CSS 藏图的判据 → 藏了就一定有按钮能切回来。
+  //   切到图片视图时 host（.canvas-node-content）带 lmb-view-img → :not() 不命中 → 图片显示。
+  '.lmb-dual .canvas-node-content:not(.lmb-view-img) img,',
+  '.lmb-dual .markdown-rendered:not(.lmb-view-img) img{display:none;}',
+  // md 阅读视图**保持旧判据**（只认 lmb-view callout），刻意不同步改版：
+  //   摘录 md 同步时会剥掉 lmb-view 行（v0.11.3 起），所以这条在摘录文档里本来就不命中
+  //   → 摘录 md 里的截图正常显示（图文并存，这是设计）。
+  //   若这里也换成「pdf 链接 + img」判据，摘录 md 的每条摘录都有 pdf 回跳链接，
+  //   只要文里出现任何图片就会被整篇藏掉 —— 那是明显的回归，不能这么改。
+  '.markdown-rendered:has(.callout[data-callout="lmb-view"]) img{display:none;}',
+  // 图片视图：显示截图、藏文字引用块（藏的是裸 blockquote，不动 ppd-note/lmb-comment 等 callout）
+  '.lmb-view-img img{display:block !important;}',
+  '.lmb-view-img blockquote:not(.callout){display:none;}',
+
+  /* ==================== v0.12.1 新增：per-view-type 适配层 ====================
+   * 设计意图（借鉴 editing-toolbar v4.1.1）：把「按视图类型做适配」从 JS 挪到 CSS。
+   *   以前每多支持一种视图类型，就要在注入逻辑里加一层 if 判断；现在加新视图只需要在
+   *   本区块追加一条 CSS 规则，逻辑层零改动。
+   *
+   * 三条硬约束（改动前先确认自己没违反）：
+   *   1. 只用**已经存在的** class，不引入任何需要 JS 配合的新 class —— 改 JS 的
+   *      那边不知道这里加了什么，两边会脱节。
+   *   2. 只做显隐 / 光标 / 过渡这类「不影响现有外观」的覆写，不改颜色、尺寸、间距。
+   *   3. 顺序上放在数组**最末尾**，保证它是最后注入的、能覆盖前面的同名属性。
+   *
+   * 放最后还有一个副作用是好事：万一某条写错了，只会影响最末几条规则，
+   *   不会像花括号不配对那样吃掉上面 59 条搬运规则。
+   * ===================================================================== */
+
+  // ---- 1. PDF 嵌入视图（md 里内嵌的迷你 PDF）里不显示注入的按钮 ----
+  // 理由：.pdf-embed 的迷你工具栏空间极小，多一个按钮就会被撑破、把原生控件挤出去。
+  //   JS 侧本来就只在完整 PDF 视图注入，这里再兜一道保险：万一将来注入逻辑变动
+  //   （比如缓存命中后按钮被挂到了错误的宿主），至少视觉上不会炸。
+  '.pdf-embed .lmb-toolbar-crop,',
+  '.pdf-embed .lmb-toolbar-md,',
+  '.pdf-embed .lmb-toolbar-canvas{display:none !important;}',
+
+  // ---- 2. 非 PDF 视图里不显示注入的按钮 ----
+  // 理由：用 :not() 白名单式限定，而不是黑名单式排除 —— 默认「任何非 PDF 的 leaf 都隐藏」，
+  //   这样即使 JS 因为兜底逻辑把按钮挂到 .view-content 等别的容器，视觉上也不会串台。
+  //   （这条是对并行改动 30-plugin-core.js 的防御：那边正在调整注入宿主的选择策略。）
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-crop,',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-md,',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-canvas{display:none !important;}',
+
+  // ---- 3. 三个注入按钮的通用视觉基线 ----
+  // 理由：给后续所有 per-view-type 覆写提供一个稳定的基类（cursor + opacity 过渡），
+  //   将来针对某视图做 hover / 显隐动画时，从这个基线继承即可，不用每个视图重抄一遍。
+  //   刻意**只加不影响现有外观的属性**：cursor 是交互语义、transition 只声明过渡曲线，
+  //   不指定初始 opacity，所以当前渲染结果与加这条之前完全一致。
+  ".lmb-toolbar-crop,.lmb-toolbar-md,.lmb-toolbar-canvas{cursor:pointer;transition:opacity .15s ease;}",
+
+  // ===== v0.13.0 / v0.13.2：canvas 卡片悬浮操作栏（.lmb-canvas-bar）=====
+  // 定位逻辑全在 JS（lmbCalcBarPos 每轮写内联 left/top），CSS 只管呈现，别在这儿改定位。
+  //   1. 浮层挂在 .canvas-wrapper（canvas.wrapperEl）而非卡片上 —— canvas 的
+  //      transform:scale() 加在 .canvas 上，wrapper 是其父级、不参与缩放，
+  //      所以按钮在屏幕上恒定 26px，不会随画布缩小而缩小到看不清。
+  //   2. 显隐由 lmbSetToolbarVisibility() 控制：show 是 visibility:visible + display:""
+  //      hideRemove 是 display:none。所以下面 display 必须写成 flex（display:"" 的回落值）。
+  //      【绝不能写 display:none】——否则 show 时 display:"" 会回落到 none，浮层永远出不来。
+  //      默认 visibility:hidden 只是防首帧闪现（JS 第一次 tick 才会 show）。
+  //   3. v0.13.2：改竖排（flex-direction:column）+ z-index:9999 防御被 canvas 节点遮挡。
+  //      按钮尺寸 26px 方形保持不变，只换排列方向和图标尺寸（14px）。
+  '.lmb-canvas-bar{position:absolute;display:flex;flex-direction:column;visibility:hidden;z-index:9999;align-items:stretch;gap:2px;padding:2px;border-radius:8px;background:var(--background-primary);border:1px solid var(--background-modifier-border);box-shadow:var(--shadow-s,0 2px 8px rgba(0,0,0,.15));}',
+
+  // v0.14.8：4 个按钮统一带两个字文字（"评论"/"跳转"/"视图"/"高度"），width:auto 横排对齐。
+  //   刻意不用 Obsidian 的 .clickable-icon —— 那是给固定工具栏设计的，尺寸边距在浮层上偏大。
+  '.lmb-canvas-bar .lmb-bar-comment,',
+  '.lmb-canvas-bar .lmb-bar-jump,',
+  '.lmb-canvas-bar .lmb-bar-view,',
+  '.lmb-canvas-bar .lmb-bar-fit,',
+  '.lmb-canvas-bar .lmb-bar-disconnect{display:inline-flex;align-items:center;justify-content:center;gap:4px;width:auto;height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;transition:background .12s ease,color .12s ease;}',
+  '.lmb-canvas-bar .lmb-bar-text{font-size:11px;line-height:1;letter-spacing:0.5px;font-weight:500;}',
+  '.lmb-canvas-bar .lmb-bar-comment:hover,',
+  '.lmb-canvas-bar .lmb-bar-jump:hover,',
+  '.lmb-canvas-bar .lmb-bar-view:hover,',
+  '.lmb-canvas-bar .lmb-bar-fit:hover,',
+  '.lmb-canvas-bar .lmb-bar-disconnect:hover{background:var(--background-modifier-hover);color:var(--text-normal);}',
+
+  '.lmb-disconnect-candidate{cursor:pointer!important;filter:drop-shadow(0 0 3px var(--interactive-accent));}',
+  '.lmb-disconnect-candidate path{stroke:var(--interactive-accent)!important;stroke-width:6px!important;pointer-events:stroke!important;cursor:pointer!important;}',
+
+  // setIcon 注入的 svg 默认会撑成 100% 把按钮顶变形，这里统一尺寸
+  '.lmb-canvas-bar svg{width:14px;height:14px;display:block;}',
+
+  // 不适用的按钮由 JS 走 hideRemove（display:none），这里不给额外样式，避免和 JS 打架
+
+  // ---- 4. v0.13.2：canvas 卡片只露摘录内容，折叠态评论按钮与 lmb-view 全藏 ----
+  // 理由（v0.13.1 反思）：上一版用 `.callout[data-callout="lmb-comment"]` 选了所有
+  //   评论 callout，结果**展开态的评论内容**也被藏了 —— 用户加完评论在卡片里看不到，
+  //   只能进编辑界面。这是 bug，不是有意设计。
+  // 修正：v0.13.2 只藏**折叠态**（按钮形态）。判断标准 = 没有 .callout-content 子元素
+  //   （折叠态不会渲染 content 容器）。展开态（评论内容）正常显示。
+  //   :has() 是 CSS 4 现代选择器，Obsidian 自带 Chromium 完整支持。
+  //   lmb-view callout 是切换按钮（无论折叠/展开内容都是固定按钮文字），入口已搬到
+  //   悬浮栏，全藏合理。toggleCardView() 仍靠 querySelector 反查宿主（display:none
+  //   不移除元素，querySelector 找得到）。卡片 markdown 文本一字未改。
+  //   只作用于 canvas 节点内；md 阅读视图保持原样。
+  '.canvas-node-content .callout[data-callout="lmb-comment"]:not(:has(.callout-content)),',
+  '.canvas-node-content .callout[data-callout="lmb-view"]{display:none !important;}'
+];
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.__lmbStyles = { LMB_STYLES };
+}

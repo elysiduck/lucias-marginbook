@@ -38,6 +38,38 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(!!this.plugin.settings.recallDefault)
         .onChange(async (v) => { this.plugin.settings.recallDefault = v; await this.plugin.saveSettings(); }));
 
+    /* ---- v0.14.8 / v0.15.0：摘录附件与删除清理 ---- */
+    containerEl.createEl("h2", { text: "摘录附件与删除清理（v0.14.8 / v0.15.0）" });
+
+    new Setting(containerEl)
+      .setName("新摘录自动附截图")
+      .setDesc("拖出摘录时一并截取选中区域存成 webp 附件（卡片可在「文字 / 图片」视图间切换）。"
+        + "关闭后新摘录只有文字，卡片更紧凑、也不占 vault 空间。"
+        + "注意：关闭不影响已有的双重摘录卡。")
+      .addToggle((t) => t
+        .setValue(this.plugin.settings.autoAttachScreenshot !== false)
+        .onChange(async (v) => { this.plugin.settings.autoAttachScreenshot = v; await this.plugin.saveSettings(); }));
+
+    const cleanIntro = containerEl.createEl("p", {
+      text: "删除画布上的摘录卡时，一并清理它留下的残留（截图附件 + md 摘录文档里的对应条目）。"
+        + "⚠ 这是数据级操作，默认关闭 —— 请确认理解风险后再开启。"
+    });
+    cleanIntro.style.cssText = "font-size:12px;color:var(--text-muted);line-height:1.6;margin:0 0 4px;";
+
+    new Setting(containerEl)
+      .setName("删除卡片时级联清理")
+      .setDesc("开启后：删除画布摘录卡 → 自动删除它引用的截图附件 + 从 md 摘录文档移除该条目。"
+        + "安全策略：① 只删插件自己命名的附件（xxx-P<页>-<戳>.webp），你的图片不碰；"
+        + "② 全 vault 扫描，其他笔记还在引用就不删（避免 broken image）；"
+        + "③ 每次清理先写 .lmb-trash-log.md 备份，可追溯恢复；"
+        + "④ 底部弹提示告知清理了几项。")
+      .addToggle((t) => t
+        .setValue(this.plugin.settings.autoCleanOnDelete === true)
+        .onChange(async (v) => {
+          this.plugin.settings.autoCleanOnDelete = v;
+          await this.plugin.saveSettings();
+        }));
+
     /* ---- v0.8.0：卡片补充描述 ---- */
     containerEl.createEl("h2", { text: "卡片补充描述（v0.8.0）" });
     const noteIntro = containerEl.createEl("p", {
@@ -81,19 +113,21 @@ class LMBSettingTab extends PluginSettingTab {
         .onChange(async (v) => { this.plugin.settings.noteIntoSync = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("新摘录卡自动挂空描述框")
-      .setDesc("开启（默认）：新拖出的摘录卡下方自动带一个空的补充描述框，点开即可写。"
-        + "插件首次扫描某画布时会给已有摘录卡也补上（不覆盖已写过的内容）。"
-        + "嫌占位或不想改造存量卡就关掉。")
+      .setDesc("关闭（v0.12.0 起默认）：新拖出的摘录卡不再自动带空描述框（v0.12.0 卡片精简迁移）。"
+        + "开启：新拖出的摘录卡下方自动带一个空的补充描述框，点开即可写。"
+        + "插件首次扫描某画布时会给已有摘录卡也补上（不覆盖已写过的内容）。")
       .addToggle((t) => t
         .setValue(this.plugin.settings.noteAutoBoxOnNew !== false)
         .onChange(async (v) => { this.plugin.settings.noteAutoBoxOnNew = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("新摘录卡自动挂评论栏")
-      .setDesc("开启（默认）：新拖出的摘录卡底部自动带一条「添加评论」栏（仿 PDF Flow 批注样式），"
-        + "点评论栏直接弹编辑框；插件首次扫描某画布时也会给存量卡补上（不覆盖已写内容）。"
-        + "与「补充描述」是两套独立数据，嫌重复可只留其一。")
+      .setDesc("关闭（v0.16.0 起默认）：新拖出的摘录卡**不再**自动带「💬 添加评论」底栏，卡里只留摘录内容。"
+        + "评论功能照常可用 —— 入口是选中卡片后左侧悬浮栏的「评论」按钮、命令面板"
+        + "（给卡片添加/编辑评论）、以及侧边栏 ribbon。"
+        + "开启：恢复旧行为，新卡底部自动带评论栏，点它直接弹编辑框（仿 PDF Flow 批注样式）。"
+        + "存量卡与已写过的评论不受此开关影响。")
       .addToggle((t) => t
-        .setValue(this.plugin.settings.commentAutoBoxOnNew !== false)
+        .setValue(this.plugin.settings.commentAutoBoxOnNew === true)
         .onChange(async (v) => { this.plugin.settings.commentAutoBoxOnNew = v; await this.plugin.saveSettings(); }));
   }
 }

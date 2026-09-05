@@ -13,16 +13,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   async addNoteBoxToAllCards() {
     const ctx = this.activeCanvasContext();
     if (!ctx) { new Notice("请先在 canvas 里操作（当前不在画布视图）"); return; }
-    const raw = await this.app.vault.adapter.read(ctx.file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { new Notice("画布解析失败"); return; }
+    // v0.16.4 修复 P1-3：读改写迁移到内存优先（与 processCanvas v0.16.1 同纪律），
+    //   不再把「磁盘上的旧位置」钉回去（Bug6 同款坑：用户刚拖动未落盘时被覆盖）。
+    const rd = await this._lmbReadCanvasData(ctx.file);
+    if (!rd) { new Notice("画布读取失败"); return; }
+    const data = rd.data;
     const nodes = data.nodes || [];
     const fold = !!this.settings.noteFoldByDefault;   // 跟随设置（默认 false = 展开，一眼能看见）
     let n = 0;
     for (const node of nodes) {
       if (node.type !== "text" || !node.text) continue;
       if (!EX_ID_RE.test(node.text)) continue;             // 只处理摘录卡
-      if (lmbSplitNote(node.text).hasNote) continue;       // 已有描述 → 跳过，不覆盖
+      // v0.16.6 P1-4：只认插件自有的 note 类型，用户自有 callout 不再被当「已有描述」
+      if (lmbSplitNote(node.text, this.settings.noteCalloutType || "ppd-note").hasNote) continue;
       node.text = lmbJoinNote(node.text, "", {
         type: this.settings.noteCalloutType || "ppd-note",
         title: this.settings.noteTitle || "补充描述",
@@ -38,9 +41,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       n++;
     }
     if (!n) { new Notice("这个画布里没有需要添加描述框的摘录卡（可能都已经有了）"); return; }
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(ctx.file.path, true);
-    await this.app.vault.adapter.write(ctx.file.path, JSON.stringify(data, null, indent));
+    // v0.16.4 P1-3：统一写回（setData + requestSave + 同一份内存数据写盘）
+    await this._lmbWriteCanvasData(ctx.file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     new Notice(`已给 ${n} 张摘录卡添加补充描述框（${fold ? "已折叠" : "已展开"}，点开即可写）`);
   },
@@ -52,9 +54,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   async addCommentBoxToAllCards() {
     const ctx = this.activeCanvasContext();
     if (!ctx) { new Notice("请先在 canvas 里操作（当前不在画布视图）"); return; }
-    const raw = await this.app.vault.adapter.read(ctx.file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { new Notice("画布解析失败"); return; }
+    // v0.16.4 修复 P1-3：读改写迁移到内存优先（同 addNoteBoxToAllCards）
+    const rd = await this._lmbReadCanvasData(ctx.file);
+    if (!rd) { new Notice("画布读取失败"); return; }
+    const data = rd.data;
     const nodes = data.nodes || [];
     let n = 0;
     for (const node of nodes) {
@@ -71,9 +74,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       n++;
     }
     if (!n) { new Notice("这个画布里的摘录卡都已经有评论栏了"); return; }
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(ctx.file.path, true);
-    await this.app.vault.adapter.write(ctx.file.path, JSON.stringify(data, null, indent));
+    // v0.16.4 P1-3：统一写回（setData + requestSave + 同一份内存数据写盘）
+    await this._lmbWriteCanvasData(ctx.file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     new Notice(`已给 ${n} 张摘录卡添加评论栏（点评论栏直接写）`);
   },
@@ -86,9 +88,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 写完同步 autoSize 档案 + 组内重新居中（高度变化不再产生「乱放」）。
    */
   async applyCardComment(file, nodeId, commentText) {
-    const raw = await this.app.vault.adapter.read(file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return { ok: false, msg: "画布解析失败" }; }
+    // v0.16.4 修复 P1-3：内存优先读取 + 统一写回（防覆盖用户未落盘的拖动，Bug6 同款坑）
+    const rd = await this._lmbReadCanvasData(file);
+    if (!rd) return { ok: false, msg: "画布读取失败" };
+    const data = rd.data;
     const node = (data.nodes || []).find((n) => n.id === nodeId);
     if (!node) return { ok: false, msg: "找不到该卡片（可能已被删除）" };
     if (node.type !== "text") return { ok: false, msg: "只有文本卡片支持评论" };
@@ -106,9 +109,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!store) { store = new Map(); this.autoSize.set(file.path, store); }
     store.set(node.id, { hash: this.simpleHash(node.text), w: node.width, h: node.height });
 
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(file.path, true);
-    await this.app.vault.adapter.write(file.path, JSON.stringify(data, null, indent));
+    await this._lmbWriteCanvasData(file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     return { ok: true, msg: "" };
   },
@@ -147,6 +148,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const t = e.target;
       if (!t || !t.closest) return;
       if (t.closest(".callout-fold")) return; // 折叠箭头 → 原生折叠/展开
+      // v0.11.3：双重摘录卡的「视图切换按钮」——点击在 文字/图片 显示间切换。
+      //   不拦截事件（不 preventDefault/stopPropagation），保留 canvas 原生的
+      //   选中卡片等交互；切换纯靠 DOM class + CSS 显隐，不改卡片文本 → 宽度不变。
+      const viewCallout = t.closest('.callout[data-callout="lmb-view"]');
+      if (viewCallout) { this.toggleCardView(viewCallout); return; }
       const callout = t.closest('.callout[data-callout="lmb-comment"]');
       if (!callout) return;
       const leafEl = callout.closest(".workspace-leaf");
@@ -171,13 +177,64 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { /* noop：点击拦截绝不能抛错破坏 canvas */ }
   },
 
+  /**
+   * v0.16.0：视图切换的**核心实现** —— 只认渲染容器（host），**不依赖任何 callout 存在**。
+   *
+   * 为什么要拆出来：v0.11.3 ~ v0.15.0 的双重卡靠卡里那行 `> [!lmb-view]` callout 当「切换按钮」，
+   *   toggleCardView(callout) 用 callout.closest() 反查 host 再切 class。v0.16.0 起新建的卡
+   *   不再写这行（卡片精简 v2：用户要求卡内不放控件）→ 那条反查路径对**新卡**永远找不到 callout
+   *   → 悬浮栏「视图」按钮会变成点了没反应的死按钮（v0.13.1 踩过同款坑）。
+   *   所以把「切 class」这步抽成独立函数，悬浮栏直接把 host 传进来。
+   *
+   * @param {HTMLElement} host  canvas 的 .canvas-node-content / md 的 .markdown-rendered
+   * @returns {boolean|null} 切换后的状态：true=图片视图 / false=文字视图；host 无效返回 null
+   */
+  toggleCardViewByHost(host) {
+    try {
+      if (!host || !host.classList) return null;
+      const toImg = !host.classList.contains("lmb-view-img");
+      host.classList.toggle("lmb-view-img", toImg);
+      return toImg;
+    } catch (_) { return null; }
+  },
+
+  /**
+   * v0.11.3：切换双重摘录卡的显示视图（文字 ↔ 图片）。
+   *   实现 = 给渲染容器（canvas 的 .canvas-node-content / md 的 .markdown-rendered）
+   *   切换 lmb-view-img class，CSS 负责显隐（默认文字视图隐藏图片；图片视图隐藏引用块）。
+   *   不改节点 markdown 文本 → fitNode hash 不变 → 卡片宽度（和高度）保持不变。
+   *
+   *   v0.16.0：切 class 的活委托给 toggleCardViewByHost。**本函数保留是为存量卡兼容** ——
+   *   老版本建的双重卡 markdown 里仍然有 `> [!lmb-view]` 行，点它照样能切、标题文字也跟着变。
+   *   新建的卡走 37-plugin-canvasbar.js 悬浮栏 → 直接调 toggleCardViewByHost。
+   *
+   *   已知边界：切换态存 DOM，不落盘 —— 重载/重渲染后回到默认文字视图。
+   * @param {HTMLElement} callout  lmb-view callout 元素（仅存量卡才有）
+   */
+  toggleCardView(callout) {
+    try {
+      const host = callout.closest(".canvas-node-content")
+        || callout.closest(".markdown-rendered")
+        || callout.parentElement;
+      const toImg = this.toggleCardViewByHost(host);
+      if (toImg === null) return;
+      // 按钮标题即时反馈（重渲染后会回到落盘的默认标题，无碍——显隐以 class 为准）
+      const inner = callout.querySelector(".callout-title-inner");
+      if (inner) {
+        const next = toImg ? LMB_VIEW_TITLE_IMG : LMB_VIEW_TITLE_TEXT;
+        if (typeof inner.setText === "function") inner.setText(next);
+        else inner.textContent = next;
+      }
+    } catch (_) { /* noop：切换失败绝不能抛错破坏 canvas */ }
+  },
+
   /** 按节点 id 直开评论编辑弹窗（点击评论栏的入口，无需选择器） */
   async editCommentForNode(file, nodeId) {
     if (!file) return;
-    const raw = await this.app.vault.adapter.read(file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return; }
-    const node = (data.nodes || []).find((n) => n.id === nodeId);
+    // v0.16.4 P1-3：弹窗初值也走内存优先（旧版读文件，刚拖动未落盘时可能显示旧值）
+    const rd = await this._lmbReadCanvasData(file);
+    if (!rd) return;
+    const node = (rd.data.nodes || []).find((n) => n.id === nodeId);
     if (!node || node.type !== "text") { new Notice("找不到该卡片（可能已被删除）"); return; }
     const cur = lmbSplitComment(node.text || "");
     new LMBNoteModal(this.app, {
@@ -190,17 +247,31 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }).open();
   },
 
-  /** 拿到当前 canvas 上下文 { file, leaf }；不在 canvas 里则返回 null */
+  /** 拿到当前 canvas 上下文 { file, leaf }；当前活动视图不是 canvas 则返回 null */
   activeCanvasContext() {
-    const leaves = this.app.workspace.getLeavesOfType("canvas") || [];
-    if (!leaves.length) return null;
-    let leaf = null;
-    try { leaf = this.app.workspace.activeLeaf; } catch (_) { leaf = null; }
-    const isCanvas = (l) => l && l.view && (!l.view.getViewType || l.view.getViewType() === "canvas");
-    if (!isCanvas(leaf)) leaf = leaves.find(isCanvas) || leaves[0];
-    const f = leaf && leaf.view && leaf.view.file;
-    if (!f || f.extension !== "canvas") return null;
-    return { file: f, leaf };
+    // v0.16.4 修复 P2-5：不再静默回退到「任意一个打开的 canvas leaf」——
+    //   旧行为会让用户在 md/PDF 视图触发命令时，操作悄悄落到某个后台画布上。
+    //   现在只认当前活动 leaf 是 canvas，否则返回 null（调用方各自提示/灰显）。
+    try {
+      // v0.16.5 修复 R6：activeLeaf 是 deprecated API，一旦被移除，所有 canvas 命令
+      //   会全部失效。加 getMostRecentLeaf() 兜底（返回最近使用过的 leaf；用户不在
+      //   canvas 视图时它同样不是 canvas → 与严格判定的语义一致）。
+      let leaf = null;
+      try { leaf = this.app.workspace.activeLeaf || null; } catch (_) { leaf = null; }
+      if (!leaf) {
+        try {
+          leaf = typeof this.app.workspace.getMostRecentLeaf === "function"
+            ? this.app.workspace.getMostRecentLeaf() : null;
+        } catch (_) { leaf = null; }
+      }
+      if (!leaf || !leaf.view) return null;
+      let vt = null;
+      try { vt = typeof leaf.view.getViewType === "function" ? leaf.view.getViewType() : null; } catch (_) { vt = null; }
+      if (vt !== "canvas") return null;
+      const f = leaf.view.file;
+      if (!f || f.extension !== "canvas") return null;
+      return { file: f, leaf };
+    } catch (_) { return null; }
   },
 
   /**
@@ -224,7 +295,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const nodes = (data && data.nodes) || [];
         const items = nodes.filter((n) => n.type === "text" && n.text).map((n) => {
           const first = String(n.text).split("\n").find((l) => l.trim()) || "(空卡片)";
-          const has = lmbSplitNote(n.text).hasNote;
+          const has = lmbSplitNote(n.text, this.settings.noteCalloutType || "ppd-note").hasNote;
           return { id: n.id, label: (has ? "📝 " : "") + first.slice(0, 60), node: n };
         });
         if (!items.length) { new Notice("这个画布里没有文本卡片"); resolve(null); return; }
@@ -242,14 +313,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    */
   async applyCardNote(file, nodeId, noteText, opts) {
     const o = opts || {};
-    const raw = await this.app.vault.adapter.read(file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return { ok: false, msg: "画布解析失败" }; }
+    // v0.16.4 修复 P1-3：内存优先读取 + 统一写回（同 applyCardComment）
+    const rd = await this._lmbReadCanvasData(file);
+    if (!rd) return { ok: false, msg: "画布读取失败" };
+    const data = rd.data;
     const node = (data.nodes || []).find((n) => n.id === nodeId);
     if (!node) return { ok: false, msg: "找不到该卡片（可能已被删除）" };
     if (node.type !== "text") return { ok: false, msg: "只有文本卡片支持补充描述" };
 
-    const cur = lmbSplitNote(node.text || "");
+    // v0.16.6 P1-4：只认插件自有的 note 类型（用户自有 callout 不再被改写覆盖）
+    const cur = lmbSplitNote(node.text || "", this.settings.noteCalloutType || "ppd-note");
     // 折叠态优先级：显式传入 > 沿用原有 > 新建时用设置里的默认值
     const fold = (typeof o.fold === "boolean")
       ? o.fold
@@ -273,9 +346,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!store) { store = new Map(); this.autoSize.set(file.path, store); }
     store.set(node.id, { hash: this.simpleHash(node.text), w: node.width, h: node.height });
 
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(file.path, true);
-    await this.app.vault.adapter.write(file.path, JSON.stringify(data, null, indent));
+    await this._lmbWriteCanvasData(file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     return { ok: true, msg: "" };
   },
@@ -286,7 +357,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!ctx) { new Notice("请先在 canvas 里操作（当前不在画布视图）"); return; }
     const pick = await this.pickCanvasNode(ctx);
     if (!pick || !pick.node) return;
-    const cur = lmbSplitNote(pick.node.text || "");
+    const cur = lmbSplitNote(pick.node.text || "", this.settings.noteCalloutType || "ppd-note");
 
     if (mode === "fold") {
       if (!cur.hasNote) { new Notice("该卡片还没有补充描述"); return; }

@@ -1,0 +1,16 @@
+{
+  "name": "lucias-marginbook",
+  "version": "0.16.14",
+  "private": true,
+  "description": "Source and build workspace for Lucia's MarginBook Obsidian plugin",
+  "scripts": {
+    "build": "node build.js",
+    "check:build": "node build.js --check",
+    "test": "node tests/run.js",
+    "verify": "npm run check:build && npm test",
+    "backup": "node scripts/backup.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

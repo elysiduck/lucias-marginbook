@@ -14,7 +14,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     // Alt 或 按钮模式 → 启动自带框选
     if ((e.altKey || this.rectMode) && e.button === 0 && leaf && leaf.view && leaf.view.file) {
-      if (!e.altKey) e.preventDefault(); // 按钮模式拦截文字选择（Alt 亦然）
+      // v0.16.4 修复 P2-6：按钮模式与 Alt 模式都拦截原生文字选择
+      //   （旧注释声称"Alt 亦然"，代码却 if (!e.altKey) 跳过 → Alt 框选时选区同时发生）
+      e.preventDefault();
       e.stopPropagation();
       this.startRectDrag(leaf, e);
       return;
@@ -51,13 +53,73 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         left: Math.min(sx, ev.clientX), top: Math.min(sy, ev.clientY),
         right: Math.max(sx, ev.clientX), bottom: Math.max(sy, ev.clientY)
       };
-      const ctx = await this.captureRectImage(leaf.view, pageEl, screenRect, pageNum);
+      // v0.14.8：settings.autoAttachScreenshot 关掉时不生成 webp 附件 —— 用户嫌附件占空间，
+  // 关掉后摘录更紧凑，且不影响自动 fit（fit 测的是 markdown 文字本身的高度）。
+  const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+  const ctx = autoAttach ? await this.captureRectImage(leaf.view, pageEl, screenRect, pageNum) : null;
       if (ctx) {
-        if (this.rectMode) { this.rectMode = false; this.updateRibbonState(); } // 一次性消费
-        this.debugNotice("✓ 截图已保存 " + ctx.attachmentName + "（" + ctx.imgW + "×" + ctx.imgH + "）");
-        this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图 · 按住拖到 md 或画布", ctx);
+        // v0.11.3：框选模式一次性复原（用户定版行为）—— 截完一次自动关闭，
+        //   不再能直接拖拽选区，再截需再点按钮；Esc 关闭路径不变
+        if (this.rectMode) {
+          this.setRectMode(false);
+          new Notice("MarginBook: 框选完成 —— 模式已自动关闭（再点一次按钮继续框选）", 2500);
+        }
+        // v0.11.4 双重识别（框选路径）：框到的区域里有文字 → 也出双重卡
+        //   （文字引用块 + 截图 + lmb-view 切换按钮，默认文字视图）；
+        //   没提不到文字（纯图/公式/图表）→ 维持纯截图卡。
+        const rectText = this.extractRectText(pageEl, screenRect);
+        if (rectText) {
+          const info = {
+            file: ctx.file, pageNum: ctx.pageNum, display: ctx.display,
+            link: ctx.link,          // 框选路径回跳链接仍是 rect=（精确回到截取区域）
+            text: rectText, isImage: false,
+            img: {
+              attachmentName: ctx.attachmentName, embed: ctx.embed,
+              imgW: ctx.imgW, imgH: ctx.imgH, rectParam: ctx.rectParam
+            }
+          };
+          this.debugNotice("✓ 框选双重摘录：文字 " + rectText.length
+            + " 字 + 截图 " + ctx.attachmentName);
+          this.showChip(ev.clientX, ev.clientY,
+            "📝 " + rectText.length + " 字 + 🖼 截图 · 按住拖到 md 或画布", info);
+        } else {
+          this.debugNotice("✓ 截图已保存 " + ctx.attachmentName + "（" + ctx.imgW + "×" + ctx.imgH + "）");
+          this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图 · 按住拖到 md 或画布", ctx);
+        }
       } else {
-        this.debugNotice("✗ 截图失败（页面画布不可用）");
+        // v0.16.4 修复 P1-1：关闭「自动附截图」（或截图失败）时框选不再整链路报废——
+        //   降级为纯文字摘录（rect= 回跳链接照常生成，无 webp 附件）。
+        //   旧版 ctx=null 直接走「✗ 截图失败」，与设置文案"关闭后新摘录只有文字"矛盾。
+        const view = leaf.view;
+        const file = view && view.file;
+        if (!file) { this.debugNotice("✗ 框选失败：拿不到 PDF 文件"); return; }
+        const display = "【" + file.basename + "-P." + pageNum + "】";
+        let rectParam = null;
+        try {
+          const pr = pageEl.getBoundingClientRect();
+          if (pr.width > 0 && pr.height > 0) {
+            const rl = 100 * (screenRect.left - pr.left) / pr.width;
+            const rt = 100 * (screenRect.top - pr.top) / pr.height;
+            const rw = 100 * (screenRect.right - screenRect.left) / pr.width;
+            const rh = 100 * (screenRect.bottom - screenRect.top) / pr.height;
+            rectParam = [rl, rt, rw, rh].map((v) => Math.round(v * 100) / 100).join(",");
+          }
+        } catch (_) { /* 算不出就不写 rect */ }
+        const link = "[[" + file.path + "#page=" + pageNum
+          + (rectParam ? "&rect=" + rectParam : "") + "|" + display + "]]";
+        const rectText = this.extractRectText(pageEl, screenRect);
+        if (!rectText) {
+          this.debugNotice("✗ 框选区域没有文字，且截图不可用（自动附截图已关闭或截图失败）");
+          return;
+        }
+        if (this.rectMode) {
+          this.setRectMode(false);
+          new Notice("MarginBook: 框选完成 —— 模式已自动关闭（再点一次按钮继续框选）", 2500);
+        }
+        const info = { file, pageNum, display, link, text: rectText, isImage: false };
+        this.debugNotice("✓ 框选摘录（无截图）：文字 " + rectText.length + " 字");
+        this.showChip(ev.clientX, ev.clientY,
+          "📝 " + rectText.length + " 字 · 按住拖到 md 或画布", info);
       }
     };
     document.addEventListener("mousemove", mv, true);
@@ -67,6 +129,93 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   pageAtPoint(doc, x, y) {
     const hit = doc.elementFromPoint(x, y);
     return hit && hit.closest ? hit.closest(".page[data-page-number]") : null;
+  },
+
+  /**
+   * v0.11.4 框选路径的文字提取：屏幕矩形 → 与页面 textLayer 的 span 求交集 → 拼文字。
+   *   零 OCR / 零 pdfjs 内部 API：pdf.js 已把文字渲染成 textLayer 的 span（按行分块），
+   *   只做几何求交 + 按行聚合一版阅读顺序文本。
+   *   提不到（无 textLayer / 纯图区域 / 虚拟化页未渲染文本层）→ 返回 null → 纯截图卡。
+   * 聚合规则：span 按 top 分行（行距超过 span 高度一半算换行），行内按 left 排序，
+   *   行间以空格连接（与 extractSelection 的空白归一语义一致）。
+   */
+  extractRectText(pageEl, screenRect) {
+    try {
+      const layer = pageEl.querySelector(".textLayer");
+      if (!layer) return null;
+      const spans = layer.querySelectorAll("span");
+      if (!spans.length) return null;
+      const hits = [];
+      for (const sp of spans) {
+        const t = sp.textContent || "";
+        if (!t.trim()) continue;
+        const r = sp.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        // 矩形相交测试（边缘相切不算命中）
+        if (r.right <= screenRect.left || r.left >= screenRect.right) continue;
+        if (r.bottom <= screenRect.top || r.top >= screenRect.bottom) continue;
+        hits.push({ r, text: t });
+      }
+      if (!hits.length) return null;
+      hits.sort((a, b) => (a.r.top - b.r.top) || (a.r.left - b.r.left));
+      // 按行聚类：与上一个 span 的 top 差超过其高度一半 → 新行
+      const lines = [];
+      let lastTop = null;
+      for (const h of hits) {
+        const newLine = lastTop === null
+          || Math.abs(h.r.top - lastTop) > Math.max(6, h.r.height * 0.5);
+        if (newLine) lines.push([h]);
+        else lines[lines.length - 1].push(h);
+        lastTop = h.r.top;
+      }
+      const text = lines
+        .map((l) => l.sort((a, b) => a.r.left - b.r.left)
+          .map((h) => h.text.trim()).join(" ").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return text || null;
+    } catch (err) {
+      console.warn("[lmb] extractRectText error:", err);
+      return null;
+    }
+  },
+
+  /**
+   * v0.11.3 双重识别：文字选区 → 同时截一张选区外接矩形的区域图。
+   *   复用 captureRectImage（零 pdfjs 内部 API，直接裁页面画布）；
+   *   截图失败 / 选区不在 PDF 页内 → 返回 null，降级为纯文字摘录（与旧行为一致）。
+   * 返回 { attachmentName, embed, imgW, imgH, rectParam } 或 null（挂到 info.img）。
+   * 已知边界：跨页选区只按起始页画布截图（超出部分被裁掉）——跨页文字本就罕见，
+   *   不为此引入跨页拼接的复杂度。
+   */
+  async captureSelectionImage(sel, info) {
+    try {
+      if (!sel || sel.rangeCount === 0) return null;
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      const el = node.nodeType === 1 ? node : node.parentElement;
+      if (!el || !el.closest) return null;
+      const pageEl = el.closest(".page[data-page-number]");
+      if (!pageEl) return null;
+      const ctx = this.resolvePdfContext(pageEl);
+      if (!ctx || !ctx.view || !ctx.view.file) return null;
+      const rect = range.getBoundingClientRect();
+      if (!rect || rect.width < 4 || rect.height < 4) return null;
+      const screenRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      // v0.14.8：settings.autoAttachScreenshot 关掉时不生成 webp
+      const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+      const cap = autoAttach ? await this.captureRectImage(ctx.view, pageEl, screenRect, info.pageNum || ctx.pageNum) : null;
+      if (!cap) return null;
+      return {
+        attachmentName: cap.attachmentName, embed: cap.embed,
+        imgW: cap.imgW, imgH: cap.imgH, rectParam: cap.rectParam
+      };
+    } catch (err) {
+      console.warn("[lmb] captureSelectionImage error:", err);
+      return null;
+    }
   },
 
   /* ==================== mouseup：出示手柄 ==================== */
@@ -92,6 +241,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (show) {
           this._chipSig = sig; // 记录 chip 当前承载的选区签名（dragend 时清除）
           this.debugNotice("✓ 文字选区 " + info.display + "（" + info.text.length + " 字）");
+          /* v0.16.6 P1-1：截图从「mouseup 无条件生成」改为「用户真的开始拖才生成」。
+           *   旧版 mouseup 里直接 captureSelectionImage → captureRectImage → vault.createBinary，
+           *   **与用户是否拖拽无关** —— 只是双击选个词，vault 里就多一个永不清理的 webp
+           *   孤儿；同时 imgDims 每多一项就写进 data.json，配置无限膨胀、启动 loadData 变慢。
+           *   难点：dataTransfer.setData 必须同步调用，dragstart 里不能 await 截图。
+           *   解法 = 分两步：
+           *     ① mouseup 只把选区 Range **克隆**下来（克隆 Range 不随 live selection 变化，
+           *        用户后续点 chip / 拖动都不会让它失效）；
+           *     ② chip 的 mousedown/touchstart（= 用户明确要拖了）才启动截图，
+           *        dragstart 通常晚于 mousedown 几十~几百毫秒，截图基本已就绪；
+           *        万一没赶上 → info.img 为 undefined，自动降级为纯文字摘录（成熟降级路径）。
+           *   降级是安全的：与「关掉自动附截图」走同一条分支，不会报错也不会写坏卡。 */
+          try { info._range = sel.getRangeAt(0).cloneRange(); } catch (_) { info._range = null; }
           this.showChip(e.clientX, e.clientY, "📑 " + info.text.length + " 字 · 按住拖到 md 或画布", info);
           return;
         }
@@ -108,7 +270,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const now = Date.now();
     if (now - this._lastNoSelNotice > 5000) {
       this._lastNoSelNotice = now;
-      this.debugNotice("mouseup：无文字选区（图片框选 = 侧栏按钮 或 Alt+拖）");
+      this.debugNotice("mouseup：无文字选区（图片框选 = PDF 工具栏按钮 / Alt+拖）");
     }
   },
 
@@ -149,10 +311,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   /**
-   * v0.9.3：由鼠标事件找到所在 canvas 视图的内部 canvas 对象（API 齐全才返回），
-   * 供 instantMoveAttach 在内存数据上直接做父子判定（不等落盘）。
+   * v0.9.3 + v0.11.1：由鼠标事件同时拿到 canvas 视图的内部 canvas 对象 **和** 所属 file/path，
+   *   避免老版「canvasObj.view.file.path」在 polling 早期偶发为 null 的陷阱
+   *   （canvas 渲染引擎的 back-reference 在 canvas 还没完全加载时可能没填充 .view.file）。
+   *   返回 { canvasObj, leaf, file } 或 null。供 instantAttach 与 instantMoveAttach 使用。
    */
-  canvasObjFromEvent(e) {
+  canvasCtxFromEvent(e) {
     const t = e && e.target;
     const el = t && t.nodeType === 1 ? t : (t && t.parentElement);
     if (!el || !el.closest) return null;
@@ -160,12 +324,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!leafEl) return null;
     try {
       const leaf = this.app.workspace.getLeavesOfType("canvas").find((l) => l.containerEl === leafEl);
-      const c = leaf && leaf.view && leaf.view.canvas;
-      return (c && typeof c.getData === "function" &&
-        typeof c.setData === "function" && typeof c.requestSave === "function") ? c : null;
+      if (!leaf || !leaf.view) return null;
+      const c = leaf.view.canvas;
+      const f = leaf.view.file;
+      if (!c || typeof c.getData !== "function" ||
+          typeof c.setData !== "function" || typeof c.requestSave !== "function") return null;
+      return f && f.extension === "canvas" ? { canvasObj: c, leaf, file: f } : { canvasObj: c, leaf, file: null };
     } catch (_) {
       return null;
     }
+  },
+
+  /**
+   * v0.9.3 兼容垫层：保留旧名返回 canvasObj（drop/mouseup 老调用方不传 file 才用得上），
+   *   新代码优先用 canvasCtxFromEvent 同时拿 file。
+   */
+  canvasObjFromEvent(e) {
+    const ctx = this.canvasCtxFromEvent(e);
+    return ctx ? ctx.canvasObj : null;
   },
 
   /**
@@ -384,10 +560,28 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // 补丁 B 颜色语义标签行（extractSelection 注入 info.colorTag，非空才输出），
       // 位于 ^ex 行之前；info.colorTag 不存在/为空时行为与旧版完全一致。
       const tagLine = (info && info.colorTag) ? "\n> #" + info.colorTag : "";
+      // v0.12.0：引用行只显示 📖（点击跳转不变，lmbBookLink 只改显示名不改链接本体）；
+      //   导出摘录 md 时由 lmbRestoreRefDisplayName 还原【文件名-P.N】全名。
+      //   旧版「> ([[..|【x-P.4】]])」外层括号一并去掉（📖 后括号纯占宽度）。
+      const refLine = "> " + lmbBookLink(info.link);
       if (info.isImage) {
-        return info.embed + "\n> (" + info.link + ")" + tagLine + "\n^" + exId;
+        return info.embed + "\n" + refLine + tagLine + "\n^" + exId;
       }
-      return "> (" + info.link + ")\n> " + info.text + tagLine + "\n^" + exId;
+// v0.11.3 双重摘录：文字选区同时截了图（info.img）→ 引用块 + 截图 embed 一起进卡。
+    //   v0.16.0：**不再写 `> [!lmb-view]` 切换按钮行**（卡片精简 v2 —— 用户要求卡内不放控件）。
+    //   视图切换改由悬浮栏「视图」按钮接管：判定「双重卡」= 同时含 PDF 引用行 + 截图 embed
+    //   （26-pure-canvasbar.js lmbPickBarActions），切换走 toggleCardViewByHost 直接给 host
+    //   加/去 lmb-view-img class —— **不再依赖 lmb-view callout 存在**（详见 33-plugin-note-comment.js）。
+    //   副作用：老版本建的双重卡（markdown 里已带 lmb-view 行）仍然能被识别与切换，零迁移。
+    //   纯文字路径（无 img）输出与旧版完全一致。
+    // v0.14.8：settings.autoAttachScreenshot 关掉时不挂 img.embed（防御性双保险）。
+    let s = refLine + "\n> " + info.text + tagLine;
+    const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+    if (autoAttach && info.img && info.img.embed) {
+      s += "\n\n" + info.img.embed + "\n\n^" + exId;
+      return s;
+    }
+    return s + "\n^" + exId;
     } catch (err) {
       console.error("[lmb] buildDropText error:", err);
       // 降级：恢复旧版随机 id 行为
@@ -401,6 +595,41 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 拖拽手柄（纯原生 HTML5 drag） ==================== */
 
+  /**
+   * v0.16.6 P1-1：按需截图的触发入口 —— 只在用户按下 chip（明确要拖）时才真正生成 webp。
+   *   背景与取舍见 onDocMouseUp 的同名注释：旧版 mouseup 无条件落盘，产生大量孤儿附件。
+   * @param {Object} info extractSelection 的返回（需带克隆出来的 _range）
+   */
+  _armPendingImage(info) {
+    try {
+      if (!info || info.isImage || info.img || info._imgPending) return;
+      const range = info._range;
+      if (!range) return;
+      // 关掉「自动附截图」时连生成都不用做（与 buildDropText 里的判据同源）
+      if (this.settings && this.settings.autoAttachScreenshot === false) return;
+      // 已卸载 / chip 已消失 → 不再生成（避免异步链在插件停止后写文件）
+      if (this._unloaded) return;
+      info._imgPending = true;
+      // captureSelectionImage 只用到 rangeCount 与 getRangeAt(0)，用克隆 Range 造一个最小 sel。
+      // 克隆 Range 不随 live selection 变化 —— 用户点 chip 导致原生选区被清也照样能截。
+      const fakeSel = { rangeCount: 1, getRangeAt: () => range };
+      this.captureSelectionImage(fakeSel, info).then((img) => {
+        info._imgPending = false;
+        if (!img) return;
+        info.img = img;
+        // 截到了就把 chip 文案补上「+ 🖼 截图」，让用户看得见这次拖拽会带图
+        try {
+          if (this.chipEl) {
+            this.chipEl.textContent = "📑 " + String(info.text || "").length + " 字 + 🖼 截图 · 拖到 md 或画布";
+          }
+        } catch (_) {}
+      }).catch((err) => {
+        info._imgPending = false;
+        console.warn("[lmb] 按需截图失败，本次拖拽降级为纯文字摘录:", err);
+      });
+    } catch (_) { /* 预取失败不影响拖拽本身 */ }
+  },
+
   showChip(x, y, label, info) {
     this.hideChip();
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
@@ -412,6 +641,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     chip.style.top = (y + 16) + "px";
     doc.body.appendChild(chip);
     this.chipEl = chip;
+
+    /* v0.16.6 P1-1：按下 chip = 用户明确要拖 → 这一刻才启动截图（详见 onDocMouseUp 的注释）。
+     *   只挂监听不干活，成本可忽略；截图失败则 info.img 保持 undefined → 降级纯文字摘录。 */
+    const armImage = () => this._armPendingImage(info);
+    chip.addEventListener("mousedown", armImage);
+    chip.addEventListener("touchstart", armImage, { passive: true });
 
     chip.addEventListener("dragstart", (e) => {
       // Bugfix(严重回归)：守卫必须限定图片路径。文字选区的 info 没有 attachmentName 字段，
@@ -458,8 +693,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * v0.5.0 即时通道：drop 后轮询内存 canvas 数据（60ms 间隔，最多 1.2s），
    * 新 ^ex 卡一出现立即做父子判定，命中则 setData + requestSave（毫秒级，绕过磁盘往返）。
    * 失败/超时/没压中卡 → 什么都不做，文件层管线（250ms + 出生重试）自然兜底。
+   * v0.11.1：file 参数由 caller 从 canvasCtxFromEvent 传入（不再依赖 canvasObj.view，
+   *   后者在 polling 早期可能没填充 .file → 漏 sidecar → processCanvas lmbRecenterNode 失效 → 侧翻）。
    */
-  async instantAttach(canvasObj) {
+  async instantAttach(canvasObj, file) {
+    const filePath = (file && file.path) || (canvasObj.view && canvasObj.view.file && canvasObj.view.file.path) || null;
     const before = new Set(((canvasObj.getData() || {}).nodes || []).map((n) => n.id));
     const t0 = Date.now();
     while (Date.now() - t0 < 1200) {
@@ -474,8 +712,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!hit) return; // 没压到卡 → 交给文件层（含出生重试）
       const parent = hit.node;
       if (!Array.isArray(data.edges)) data.edges = [];
-      const path2 = canvasObj.view && canvasObj.view.file ? canvasObj.view.file.path : null;
-      const sidecar0 = (path2 && this.autoEdges.get(path2)) || new Set();
+      // v0.11.1：caller 给的 file.path 优先（更稳定）；fallback 到 canvasObj.view 旧路径
+      const sidecar0 = (filePath && this.autoEdges.get(filePath)) || new Set();
       const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar0);
       if (plan.op === "create") {
         const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
@@ -487,12 +725,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           id: eid, fromNode: parent.id, toNode: nn.id,
           fromSide: ends.fromSide, toSide: ends.toSide
         });
-        // v0.11.0 修复：即时通道建的边此前漏登记 sidecar → 文件层不认账（当作手动边），
-        //   首连锁定 / 自动边清理全都失明。现在建边即登记。
-        if (path2) {
-          const ae = this.autoEdges.get(path2) || new Set();
+        // v0.11.0 修复 + v0.11.1 强化：拿不到 file 时落到 caller 传进来的；
+        //   setData 后 processCanvas 端 movedOrNew 还有一次性兜底补登（见 32-plugin-canvas.js）
+        if (filePath) {
+          const ae = this.autoEdges.get(filePath) || new Set();
           ae.add(eid);
-          this.autoEdges.set(path2, ae);
+          this.autoEdges.set(filePath, ae);
         }
         canvasObj.setData(data);
         canvasObj.requestSave();
@@ -513,10 +751,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   - 命中父卡 → 换父摘旧自动边 → lmbLayoutGroup → setData + requestSave（毫秒级生效），
    *     并同步位置档案，防文件层把同一批移动再处理一遍；
    *   - 没压到卡 / API 不可用 → 静默返回，文件层管线自然兜底。
+   * v0.11.1：file 参数由 caller 传入（参上 instantAttach 注释）。
    */
-  async instantMoveAttach(canvasObj) {
-    const file = canvasObj && canvasObj.view && canvasObj.view.file;
-    const path = file && file.path;
+  async instantMoveAttach(canvasObj, file) {
+    const path = (file && file.path) || (canvasObj.view && canvasObj.view.file && canvasObj.view.file.path) || null;
     if (!path) return;
     const lastPos = this.canvasPositions && this.canvasPositions.get(path);
     if (!lastPos || !lastPos.size) return; // 首见画布 → 交给文件层建档
@@ -544,19 +782,33 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const parent = hit.node;
         if (!Array.isArray(data.edges)) data.edges = [];
         const sidecar = this.autoEdges.get(path) || new Set();
-        // v0.11.0：首连锁定 + 改挂侧（取代 v0.7.3 换父）
-        const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar);
+        // v0.11.0：首连锁定 + 改挂侧（取代 v0.7.3 换父）。
+        // v0.11.1：明确传 sizeOnly=false（这里是用户主动拖动，不是尺寸变化）
+        const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar, { sizeOnly: false });
         if (plan.op === "skip") continue;
+        if (plan.op === "recenter") {
+          // v0.11.1：防御性同样过滤 nn 自身（auto edge 可能在 data.edges 里导致重复）
+          const kidsBySideR = lmbGroupBySide(parent, nodes, data.edges);
+          const groupR = [...(kidsBySideR.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
+          lmbLayoutGroup(parent, groupR, plan.side, 30);
+          if (!sidecar.has(plan.edge.id)) sidecar.add(plan.edge.id);
+          changed = true;
+          continue;
+        }
         if (plan.op === "reside") {
           // R4：拖回已连线的卡上 → 按落点方位改挂侧 + 两侧组重排（同侧 = 重新对齐）
           const r = lmbApplyReside(parent, nn, plan, nodes, data.edges);
+          if (!sidecar.has(plan.edge.id)) sidecar.add(plan.edge.id);
           changed = true;
           console.log("[lmb] 即时通道（改挂侧）: ", parent.id.slice(0, 8), "->", nn.id.slice(0, 8),
             "(" + plan.oldSide + "→" + r.side + ")");
           continue;
         }
+        // 取父卡现有子卡按侧分组；把新卡 nn 加进同侧组，整组贴边对齐+组居中排布
+        // v0.11.1 防御：lmbGroupBySide 会通过已存在的 edge 把 nn 也算进来（虽然这里是 create
+        //   路径理论上不会有，但若 nn 是从别处拖过来并且已经存在连线就可能），filter 防御
         const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
-        const group = [...(kidsBySide.get(plan.side) || []), nn];
+        const group = [...(kidsBySide.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
         lmbLayoutGroup(parent, group, plan.side, 30);
         const ends = lmbSideEnds(plan.side);
         const eid = "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);

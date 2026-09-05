@@ -1,71 +1,20 @@
 /*
- * ============================================================================
- * Lucia's MarginBook (lmb) v0.11.0
- * ----------------------------------------------------------------------------
- * 独立运行的 PDF 摘录工作流插件：不依赖任何第三方 PDF 插件，不修改其他插件文件。
- * 与 PDF++ 等其他 pdf 链接处理插件可共存（本插件在 DOM 捕获层拥有更高优先级）。
+ * Lucia's MarginBook v0.16.14
+ * Independent PDF excerpt workflow for Obsidian.
  *
- * 功能：
- *   1. 文字选区 → 手柄 → md 引用块 / canvas 文本卡
- *   2. 图片框选（二选一）：
- *      a) 侧边栏 ribbon 按钮「图片框选」→ 点击后下一次拖拽即框选（一次性）
- *      b) Alt + 拖拽
- *      松手后直接裁剪页面渲染画布，存为 webp 附件 → 拖拽生成 ![[xxx.webp]]
- *   3. 回跳链接 selection=文本层索引（沿用 PDF++ 的 URL 参数约定以兼容存量笔记，
- *      解析/生成本插件自理），点击高亮定位
- *   4. Canvas 摘录卡自动适配内容大小（图片卡按截图真实宽高比；尊重手动调整）
- *   5. Canvas 变更 → 自动创建/同步「<PDF名>-摘录.md」（canvas 主本 → md）
- *
- * v0.11.0 变更（首连锁定 / 改挂侧 / 乱放根因修复 / 独立评论体系）：
- *   - R1 乱放根因修复：instantAttach 用落下时的默认小尺寸组居中 → fitNode 随后撑大卡片
- *     → 高度变了 y 不变 → 中心偏出父卡轴线。新增 lmbRecenterNode：fitNode/补充描述/
- *     评论改变尺寸后按自动父边做组内重新居中
- *   - R3 首连锁定（lmbPlanAutoLink）：一张卡只自动建一条连线；已有自动边后压中其他卡
- *     不再换父、不再新建（换父已移除，想换父手动删线重拖）；手动边不参与锁定
- *   - R4 改挂侧（lmbApplyReside）：拖回已连线的卡上 → 按落点方位改边端点（上下左右）
- *     + 新旧两侧组重排；同侧重拖 = 重新对齐
- *   - R2 独立评论体系（lmb-comment callout，仿 PDF Flow 批注底栏）：新卡自动挂评论栏
- *     （可关）、canvas 里点评论栏直接弹编辑框、ribbon/命令/批量入口齐全；
- *     与补充描述是两套独立数据，摘录 md 同步时两者都剥离
- *
- * v0.10.0 变更（与 PDF++ 彻底解耦）：
- *   - 删除「借 PDF++ 选框出 chip」的跟踪层（_ppBox/seenBoxes/onDocMouseMove/
- *     mouseup 路径①②）；图片框选只走自带 Alt+拖拽 / 侧栏按钮，文字选区走
- *     原生 getSelection —— 零 PDF++ DOM 读取、零插件对象访问
- *   - 品牌 / id / 类名 / 命令 id 全量更名：lucias-marginbook / lmb-*
- *   - 数据格式不变：ppd-note callout、<!-- ppd-note-start/end --> 旧锚点、
- *     selection=/rect= 链接参数原样保留（存量笔记零迁移）
- *
- * v0.3.0 变更（MarginNote 4 借鉴改造，三路补丁合入）：
- *   - P0-1 内容寻址 exId：同一选区重复拖拽 → 同一 ^ex id → 引用计数正确、
- *     canvas 卡按 id 去重（卡片轴心架构的地基）
- *   - P1-3 摘录文档按页分组（## P.N 标题）：Obsidian 核心大纲插件自动获得
- *     摘录大纲视图（P2-7 免费达成）；frontmatter 增加 updated 时间戳
- *   - P1-4 相关笔记检索（MN4「标题链接」平替）：新摘录自动查全库元数据，
- *     命中 ≥2 个分词的 top3 写入「> 相关：」行，纯本地零 AI
- *   - P1-5 颜色语义：设置页映射表 + annotationLayer 高亮色探测（best-effort，
- *     探不到静默跳过），命中映射时摘录卡自动附 #标签
- *   - P2-6 Recall 回忆模式：阅读模式模糊含【*-P.N】的引用块，点击揭示 3 秒
- *   - 新增命令：recall-toggle / open-excerpt-doc
- *
- * 已知边界：
- *   - 截图分辨率 = 当前缩放下的屏幕像素（放大后再框选更清晰）
- *   - md 落点需为编辑模式；canvas 尺寸估算近似
- *
- * 调试：console 前缀 [lmb]；Notice 调试链可在设置里关闭。
- * ============================================================================
+ * This file starts the generated CommonJS bundle. Release history lives in
+ * CHANGELOG.md and docs/historical-bootstrap.md.
  */
-
 "use strict";
 
-/* ============================================================
- * 10-constants —— 正则与数据格式常量
- * 修改注意：ppd-note / lmb-comment / selection= 是数据格式字面量，
- * 改了会破坏存量笔记，动前先确认。
- * ============================================================ */
+const {
+  Plugin, Notice, TFile, PluginSettingTab, Setting, normalizePath, Modal,
+  FuzzySuggestModal, setIcon
+} = require("obsidian");
 
-const { Plugin, Notice, TFile, PluginSettingTab, Setting, normalizePath, Modal, FuzzySuggestModal } = require("obsidian");
+// Stable excerpt identifier embedded in Markdown blocks.
 const EX_ID_RE = /\^ex-[0-9a-z]{4,8}/;
+
 /* ==================== P1：摘录索引层 ====================
  * 动机：现有链路是 canvas → 摘录 md 的单向同步，打开 PDF 时无法知道「哪些段落
  *   已经摘录过」。本层建立反向索引（摘录 md → PDF/页/选区），为 P2 回绘与
@@ -83,6 +32,198 @@ const LMB_LINK_RE = /\[\[([^#|\]]+\.pdf)#page=(\d+)(?:&selection=([\d,]+))?(?:&r
 const LMB_SEL_RE = /^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/;
 // rect 参数：l,t,w,h（相对 .page 的百分比，浮点）—— 截图摘录用，不依赖 textLayer
 const LMB_RECT_RE = /^\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*$/;
+// 高度测量的固定安全余量。用于吸收字体行高、margin 折叠和 CSS 像素取整误差。
+// 文本哈希闸门保证它只应用一次，不会因移动/resize 的 modify 事件反复累加。
+const LMB_HEIGHT_PAD = 20;
+const LMB_HEIGHT_PAD_COMMENT = 40;
+
+/**
+ * 测量渲染内容的固有高度，不受卡片当前高度与内部滚动位置影响。
+ * 叶节点 rect 已经包含祖先的顶部间距，因此这里只补叶节点 margin-bottom 和根容器底部间距；
+ * 不再逐层累加祖先 margin/padding，避免同一间距重复计算成大片留白。
+ */
+function lmbMeasureRenderedContent(contentEl, scale) {
+  try {
+    if (!contentEl || typeof contentEl.getBoundingClientRect !== "function") return 0;
+    scale = isFinite(scale) && scale > 0 ? scale : 1;
+    const rootRect = contentEl.getBoundingClientRect();
+    const scrollTop = Number(contentEl.scrollTop) || 0;
+    let maxBottom = 0;
+    const visibleKids = (el) => {
+      const kids = el && el.children ? Array.from(el.children) : [];
+      return kids.filter((kid) => {
+        try {
+          const cs = getComputedStyle(kid);
+          if (cs && (cs.display === "none" || cs.visibility === "hidden")) return false;
+          const r = kid.getBoundingClientRect();
+          return !!r && r.height > 0;
+        } catch (_) {
+          try { return kid.getBoundingClientRect().height > 0; } catch (_) { return false; }
+        }
+      });
+    };
+    const walk = (el) => {
+      const kids = visibleKids(el);
+      if (kids.length) {
+        for (const kid of kids) walk(kid);
+        return;
+      }
+      let r; try { r = el.getBoundingClientRect(); } catch (_) { return; }
+      if (!r || r.height <= 0) return;
+      let marginBottom = 0;
+      try { marginBottom = parseFloat(getComputedStyle(el).marginBottom) || 0; } catch (_) {}
+      const bottom = (r.bottom - rootRect.top) / scale + scrollTop + marginBottom;
+      if (bottom > maxBottom) maxBottom = bottom;
+    };
+    for (const kid of visibleKids(contentEl)) walk(kid);
+    if (maxBottom <= 0) return 0;
+    let rootBottom = 0;
+    try {
+      const cs = getComputedStyle(contentEl);
+      rootBottom = (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+    } catch (_) {}
+    return Math.ceil(maxBottom + rootBottom);
+  } catch (_) { return 0; }
+}
+
+function lmbFinalizeCardHeight(contentHeight, chromePad, hasComment, alreadyEstimated) {
+  const base = Number(contentHeight) || 0;
+  if (base <= 0) return 0;
+  const total = alreadyEstimated ? base : base + (Number(chromePad) || 0)
+    + (hasComment ? LMB_HEIGHT_PAD_COMMENT : LMB_HEIGHT_PAD);
+  return Math.max(60, Math.min(4000, Math.ceil(total)));
+}
+
+/** 返回实际产生纵向滚动条的像素差；只检查滚动宿主，不拿普通后代的 scrollHeight 误判。 */
+function lmbVerticalOverflow(contentEl) {
+  try {
+    if (!contentEl) return 0;
+    const candidates = [contentEl];
+    if (typeof contentEl.querySelectorAll === "function") {
+      for (const el of Array.from(contentEl.querySelectorAll(
+        ".markdown-preview-view, .markdown-rendered"
+      ))) candidates.push(el);
+    }
+    let overflow = 0;
+    for (const el of candidates) {
+      const scrollH = Number(el && el.scrollHeight) || 0;
+      const clientH = Number(el && el.clientHeight) || 0;
+      if (scrollH > 0 && clientH > 0) overflow = Math.max(overflow, scrollH - clientH);
+    }
+    return overflow > 0.5 ? Math.ceil(overflow) : 0;
+  } catch (_) { return 0; }
+}
+
+function lmbHeightAfterOverflow(currentHeight, overflow) {
+  const h = Number(currentHeight) || 0;
+  const extra = Number(overflow) || 0;
+  // 8px 用于去掉滚动条后文字宽度变化及 Canvas 小数像素舍入；只在确认溢出时增加。
+  return extra > 0 ? Math.max(60, Math.min(4000, Math.ceil(h + extra + 8))) : h;
+}
+
+// v0.16.12：在 Canvas 中直接读取当前节点会受到固定 height、overflow 和竖向滚动条影响。
+// 第一次 fit 后滚动条消失、可用宽度变化，文字会重新换行，于是相同内容第二次测出不同高度。
+// 这里克隆整张卡片到同一个 Canvas 容器中，保留主题/祖先选择器和最终外框宽度，但解除
+// 高度与 overflow 约束，让浏览器按“无滚动条的自然布局”计算整卡高度。
+function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
+  let clone = null;
+  try {
+    if (!wrapperEl || !contentEl || typeof wrapperEl.cloneNode !== "function") return 0;
+    const doc = wrapperEl.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const parent = wrapperEl.parentElement || (doc && doc.body);
+    if (!doc || !parent || typeof parent.appendChild !== "function") return 0;
+
+    // 用子节点索引定位 clone 中对应的 contentEl，比依赖某个 Obsidian 版本的 class 稳定。
+    const path = [];
+    let cursor = contentEl;
+    while (cursor && cursor !== wrapperEl) {
+      const p = cursor.parentElement;
+      if (!p || !p.children) return 0;
+      const index = Array.prototype.indexOf.call(p.children, cursor);
+      if (index < 0) return 0;
+      path.unshift(index);
+      cursor = p;
+    }
+    if (cursor !== wrapperEl) return 0;
+
+    scale = isFinite(scale) && scale > 0 ? scale : 1;
+    let outerWidth = Number(wrapperEl.offsetWidth) || 0;
+    if (outerWidth <= 0 && typeof wrapperEl.getBoundingClientRect === "function") {
+      const r = wrapperEl.getBoundingClientRect();
+      if (r && r.width > 0) outerWidth = r.width / scale;
+    }
+    if (outerWidth <= 0) return 0;
+
+    clone = wrapperEl.cloneNode(true);
+    try { clone.removeAttribute("id"); } catch (_) {}
+    try { clone.setAttribute("aria-hidden", "true"); } catch (_) {}
+    try { clone.inert = true; } catch (_) {}
+    const cs = clone.style;
+    cs.setProperty("position", "absolute", "important");
+    cs.setProperty("left", "-100000px", "important");
+    cs.setProperty("top", "0", "important");
+    cs.setProperty("transform", "none", "important");
+    cs.setProperty("width", `${outerWidth}px`, "important");
+    cs.setProperty("height", "auto", "important");
+    cs.setProperty("min-height", "0", "important");
+    cs.setProperty("max-height", "none", "important");
+    cs.setProperty("overflow", "visible", "important");
+    cs.setProperty("visibility", "hidden", "important");
+    cs.setProperty("pointer-events", "none", "important");
+    cs.setProperty("contain", "none", "important");
+
+    let cloneContent = clone;
+    const unlock = [clone];
+    for (const index of path) {
+      cloneContent = cloneContent && cloneContent.children ? cloneContent.children[index] : null;
+      if (!cloneContent) return 0;
+      unlock.push(cloneContent);
+    }
+    // 只解除 wrapper→content 这条布局链，不能把图片等内容元素的固有高度也改成 auto。
+    for (const el of unlock) {
+      if (!el || !el.style) continue;
+      el.style.setProperty("height", "auto", "important");
+      el.style.setProperty("min-height", "0", "important");
+      el.style.setProperty("max-height", "none", "important");
+      el.style.setProperty("overflow", "visible", "important");
+    }
+    // Obsidian Markdown 预览层有时自己承担滚动；一并解除这些纯容器的约束。
+    if (cloneContent.querySelectorAll) {
+      const layoutLayers = cloneContent.querySelectorAll(
+        ".markdown-preview-view, .markdown-preview-sizer, .markdown-preview-section, .markdown-rendered"
+      );
+      for (const el of Array.from(layoutLayers)) {
+        if (!el || !el.style) continue;
+        el.style.setProperty("height", "auto", "important");
+        el.style.setProperty("min-height", "0", "important");
+        el.style.setProperty("max-height", "none", "important");
+        el.style.setProperty("overflow", "visible", "important");
+      }
+    }
+
+    parent.appendChild(clone);
+    // 读取 layout 属性会同步触发布局。scrollHeight 包含完整溢出内容和容器 padding；
+    // 整卡 clone 的 scrollHeight 同时包含 content 外部的真实 chrome，不再靠 20/40px 猜测。
+    const contentHeight = Math.max(Number(cloneContent.scrollHeight) || 0,
+      Number(cloneContent.offsetHeight) || 0);
+    const liveOuterHeight = Number(wrapperEl.offsetHeight) || 0;
+    const liveContentHeight = Number(contentEl.clientHeight) || 0;
+    const measuredChrome = Math.max(0, liveOuterHeight - liveContentHeight);
+    const cloneHeight = Math.max(Number(clone.scrollHeight) || 0, Number(clone.offsetHeight) || 0);
+    // 活节点若已有滚动条，scrollHeight-clientHeight 是最直接的缺口。将它换算到外框高度
+    // 作为下限，可覆盖主题/flex 布局导致离屏 clone 与 Canvas 视口映射不完全一致的情况。
+    const liveOverflow = lmbVerticalOverflow(contentEl);
+    const liveOverflowFloor = liveOverflow > 0
+      ? lmbHeightAfterOverflow(liveOuterHeight, liveOverflow) : 0;
+    const natural = Math.max(cloneHeight, contentHeight + measuredChrome, liveOverflowFloor);
+    // 仅保留 4px 给小数像素取整/边框抗锯齿，不再按内容类型叠加大块经验余量。
+    return natural > 0 ? Math.max(60, Math.min(4000, Math.ceil(natural + 4))) : 0;
+  } catch (_) {
+    return 0;
+  } finally {
+    try { if (clone && clone.parentElement) clone.parentElement.removeChild(clone); } catch (_) {}
+  }
+}
 /* ==================== v0.8.0+：卡片补充描述（note） ====================
  * v0.8.0 最初设计：HTML 注释锚点 + callout 解析。v0.8.3 改成**完全可见**：
  *   - 砍掉 `<!-- ppd-note-start/end -->`（可疑失败点：要么被字面渲染破坏 callout，
@@ -108,6 +249,15 @@ const NOTE_START_LINE_RE = /^\s*<!--\s*ppd-note-start\s*-->\s*$/;
 const NOTE_END_LINE_RE = /^\s*<!--\s*ppd-note-end\s*-->\s*$/;
 // callout 首行：> [!类型][+-]? 标题
 const NOTE_CALLOUT_RE = /^\s*>\s*\[!([^\]]+)\]\s*([+-]?)\s*(.*)$/;
+/* v0.16.6 P1-4：note 类型白名单的**历史默认值**。
+ *   背景：NOTE_CALLOUT_RE 的捕获组是 [^\]]+，匹配**任意** callout 类型 —— 旧版
+ *   lmbSplitNote 只排除 lmb-comment / lmb-view，于是用户自己写的 [!warning]、[!quote]、
+ *   [!tip] 全被当成「补充描述」，后果是 lmbStripNote 把它们**整段删掉**、lmbJoinNote
+ *   把类型改写成 noteCalloutType 并覆盖原文（真实内容丢失）。
+ *   修法：只认插件自有的 note 类型 = 历史默认 ppd-note + 用户当前配置的
+ *   settings.noteCalloutType（由调用方通过 lmbSplitNote 第二参传入）。
+ *   注意：白名单是「识别」范围，不是「渲染」范围 —— 用户自有 callout 现在原样留在 body 里。 */
+const LMB_NOTE_TYPE_DEFAULT = "ppd-note";
 /* ==================== v0.11.0：独立评论体系（lmb-comment） ====================
  * 与「补充描述」（ppd-note）并存的第二套数据，仿 PDF Flow 的批注评论底栏：
  *   空：> [!lmb-comment]- 添加评论     ← 折叠单行，渲染成底栏按钮
@@ -118,6 +268,229 @@ const LMB_COMMENT_TYPE = "lmb-comment";
 const LMB_COMMENT_EMPTY_TITLE = "添加评论";
 const LMB_COMMENT_TITLE = "评论";
 const LMB_COMMENT_CALLOUT_RE = /^\s*>\s*\[!lmb-comment\]\s*([+-]?)\s*(.*)$/;
+/* ==================== v0.11.3：双重摘录（文字+截图）卡片视图切换 ====================
+ * 双重摘录卡 = 引用块（文字）+ 截图 embed 同时在卡里，卡上挂一个 lmb-view callout
+ * 作为「切换按钮」：点击在 文字视图 / 图片视图 之间切换（CSS 显隐，宽度不变）。
+ * 默认 = 文字视图（有文字则以文字摘录为主）。
+ * lmb-view 是 UI 开关不是内容，摘录 md 同步时会剥掉这一行。 */
+const LMB_VIEW_TYPE = "lmb-view";
+const LMB_VIEW_TITLE_TEXT = "📄 文字 · 点击切换";
+const LMB_VIEW_TITLE_IMG = "🖼 图片 · 点击切换";
+const LMB_VIEW_CALLOUT_RE = /^\s*>\s*\[!lmb-view\]\s*([+-]?)\s*(.*)$/;
+
+/* ============================================================
+ * 11-styles —— 全部注入式 CSS（v0.12.1 从 30-plugin-core.js 的 injectStyles() 抽出）
+ * 修改注意：
+ *   1. 本文件是**纯字符串数组**，不含任何逻辑；injectStyles() 只做 LMB_STYLES.join("")。
+ *      拼接后就是一整段 CSS，元素顺序 == 注入顺序 == 层叠顺序，别随意搬家。
+ *   2. 大量片段是「一条 CSS 规则被拆成多个数组元素」的产物（原样搬运，没有合并）。
+ *      改某一条规则时必须把上下相邻的几个元素一起看，只改一半会留下不配对的花括号，
+ *      从而吃掉后面所有规则。
+ *   3. 带反斜杠转义的片段（如 "\\1F50D"）必须保持转义原样，少一个反斜杠就变成乱码字符。
+ *   4. 分组注释（// ===== xxx =====）保留且顺序不变，它是人肉索引，也是版本演进记录。
+ *   5. per-view-type 的适配统一放本文件末尾的「per-view-type 适配层」，加新视图类型
+ *      只加一段 CSS，不改 JS（借鉴 editing-toolbar v4.1.1 的经验）。
+ *   6. 只有 CSS 能定的东西放这里；任何需要 JS 新增 / 移除 class 才生效的规则都不要写进来。
+ * ============================================================ */
+
+const LMB_STYLES = [
+  ".lmb-chip{position:fixed;z-index:1000;",
+  "background:var(--interactive-accent,#7c6cf0);color:var(--text-on-accent,#fff);",
+  "font-size:12px;padding:6px 12px;border-radius:16px;cursor:grab;",
+  "box-shadow:0 4px 14px rgba(0,0,0,.5);user-select:none;white-space:nowrap;}",
+  ".lmb-chip:active{cursor:grabbing}",
+  ".lmb-rect{position:fixed;z-index:999;",
+  "border:2px dashed var(--interactive-accent,#7c6cf0);",
+  "background:rgba(124,108,240,.15);pointer-events:none;}",
+  ".lmb-btn.is-active{color:var(--text-on-accent);background:var(--interactive-accent);}",
+  // v0.8.1：动作按钮（补充描述）在不可用上下文里灰显，区别于「模式已开启」的 is-active
+  ".lmb-btn.is-idle{opacity:.35;}",
+  ".lmb-btn{cursor:pointer;}",
+  // ===== 补丁 C：Recall 回忆模式 =====
+  ".lmb-recall-blur{position:relative;cursor:pointer;}",
+  ".lmb-recall-blur>*{filter:blur(6px);transition:filter .25s;}",
+  ".lmb-recall-blur.lmb-recall-reveal>*{filter:none;}",
+  // ::after 挂在容器上（blur 只作用于子元素 > *，提示本身不会被糊掉）
+  ".lmb-recall-blur::after{content:'\\1F50D  点击回忆';position:absolute;top:6px;right:10px;", // Bugfix: 转义后首空格被 CSS 吃掉，补一个
+  "font-size:11px;line-height:1.4;color:var(--text-muted);",
+  "background:var(--background-secondary);border:1px solid var(--background-modifier-border);",
+  "border-radius:10px;padding:1px 8px;opacity:.85;pointer-events:none;}",
+  ".lmb-recall-blur.lmb-recall-reveal::after{display:none;}",
+  // ===== P2：摘录回绘标记 =====
+  // 关键：百分比定位 + .page 相对定位 → 覆盖层随页面缩放自动跟随，
+  //       完全不需要监听 zoom 事件重算（P0 实测 span 索引与缩放无关）。
+  'div[data-type="pdf"] .page{position:relative !important;}',
+  // 标记保持 pointer-events:none（见下）：单击/划选穿透，双击才跳转（P3）。
+  // 原因：标记覆盖在已摘录文字上，若单击可交互，会吃掉划选的起笔事件，
+  //       而"在 PDF 上划选拖拽"是本插件的主工作流，不能破坏。
+  ".lmb-mark{position:absolute;pointer-events:none;border-radius:2px;",
+  "mix-blend-mode:multiply;box-sizing:border-box;}",
+  // 降级标记：selection 缺失或 span 对不上时画页顶细条，宁可不准也不消失
+  '.lmb-mark[data-fallback="1"]{left:0 !important;right:0 !important;',
+  "top:0 !important;height:3px !important;width:auto !important;opacity:.75;}",
+  // ===== P3：跳转闪烁 =====
+  // 跳到目标选区后闪 3 次（0.5s × 3 = 1.5s），动画结束 opacity 回 0，2.2s 后 JS 移除节点
+  ".lmb-flash{position:absolute;pointer-events:none;border-radius:2px;",
+  "background:var(--interactive-accent,#7c6cf0);mix-blend-mode:multiply;",
+  "animation:lmb-flash-anim .5s ease-in-out 3;}",
+  "@keyframes lmb-flash-anim{0%,100%{opacity:0}45%,55%{opacity:.6}}",
+  // ===== v0.11.0：评论栏（仿 PDF Flow 批注底栏） =====
+  // v0.12.0：图标改冒泡 message-square（用户要求与原 ppd-note 的 💬 视觉一致，
+  //          替换 Obsidian 给未知 callout 的默认铅笔 ✎）；
+  //          padding/margin 压紧（用户要求排布更紧凑）
+  '.callout[data-callout="lmb-comment"]{--callout-icon:message-square;',
+  "background:var(--background-secondary,transparent);",
+  "border:none !important;border-top:1px solid var(--background-modifier-border) !important;",
+  "border-radius:0 !important;box-shadow:none !important;padding:4px 8px !important;margin-top:2px;}",
+  '.callout[data-callout="lmb-comment"] .callout-title{gap:6px;}',
+  '.callout[data-callout="lmb-comment"] .callout-title-inner{color:var(--text-muted);font-weight:400;font-size:12.5px;}',
+  '.callout[data-callout="lmb-comment"] .callout-icon{color:var(--text-faint);}',
+  // 折叠箭头推到最右（PDF Flow 的「›」位置）；lmb-comment-clickable 供 JS/测试识别
+  '.callout[data-callout="lmb-comment"] .callout-fold{margin-left:auto;}',
+  // ===== v0.11.2：PDF 工具栏收紧 + 框选按钮 =====
+  // 用户反馈顶部工具栏元素间距过大：把原生 .pdf-toolbar 的 gap / 按钮边距压紧
+  // （只作用于完整 PDF 视图，不动 md 里的 .pdf-embed 迷你工具栏）
+  '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar{gap:2px !important;',
+  "padding:2px 8px !important;}",
+  '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar .clickable-icon{',
+  "margin:0 1px !important;padding:3px 5px !important;}",
+  // 注入的框选按钮：激活态高亮（与 ribbon is-active 同一套主题色语义）
+  ".lmb-toolbar-crop.is-active{color:var(--text-on-accent)!important;",
+  "background:var(--interactive-accent)!important;}",
+  // 框选模式开启时，PDF 页面光标换十字，给「正在框选」的即时视觉反馈
+  'body.lmb-rect-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair !important;}',
+  // ===== v0.11.3：双重摘录卡（文字+截图）视图切换 =====
+  // v0.12.0：切换按钮图标化——文字视图=文档图标 / 图片视图=图片图标（CSS 变量随
+  //   host 的 lmb-view-img 切换），标题文字/折叠箭头整个隐藏；
+  //   float:right 让它与下方的评论栏共享同一行（用户要求「小工具同一行」），
+  //   容器 ::after 清浮动防止图标条溢出卡片底边。
+  '.callout[data-callout="lmb-view"]{--callout-icon:file-text;',
+  "background:var(--background-secondary,transparent);",
+  "border:none !important;border-radius:0 !important;box-shadow:none !important;",
+  "float:right;margin:0 0 2px 8px;padding:2px 6px !important;cursor:pointer;}",
+  '.lmb-view-img .callout[data-callout="lmb-view"]{--callout-icon:image;}',
+  '.callout[data-callout="lmb-view"] .callout-title{gap:4px;}',
+  '.callout[data-callout="lmb-view"] .callout-title-inner{display:none;}',
+  '.callout[data-callout="lmb-view"] .callout-fold{display:none;}',
+  '.callout[data-callout="lmb-view"] .callout-icon{color:var(--text-faint);}',
+  '.canvas-node-content:has(.callout[data-callout="lmb-view"])::after,',
+  '.markdown-rendered:has(.callout[data-callout="lmb-view"])::after{',
+  'content:"";display:block;clear:both;}',
+  // 双重卡默认 = 文字视图：藏截图 embed。
+  //   v0.16.1 判据再改版：**判定权完全收回 JS**（37-plugin-canvasbar.js lmbMarkDualCards）。
+  //   历史：v0.11.3~v0.15.0 靠卡里那行 `> [!lmb-view]` callout 当判据 → 有效；
+  //   v0.16.0 换成 `:has(a[href*=".pdf#page="]):has(img)` → **实测不命中**（用户 Bug5：
+  //   双重卡文字视图下图文并存）。根因：canvas 里指向 .pdf 的 internal-link 是**非 md 文件**，
+  //   Obsidian 渲染时很可能丢弃 #page= 子路径（href/data-href 只剩 "xxx.pdf"）→
+  //   属性选择器匹配不上。猜 DOM 结构不如不让 CSS 猜。
+  //   现行方案：JS 用 lmbPickBarActions().view（markdown 层：pdf 引用行 + 截图 embed）
+  //   判双重卡，把 lmb-dual 打在 **nodeEl** 上（contentEl 会被 markdown 重渲染重建，
+  //   class 会丢；nodeEl 生命周期 = 节点生命周期，稳定）。
+  //   同源的好处：JS 给「视图」按钮的判据 = CSS 藏图的判据 → 藏了就一定有按钮能切回来。
+  //   切到图片视图时 host（.canvas-node-content）带 lmb-view-img → :not() 不命中 → 图片显示。
+  '.lmb-dual .canvas-node-content:not(.lmb-view-img) img,',
+  '.lmb-dual .markdown-rendered:not(.lmb-view-img) img{display:none;}',
+  // md 阅读视图**保持旧判据**（只认 lmb-view callout），刻意不同步改版：
+  //   摘录 md 同步时会剥掉 lmb-view 行（v0.11.3 起），所以这条在摘录文档里本来就不命中
+  //   → 摘录 md 里的截图正常显示（图文并存，这是设计）。
+  //   若这里也换成「pdf 链接 + img」判据，摘录 md 的每条摘录都有 pdf 回跳链接，
+  //   只要文里出现任何图片就会被整篇藏掉 —— 那是明显的回归，不能这么改。
+  '.markdown-rendered:has(.callout[data-callout="lmb-view"]) img{display:none;}',
+  // 图片视图：显示截图、藏文字引用块（藏的是裸 blockquote，不动 ppd-note/lmb-comment 等 callout）
+  '.lmb-view-img img{display:block !important;}',
+  '.lmb-view-img blockquote:not(.callout){display:none;}',
+
+  /* ==================== v0.12.1 新增：per-view-type 适配层 ====================
+   * 设计意图（借鉴 editing-toolbar v4.1.1）：把「按视图类型做适配」从 JS 挪到 CSS。
+   *   以前每多支持一种视图类型，就要在注入逻辑里加一层 if 判断；现在加新视图只需要在
+   *   本区块追加一条 CSS 规则，逻辑层零改动。
+   *
+   * 三条硬约束（改动前先确认自己没违反）：
+   *   1. 只用**已经存在的** class，不引入任何需要 JS 配合的新 class —— 改 JS 的
+   *      那边不知道这里加了什么，两边会脱节。
+   *   2. 只做显隐 / 光标 / 过渡这类「不影响现有外观」的覆写，不改颜色、尺寸、间距。
+   *   3. 顺序上放在数组**最末尾**，保证它是最后注入的、能覆盖前面的同名属性。
+   *
+   * 放最后还有一个副作用是好事：万一某条写错了，只会影响最末几条规则，
+   *   不会像花括号不配对那样吃掉上面 59 条搬运规则。
+   * ===================================================================== */
+
+  // ---- 1. PDF 嵌入视图（md 里内嵌的迷你 PDF）里不显示注入的按钮 ----
+  // 理由：.pdf-embed 的迷你工具栏空间极小，多一个按钮就会被撑破、把原生控件挤出去。
+  //   JS 侧本来就只在完整 PDF 视图注入，这里再兜一道保险：万一将来注入逻辑变动
+  //   （比如缓存命中后按钮被挂到了错误的宿主），至少视觉上不会炸。
+  '.pdf-embed .lmb-toolbar-crop,',
+  '.pdf-embed .lmb-toolbar-md,',
+  '.pdf-embed .lmb-toolbar-canvas{display:none !important;}',
+
+  // ---- 2. 非 PDF 视图里不显示注入的按钮 ----
+  // 理由：用 :not() 白名单式限定，而不是黑名单式排除 —— 默认「任何非 PDF 的 leaf 都隐藏」，
+  //   这样即使 JS 因为兜底逻辑把按钮挂到 .view-content 等别的容器，视觉上也不会串台。
+  //   （这条是对并行改动 30-plugin-core.js 的防御：那边正在调整注入宿主的选择策略。）
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-crop,',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-md,',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-canvas{display:none !important;}',
+
+  // ---- 3. 三个注入按钮的通用视觉基线 ----
+  // 理由：给后续所有 per-view-type 覆写提供一个稳定的基类（cursor + opacity 过渡），
+  //   将来针对某视图做 hover / 显隐动画时，从这个基线继承即可，不用每个视图重抄一遍。
+  //   刻意**只加不影响现有外观的属性**：cursor 是交互语义、transition 只声明过渡曲线，
+  //   不指定初始 opacity，所以当前渲染结果与加这条之前完全一致。
+  ".lmb-toolbar-crop,.lmb-toolbar-md,.lmb-toolbar-canvas{cursor:pointer;transition:opacity .15s ease;}",
+
+  // ===== v0.13.0 / v0.13.2：canvas 卡片悬浮操作栏（.lmb-canvas-bar）=====
+  // 定位逻辑全在 JS（lmbCalcBarPos 每轮写内联 left/top），CSS 只管呈现，别在这儿改定位。
+  //   1. 浮层挂在 .canvas-wrapper（canvas.wrapperEl）而非卡片上 —— canvas 的
+  //      transform:scale() 加在 .canvas 上，wrapper 是其父级、不参与缩放，
+  //      所以按钮在屏幕上恒定 26px，不会随画布缩小而缩小到看不清。
+  //   2. 显隐由 lmbSetToolbarVisibility() 控制：show 是 visibility:visible + display:""
+  //      hideRemove 是 display:none。所以下面 display 必须写成 flex（display:"" 的回落值）。
+  //      【绝不能写 display:none】——否则 show 时 display:"" 会回落到 none，浮层永远出不来。
+  //      默认 visibility:hidden 只是防首帧闪现（JS 第一次 tick 才会 show）。
+  //   3. v0.13.2：改竖排（flex-direction:column）+ z-index:9999 防御被 canvas 节点遮挡。
+  //      按钮尺寸 26px 方形保持不变，只换排列方向和图标尺寸（14px）。
+  '.lmb-canvas-bar{position:absolute;display:flex;flex-direction:column;visibility:hidden;z-index:9999;align-items:stretch;gap:2px;padding:2px;border-radius:8px;background:var(--background-primary);border:1px solid var(--background-modifier-border);box-shadow:var(--shadow-s,0 2px 8px rgba(0,0,0,.15));}',
+
+  // v0.14.8：4 个按钮统一带两个字文字（"评论"/"跳转"/"视图"/"高度"），width:auto 横排对齐。
+  //   刻意不用 Obsidian 的 .clickable-icon —— 那是给固定工具栏设计的，尺寸边距在浮层上偏大。
+  '.lmb-canvas-bar .lmb-bar-comment,',
+  '.lmb-canvas-bar .lmb-bar-jump,',
+  '.lmb-canvas-bar .lmb-bar-view,',
+  '.lmb-canvas-bar .lmb-bar-fit,',
+  '.lmb-canvas-bar .lmb-bar-disconnect{display:inline-flex;align-items:center;justify-content:center;gap:4px;width:auto;height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;transition:background .12s ease,color .12s ease;}',
+  '.lmb-canvas-bar .lmb-bar-text{font-size:11px;line-height:1;letter-spacing:0.5px;font-weight:500;}',
+  '.lmb-canvas-bar .lmb-bar-comment:hover,',
+  '.lmb-canvas-bar .lmb-bar-jump:hover,',
+  '.lmb-canvas-bar .lmb-bar-view:hover,',
+  '.lmb-canvas-bar .lmb-bar-fit:hover,',
+  '.lmb-canvas-bar .lmb-bar-disconnect:hover{background:var(--background-modifier-hover);color:var(--text-normal);}',
+
+  '.lmb-disconnect-candidate{cursor:pointer!important;filter:drop-shadow(0 0 3px var(--interactive-accent));}',
+  '.lmb-disconnect-candidate path{stroke:var(--interactive-accent)!important;stroke-width:6px!important;pointer-events:stroke!important;cursor:pointer!important;}',
+
+  // setIcon 注入的 svg 默认会撑成 100% 把按钮顶变形，这里统一尺寸
+  '.lmb-canvas-bar svg{width:14px;height:14px;display:block;}',
+
+  // 不适用的按钮由 JS 走 hideRemove（display:none），这里不给额外样式，避免和 JS 打架
+
+  // ---- 4. v0.13.2：canvas 卡片只露摘录内容，折叠态评论按钮与 lmb-view 全藏 ----
+  // 理由（v0.13.1 反思）：上一版用 `.callout[data-callout="lmb-comment"]` 选了所有
+  //   评论 callout，结果**展开态的评论内容**也被藏了 —— 用户加完评论在卡片里看不到，
+  //   只能进编辑界面。这是 bug，不是有意设计。
+  // 修正：v0.13.2 只藏**折叠态**（按钮形态）。判断标准 = 没有 .callout-content 子元素
+  //   （折叠态不会渲染 content 容器）。展开态（评论内容）正常显示。
+  //   :has() 是 CSS 4 现代选择器，Obsidian 自带 Chromium 完整支持。
+  //   lmb-view callout 是切换按钮（无论折叠/展开内容都是固定按钮文字），入口已搬到
+  //   悬浮栏，全藏合理。toggleCardView() 仍靠 querySelector 反查宿主（display:none
+  //   不移除元素，querySelector 找得到）。卡片 markdown 文本一字未改。
+  //   只作用于 canvas 节点内；md 阅读视图保持原样。
+  '.canvas-node-content .callout[data-callout="lmb-comment"]:not(:has(.callout-content)),',
+  '.canvas-node-content .callout[data-callout="lmb-view"]{display:none !important;}'
+];
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.__lmbStyles = { LMB_STYLES };
+}
 
 /* 23-pure-note —— 补充描述(ppd-note) + 独立评论(lmb-comment) 解析/合并（纯函数，可单测） */
 
@@ -127,18 +500,43 @@ const LMB_COMMENT_CALLOUT_RE = /^\s*>\s*\[!lmb-comment\]\s*([+-]?)\s*(.*)$/;
  *   v0.11.0：感知独立评论块（lmb-comment）——note 块在评论块首行处截断，评论块及其后
  *   的内容原样放进 tail（join 时原样接回，不再像旧版那样把 note 之后的散行弄丢）。
  */
-function lmbSplitNote(text) {
+/* v0.16.6 P1-4：把「允许的 note 调用类型」收成一个 Set（纯函数，可单测）。
+ *   allowTypes 可传字符串或数组；不传 / 传空 → 只含历史默认类型 ppd-note。
+ *   全部转小写去空白比较（callout 类型名大小写不敏感）。 */
+function lmbNoteTypeSet(allowTypes) {
+  const s = new Set();
+  const push = (v) => {
+    if (typeof v !== "string") return;
+    const t = v.trim().toLowerCase();
+    if (t) s.add(t);
+  };
+  push(typeof LMB_NOTE_TYPE_DEFAULT === "string" ? LMB_NOTE_TYPE_DEFAULT : "ppd-note");
+  if (Array.isArray(allowTypes)) { for (const t of allowTypes) push(t); }
+  else push(allowTypes);
+  return s;
+}
+
+function lmbSplitNote(text, allowTypes) {
   if (typeof text !== "string" || !text) return { body: text || "", note: "", fold: false, hasNote: false, type: "", tail: "" };
   const lines = text.split("\n");
+  // v0.16.6 P1-4：只认插件自有的 note 类型（默认 ppd-note + 调用方传入的
+  // settings.noteCalloutType）。用户自有的 [!warning]/[!quote] 等不再被误判为补充描述。
+  const allow = lmbNoteTypeSet(allowTypes);
 
   // body 末尾：callout 块前面那部分。新格式=第一个 callout 首行；旧格式=HTML 起始行之前。
   let bodyEndIdx = lines.length;
   // callout 块范围：[blockStart, blockEnd)
   let blockStart = -1, blockEnd = lines.length;
 
-  // 新格式优先：找第一个 note callout 首行（跳过 lmb-comment——那是独立评论体系，不是 note）
+  // 新格式优先：找第一个 note callout 首行（跳过 lmb-comment——那是独立评论体系，不是 note；
+  // v0.11.3：同样跳过 lmb-view——那是双重摘录卡的视图切换按钮，也不是 note）
   for (let i = 0; i < lines.length; i++) {
     if (LMB_COMMENT_CALLOUT_RE.test(lines[i])) continue;  // 评论块不是 note
+    if (LMB_VIEW_CALLOUT_RE.test(lines[i])) continue;     // 视图切换按钮不是 note（v0.11.3）
+    // v0.16.6 P1-4：类型白名单 —— 不在白名单里的 callout 是用户自己的内容，不是 note
+    const nm0 = NOTE_CALLOUT_RE.exec(lines[i]);
+    if (!nm0) continue;
+    if (!allow.has(String(nm0[1] || "").trim().toLowerCase())) continue;
     if (NOTE_CALLOUT_RE.test(lines[i])) {
       bodyEndIdx = i;                                  // 默认 body 在 callout 行前结束
       // 关键：v0.8.3 兼容旧 v0.8.0-v0.8.2 格式——如果该 callout 上面紧跟着 HTML 起始锚点，
@@ -237,8 +635,8 @@ function lmbJoinNote(body, note, opts) {
 }
 /** 剥离整个补充描述块（callout），用于摘录 md 同步，避免污染摘录文档。
  *  v0.11.0：评论块（tail）一并剥掉——摘录文档保持「原文镜像」。 */
-function lmbStripNote(text) {
-  const r = lmbSplitNote(text);
+function lmbStripNote(text, allowTypes) {
+  const r = lmbSplitNote(text, allowTypes);
   return (r.hasNote || r.tail) ? r.body : text;
 }
 /* ==================== v0.11.0：独立评论（comment）解析/合并 ==================== */
@@ -283,11 +681,45 @@ function lmbJoinComment(body, commentText, opts) {
   return base + "\n\n" + callout.join("\n");
 }
 /**
- * v0.8.3：把 text 转成「实际会被渲染」的形态供尺寸估算用。
- *   旧版本要去掉 HTML 注释锚点（不可见）；v0.8.3 没有不可见锚点，原样返回。
- *   callout 内的占位行算高度（用户能看到，要占空间）。
+ * v0.13.3：把 text 转成「**真正**会被渲染的文本行」给尺寸估算用。
+ *
+ *   旧版本（v0.8.3 注释说"原样返回"）的实现是个隐患：折叠态的 lmb-comment 按钮
+ *   实际渲染只占 30px 左右，但被 estimateTextSize 按字符行高（25px/行）算高度，
+ *   展开态的 callout 内容行也按普通行算 —— 与实际渲染对不上，卡片底部留白。
+ *
+ *   修复：复用 lmbSplitNote + lmbSplitComment 把 ppd-note / lmb-view / lmb-comment
+ *   三种插件辅助 callout 全剥掉，让 estimateTextSize 只算**纯文本行**高度；
+ *   callout 自己的占位由 estimateSizeFor 的 addNoteChrome / addCommentChrome
+ *   单独按实测平均高度加。
+ *
+ *   这两个函数（lmbSplitNote / lmbSplitComment）在 v0.11.0 / v0.11.3 已经感知这
+ *   三种 callout 的存在与结构，直接 chain 一下就能拿到纯内容。
+ *
+ *   ⚠ v0.13.3 的**漏网之鱼**（v0.16.0 实测发现并修）：上面那句"三种全剥掉"其实没做到 ——
+ *   lmbSplitNote 对 lmb-view 是 `continue`（**跳过不算 note**），不等于**剥离**。
+ *   当卡里没有 ppd-note 时它会走 `return { body: text }` 原样返回 → lmb-view 行留在 body 里：
+ *       lmbRenderedText("引用\n> [!lmb-view] …")  →  "引用\n> [!lmb-view] …"   ← 没剥掉
+ *   后果：双重摘录卡的切换按钮行被 estimateTextSize 当普通文本行算进高度（~25-29px），
+ *   但该行在 canvas 里被 CSS `display:none` 藏着、**根本不占渲染空间**
+ *   → 双重卡底部一直多出约一行的留白（正是 v0.13.3 想修的那个问题，只修好两种）。
+ *   修法：chain 完再按行过滤一道 lmb-view（最后一道，成本可忽略，只在有 callout 时生效）。
+ *   v0.16.0 起新卡不再写 lmb-view 行，这一刀主要治**存量双重卡**的高度。
+ *
+ *   ⚠ 踩坑记录：这里**必须逐行 test**，不能拿整段文本去 `LMB_VIEW_CALLOUT_RE.test(整段)`。
+ *     该正则没有 `m` flag，`^` 只锚定**字符串开头** —— 整段以「引用」开头时匹配必然失败
+ *     （`>` 对上了汉字），会静默漏掉所有 lmb-view 行。lmbSplitNote 里能用是因为它本来就
+ *     是 `LMB_VIEW_CALLOUT_RE.test(lines[i])` 逐行调用。写这段代码时第一版就栽在这里，
+ *     加过一句 `if (!RE.test(out)) return out;` 的"快路径"，结果快路径永远判定为
+ *     "没有 lmb-view" → 修复形同虚设，测试 BC14 立刻抓出来了。
  */
-function lmbRenderedText(text) { return text; }
+function lmbRenderedText(text, allowTypes) {
+  if (typeof text !== "string" || !text) return text || "";
+  const a = lmbSplitNote(text, allowTypes);
+  const b = lmbSplitComment(a.body);
+  // v0.16.0：补最后一道 —— 剥掉 lmbSplitNote 只跳过没剥离的 lmb-view 行。
+  //   逐行 filter（判据与 lmbSplitNote 的跳过同源，不会漂）；卡片文本最多几十行，开销可忽略。
+  return b.body.split("\n").filter((l) => !LMB_VIEW_CALLOUT_RE.test(l)).join("\n");
+}
 
 /**
  * 纯决策函数（可单测）：mouseup 检测到文字选区时，是否应重建摘录 chip。
@@ -418,11 +850,25 @@ function lmbAutoEdgeAlive(edge, byId) {
 }
 /**
  * v0.7.3：找出某张子卡当前的自动父边（用于「换父」时先摘掉旧的，避免同一张卡挂两条自动父子线）。
+ *   v0.11.1 兜底：当 sidecar 缺记录时（典型场景：instantAttach 早期 path2 还没拿到，
+ *   sidecar 漏登记；或在持久化档加载失败时），从 edges 里按 id 命名规范「e<base36>」
+ *   直接兜底识别 —— 这是一贯的自动边命名规则，绝不与 Obsidian 自动边或用户手动边
+ *   冲突（Obsidian 自动边通常是 16/32 位 hex，按 /e[0-9a-f]{8,}/ 排除）。
+ *   返回 null = 都不是（手动边或孤儿边）。
+ *   返回 { edge, reversed }：reversed=true 表示边方向是 child→parent（少见，但写法上要兜底）；
+ *   .fromNode/.fromSide 取自 edge.reversed ? toNode 与 toSide : fromNode 与 fromSide。
  */
 function lmbAutoParentEdgeOf(childId, edges, sidecar) {
   for (const ed of edges || []) {
-    if (!sidecar || !sidecar.has(ed.id)) continue;
-    if (ed.toNode === childId) return ed;
+    if (!ed || !ed.fromNode || !ed.toNode) continue;
+    if (ed.toNode !== childId && ed.fromNode !== childId) continue;
+    const reversed = ed.fromNode === childId;
+    if (sidecar && sidecar.has(ed.id)) return { edge: ed, reversed };
+    // v0.11.1 兜底：sidecar 没记录但 id 形如本插件自动边命名也认
+    if (typeof ed.id === "string" && /^e[0-9a-z]+$/.test(ed.id)
+        && !/^e[0-9a-f]{8,}$/i.test(ed.id)) {
+      return { edge: ed, reversed };
+    }
   }
   return null;
 }
@@ -443,6 +889,18 @@ function lmbSideEnds(side) {
   if (side === "left") return { fromSide: "left", toSide: "right" };
   if (side === "top") return { fromSide: "top", toSide: "bottom" };
   return { fromSide: "bottom", toSide: "top" }; // bottom
+}
+/**
+ * v0.11.1：side 取反。edge.fromSide 是「from 节点」视角的连出方向，
+ *   当 from 是子不是父时（reversed 边方向），需要翻一次得到父视角。
+ *   未知 side 原样返回（防御：旧数据可能缺字段）。
+ */
+function lmbSideFlip(side) {
+  if (side === "top") return "bottom";
+  if (side === "bottom") return "top";
+  if (side === "left") return "right";
+  if (side === "right") return "left";
+  return side;
 }
 /**
  * v0.6.0：从 edges 中导出指定父卡的所有子卡，按它们相对父卡的位置分组（right/left/top/bottom）。
@@ -514,27 +972,46 @@ function lmbLayoutGroup(parent, kids, side, gap = 30) {
  *   不再换父、不再自动新建（换父已移除；想换父请手动删线后重拖，手动边不参与锁定）。
  *   R4 改挂侧：nn 与 parent 之间已有边（自动或手动）→ reside：按落点方位改边端点 + 两侧组重排。
  *   create：nn 还没有任何自动边 → 首次自动建线（此后即锁定）。
+ *   v0.11.1 新增 recenter：sizeOnly=true（由调用方标识「只是尺寸变化、位置没动」）
+ *   → 保留原侧不翻转，专门修复 fitNode 把卡撑大后 lmbSideOf CURRENT 算出相反侧、
+ *   导致 lmbApplyReside 把「下」翻成「右」的对齐 bug。
  * 返回：
- *   { op: "skip" }                             — 不动作
- *   { op: "reside", edge, oldSide, newSide }   — 已有连线，改挂侧
- *   { op: "create", side }                     — 首次自动建线
+ *   { op: "skip" }                                — 不动作
+ *   { op: "reside", edge, oldSide, newSide }      — 已有连线，按当前落点改挂侧
+ *   { op: "recenter", edge, side }                — 尺寸变化，保留原侧重新居中（v0.11.1）
+ *   { op: "create", side }                        — 首次自动建线
  */
-function lmbPlanAutoLink(nn, parent, edges, sidecar) {
+function lmbPlanAutoLink(nn, parent, edges, sidecar, opts) {
   if (!nn || !parent || nn.id === parent.id) return { op: "skip" };
   const eds = Array.isArray(edges) ? edges : [];
   const auto = lmbAutoParentEdgeOf(nn.id, eds, sidecar);
-  if (auto && auto.fromNode !== parent.id) return { op: "skip" }; // R3：首连锁定
+  if (auto) {
+    // R3：首连锁定——已有自动父边且父不是本次压中的卡 → skip
+    // 「父」就是「非 nn 那端」：reversed 时 nn=fromNode 父=toNode，否则父=fromNode
+    const parentEnd = auto.reversed ? auto.edge.toNode : auto.edge.fromNode;
+    if (parentEnd !== parent.id) return { op: "skip" };
+  }
   let linkEdge = null;
+  let linkEdgeReversed = false;
   for (const ed of eds) {
     if (!ed || !ed.fromNode || !ed.toNode) continue;
-    if ((ed.fromNode === parent.id && ed.toNode === nn.id) ||
-        (ed.fromNode === nn.id && ed.toNode === parent.id)) { linkEdge = ed; break; }
+    if (ed.fromNode === parent.id && ed.toNode === nn.id) { linkEdge = ed; linkEdgeReversed = false; break; }
+    if (ed.fromNode === nn.id && ed.toNode === parent.id) { linkEdge = ed; linkEdgeReversed = true; break; }
   }
   if (linkEdge) {
-    const oldSide = (linkEdge.fromNode === parent.id) ? linkEdge.fromSide : linkEdge.toSide;
+    const parentFacingSide = linkEdgeReversed
+      ? lmbSideFlip(linkEdge.toSide)
+      : linkEdge.fromSide;
+    const oldSide = parentFacingSide || (linkEdgeReversed ? linkEdge.toSide : linkEdge.fromSide);
+
+    const sizeOnly = !!(opts && opts.sizeOnly);
+    // v0.11.1 sizeOnly：nn 是 fitNode 撑大的（位置没动），保留原侧避免翻转
+    if (sizeOnly) {
+      return { op: "recenter", edge: linkEdge, side: oldSide, oldSide };
+    }
     return { op: "reside", edge: linkEdge, oldSide: oldSide, newSide: lmbSideOf(nn, parent) };
   }
-  if (auto) return { op: "skip" }; // 理论不可达（自动边本身即 linkEdge），防御
+  if (auto) return { op: "skip" }; // 防御：auto 必然对应 linkEdge
   return { op: "create", side: lmbSideOf(nn, parent) };
 }
 /**
@@ -571,12 +1048,20 @@ function lmbApplyReside(parent, nn, plan, nodes, edges) {
  */
 function lmbRecenterNode(nn, nodes, edges, sidecar) {
   if (!nn || !nodes || !edges) return false;
-  const auto = lmbAutoParentEdgeOf(nn.id, edges, sidecar || new Set());
-  if (!auto) return false;
-  const parentId = auto.fromNode;
+  // v0.11.1：lmbAutoParentEdgeOf 返回 { edge, reversed }；兜底识别 e<base36> 命名
+  const find = lmbAutoParentEdgeOf(nn.id, edges, sidecar || new Set());
+  if (!find) return false;
+  const auto = find.edge;
+  // 父 id：
+  //   reversed=true  ⇒ 边方向是 nn→parent（auto.fromNode===nn.id，auto.toNode 是 parent）
+  //   reversed=false ⇒ 边方向是 parent→nn（auto.fromNode 是 parent，auto.toNode===nn.id）
+  // 一言以蔽之：parentId = find.reversed ? auto.toNode : auto.fromNode
+  const parentId = find.reversed ? auto.toNode : auto.fromNode;
   const parent = nodes.find((n) => n && n.id === parentId);
   if (!parent || parent.type === "group") return false;
-  const side = auto.fromSide || lmbSideOf(nn, parent);
+  // side：fromSide 是「父端」对子方向的标识。原始代码假设 fromNode=parent，读 auto.fromSide；
+  //   reversed 时 fromNode=nn（即「子」端），所以 fromSide 不再是父视角，需要翻一次。
+  const side = find.reversed ? lmbSideFlip(auto.fromSide) : (auto.fromSide || lmbSideOf(nn, parent));
   const group = [];
   for (const e of edges) {
     if (!e || e === auto) continue;
@@ -656,15 +1141,28 @@ function lmbParseExcerptDoc(content, sourcePath) {
   const lines = content.split(/\r?\n/);
   let pending = null;
   const flush = () => { if (pending) { entries.push(pending); pending = null; } };
+  /* v0.16.6 P1-8：callout 区块内**整段**跳过，不只是首行。
+   *   旧版只有 `if (/^\s*(?:>\s*)+\[!/.test(raw)) continue;` —— 只挡 `> [!xxx]` 标题行，
+   *   于是「> 我的批注」这类 note 正文行会落进 5) 被收成摘录正文（索引里变成
+   *   「原文 我的批注」），「> #误当标签」被收成假标签，note 里若含 [[y.pdf#page=3]]
+   *   还会凭空开出一条幽灵摘录。
+   *   状态位：遇 `[!` 首行置 true，遇非 `>` 行（空行 / 新块）复位。 */
+  let inCallout = false;
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] || "";
+    if (!/^\s*>/.test(raw)) inCallout = false;   // 块结束（空行/新块）→ 复位
+
+    // Callout 必须先于链接解析处理，否则其正文中的 PDF 链接会生成幽灵摘录。
+    if (/^\s*(?:>\s*)+\[!/.test(raw)) { inCallout = true; continue; }
+    if (inCallout) continue;
 
     // 1) 回跳链接行 → 开新条目
     LMB_LINK_RE.lastIndex = 0;
     const lm = LMB_LINK_RE.exec(raw);
     if (lm) {
       flush();
+      inCallout = false;
       const sm = LMB_SEL_RE.exec((lm[3] || "").trim());
       const rm = LMB_RECT_RE.exec((lm[4] || "").trim());
       pending = {
@@ -690,11 +1188,7 @@ function lmbParseExcerptDoc(content, sourcePath) {
       pending = null;
       continue;
     }
-    // 3) 补充描述 callout 不属于摘录正文
-    //    （不能用 NOTE_CALLOUT_RE：它锚定单个 >，嵌套层级的 "> > [!xx]" 匹配不到）
-    if (/^\s*(?:>\s*)+\[!/.test(raw)) continue;
-
-    // 4) 剥掉【所有】层 > 前缀后再判定
+    // 3) 剥掉【所有】层 > 前缀后再判定
     //    （"> > 正文" 必须剥成 "正文"，只剥一个 > 会留下残留的 "> "）
     const stripped = raw.replace(/^\s*(?:>\s*)+/, "").trim();
     if (!stripped) continue;
@@ -710,47 +1204,762 @@ function lmbParseExcerptDoc(content, sourcePath) {
   return entries;
 }
 
+/* ==================== v0.12.0：引用行 📖 化（纯函数，可单测） ====================
+ * 用户要求：卡片顶部引用/跳转行只显示一个 📖 符号，点击直接跳转；
+ * 但摘录 md 镜像里保留完整【文件名-P.N】字样（md 要能独立阅读）。
+ * 两头各一个纯函数：落卡时收拢、导出时还原。解析器（lmbParseExcerptDoc）
+ * 只认 [[x.pdf#page=..]] 本体，不认显示名 → 两种形态都能解析，向后兼容旧卡。 */
+
+/**
+ * 把摘录回跳链接的显示名收拢成 📖：
+ *   [[x.pdf#page=4&selection=0,0,6,7|【x-P.4】]] → [[x.pdf#page=4&selection=0,0,6,7|📖]]
+ * 不是「以 | 显示名 ]] 结尾」的链接原样返回（防御：别把 embed/普通链接弄坏）。
+ */
+function lmbBookLink(link) {
+  const s = String(link || "");
+  const out = s.replace(/\|[^[\]]*\]\]$/, "|📖]]");
+  return out === s ? s : out;   // 没匹配到就原样返回
+}
+
+/**
+ * 导出摘录 md 时还原完整显示名：
+ *   [[x.pdf#page=4&selection=..|📖]] → [[x.pdf#page=4&selection=..|【base-P.4】]]
+ * page 为 null（未定位条目）时不还原（保留 📖，别写错页码）。
+ * 整行处理（body 按行替换），没有 📖 的行零开销原样返回。
+ */
+function lmbRestoreRefDisplayName(line, base, page) {
+  if (page == null || !line || line.indexOf("|📖]]") < 0) return line;
+  const full = "【" + String(base || "") + "-P." + page + "】";
+  return line.replace(/\|\s*📖\s*\]\]/g, "|" + full + "]]");
+}
+
+/* ============================================================
+ * 25-pure-toolbar —— 工具栏注入的宿主解析 / DOM 缓存 / 显隐分级（纯函数层）
+ * 修改注意：
+ *   1. 本文件**不依赖 Obsidian API**（没有 require("obsidian")），DOM 一律从参数传入，
+ *      只在参数上假设 querySelector / querySelectorAll / isConnected / style 四个鸭子类型成员，
+ *      目的是能被 node 离线单测直接用 mock 调。
+ *   2. 构建顺序由 build.config.js 显式声明，**顶层 const/function/class 共享同一 bundle 作用域**，
+ *      所以所有导出名统一 lmb / LMB_ / Lmb 前缀，避免和别的片段撞名。
+ *   3. LMB_VIEW_SPECS 是「判定 + 选择器」的**单一真相源**，禁止再拆出第二张判定表。
+ * ============================================================ */
+
+/* ==================== 视图规格表：判定与选择器同源 ====================
+ * 背景：在 .pdf-toolbar（原生的 PDF 视图工具栏）里注入 3 个自定义按钮
+ *       （图片框选 / 打开摘录 md / 打开专属 canvas）。
+ *
+ * 为什么要这张表：
+ *   - 旧实现把 `.pdf-toolbar` 硬编码在注入函数里，将来支持别的视图只能加 if-else；
+ *     现在改成「viewType → 宿主选择器」的映射，加新视图 = 加一行，注入函数不动。
+ *   - viewType 就是 leaf.view.getViewType() 返回的那个字符串，拿它直接查表，
+ *     **判定（这个视图要不要注入）和选择器（往哪儿注入）读的是同一条记录**。
+ *
+ * 教训（逆向 editing-toolbar v4.1.1 得来）：
+ *   它把「判定表」和「选择器表」写成了两份数据，结果字符串不一致
+ *   （一份写 meld-encrypted-view，另一份写 meld_encrypted_view），
+ *   选择器表那条从此成了永远走不到的死代码。
+ *   → **判定和选择器必须同源**：不要另建 VIEW_TYPES / ENABLED_VIEWS 之类的第二张表，
+ *     也不要在别处写 `.pdf-toolbar` 字面量，要改就改这里。
+ *
+ * 字段：
+ *   selector —— 工具栏宿主容器的 CSS 选择器（相对 leaf.containerEl 做 querySelector）
+ *   enabled  —— 该视图类型是否默认允许注入（false = 查得到 spec 也直接拒绝）
+ *   note     —— 一句话说明，给人看，不参与逻辑
+ *
+ * 扩展示例（将来加新视图只加一行，注入层零改动）：
+ *   // image: { selector: ".image-container", enabled: false, note: "图片视图" },
+ *   // canvas: { selector: ".canvas-wrapper", enabled: false, note: "白板视图" },
+ *   （enabled: false 表示「已登记但先关着」，等注入逻辑验证通过再打开）
+ */
+const LMB_VIEW_SPECS = {
+  pdf: { selector: ".pdf-toolbar", enabled: true, note: "完整 PDF 视图" },
+  // image: { selector: ".image-container", enabled: false, note: "图片视图" },
+  // canvas: { selector: ".canvas-wrapper", enabled: false, note: "白板视图" },
+};
+
+/**
+ * 解析工具栏宿主锚点（三级判定，纯函数，绝不抛异常）。
+ *
+ * 调用点：workspace 的 layout-change / active-leaf-change 回调里。
+ * 异常策略：**任何异常都吞掉**并返回 { el: null, source: null, spec: null }。
+ * 因为在 Obsidian 的事件链里抛异常会打断后续回调，宁可这一帧不注入按钮，
+ * 也不能把别人的事件处理拖挂（与全插件「宁可画得不准也不崩」的原则一致）。
+ *
+ * 三级判定顺序（**顺序不能改**）：
+ *   1. 查表 LMB_VIEW_SPECS[viewType]
+ *      - 查不到 spec，或 spec.enabled === false → 直接拒绝，返回 { el: null, source: null, spec: spec || null }
+ *        （注意：查不到时 spec 为 null，查到但被禁用时仍要把 spec 带回去，方便调用方区分
+ *         「未知视图」和「已登记但关闭」这两种情况）
+ *      - 命中且 enabled → root.querySelector(spec.selector)，命中返回 { el, source: "spec", spec }
+ *   2. 兜底：spec 存在但选择器没命中（Obsidian 换版本改了 DOM 结构 / 视图还没渲染完）
+ *      → 找 .view-content，取它第一个直接子 div（:scope > div），有就用第一个，没有就用 .view-content 本身
+ *      → 命中返回 { el, source: "fallback", spec }
+ *   3. 都找不到 → { el: null, source: null, spec }
+ *
+ * @param {Object} root     容器元素（leaf.containerEl），鸭子类型：只需 querySelector / querySelectorAll
+ * @param {string} viewType 视图类型（如 "pdf"）
+ * @returns {{el: Object|null, source: "spec"|"fallback"|null, spec: Object|null}}
+ */
+function lmbResolveToolbarAnchor(root, viewType) {
+  try {
+    if (!root || typeof root.querySelector !== "function") {
+      return { el: null, source: null, spec: null };
+    }
+    const spec = (viewType && Object.prototype.hasOwnProperty.call(LMB_VIEW_SPECS, viewType))
+      ? LMB_VIEW_SPECS[viewType]
+      : null;
+
+    // 一级：未知视图 / 已登记但禁用 → 不注入
+    if (!spec || spec.enabled === false) {
+      return { el: null, source: null, spec: spec || null };
+    }
+
+    // 一级（续）：spec 选择器命中
+    if (spec.selector) {
+      const hit = root.querySelector(spec.selector);
+      if (hit) return { el: hit, source: "spec", spec: spec };
+    }
+
+    // 二级：兜底 —— .view-content 的第一个直接子 div，否则 .view-content 本身
+    const content = root.querySelector(".view-content");
+    if (content) {
+      let first = null;
+      try {
+        // :scope > div 在部分极简 mock 上可能不支持，单独兜一层
+        if (typeof content.querySelectorAll === "function") {
+          first = content.querySelectorAll(":scope > div")[0] || null;
+        }
+      } catch (e) {
+        first = null;
+      }
+      if (first) return { el: first, source: "fallback", spec: spec };
+      return { el: content, source: "fallback", spec: spec };
+    }
+
+    // 三级：都没有
+    return { el: null, source: null, spec: spec };
+  } catch (e) {
+    return { el: null, source: null, spec: null };
+  }
+}
+
+/* ==================== LmbDomCache：DOM 引用缓存 ====================
+ * 动机：旧实现每次 layout-change / active-leaf-change 都对所有 PDF leaf 做全量
+ *       querySelector，事件密集时是白白的重复开销。缓存住解析结果，命中就跳过查询。
+ *
+ * ⚠⚠ 关键警告：key 必须带 leaf 标识（leaf.id、或直接用 leaf.containerEl 本身），
+ *    **每个 leaf 有自己独立的一份工具栏**，绝不能用 "pdfToolbar" 这种全局单例 key ——
+ *    否则切到第二个 PDF leaf 时会拿到第一个 leaf 的节点，按钮注入到错误的窗口里。
+ *    （这条是抄 editing-toolbar 时的连带教训：它自己就注明「top 样式不缓存，
+ *      因为每个 leaf 都有独立的工具栏」，说明它踩过单例 key 的坑。）
+ *
+ * ⚠⚠ 第二个关键：get 必须用 el.isConnected 校验。
+ *    元素被 Obsidian 从文档里移除后，引用还在、isConnected 变成 false，
+ *    不校验就会拿到游离节点（往里塞按钮 = 用户永远看不到，且不报错，极难排查）。
+ *    命中但已游离时：删掉该条缓存并返回 null，让调用方重新解析。
+ */
+class LmbDomCache {
+  constructor() {
+    this._map = new Map();
+  }
+
+  /**
+   * 取缓存。命中且 el.isConnected 为真才返回；否则删掉该条返回 null。
+   * @param {*} key
+   * @returns {Object|null}
+   */
+  get(key) {
+    const el = this._map.get(key);
+    if (el == null) return null;
+    // 游离节点（已被 Obsidian 移除）视为缓存失效
+    if (el.isConnected === false) {
+      this._map.delete(key);
+      return null;
+    }
+    return el;
+  }
+
+  /**
+   * 写缓存。el 为空时不写（顺手删掉旧值，避免残留脏条目）。
+   * @param {*} key
+   * @param {Object} el
+   */
+  set(key, el) {
+    if (el == null) {
+      this._map.delete(key);
+      return;
+    }
+    this._map.set(key, el);
+  }
+
+  /** 删单条 */
+  delete(key) {
+    this._map.delete(key);
+  }
+
+  /** 清空全部 */
+  clear() {
+    this._map.clear();
+  }
+
+  /**
+   * 遍历清理所有已游离（isConnected === false）的条目。
+   * 建议在 leaf 关闭 / 批量注入前调一次，防止 Map 无限增长。
+   * @returns {number} 清理掉的条数
+   */
+  prune() {
+    let n = 0;
+    for (const [key, el] of Array.from(this._map.entries())) {
+      if (!el || el.isConnected === false) {
+        this._map.delete(key);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /** 当前条目数 */
+  get size() {
+    return this._map.size;
+  }
+}
+
+/**
+ * 工具栏显隐分级（纯函数，绝不抛异常）。
+ *
+ * 为什么分两级隐藏（这是本函数存在的全部理由）：
+ *   - display:none  → 元素彻底离开渲染树、**不再占空间**，
+ *     重新显示时周围原生按钮会重排，肉眼可见地跳动一下。
+ *     适合「持久态」：比如用户在设置里把本插件全局关了，短期不会再开。
+ *   - visibility:hidden → 元素保留占位、只是看不见，
+ *     来回切换零抖动。适合「临时态」：比如当前视图类型不允许注入、
+ *     切回来马上又要显示，用这个就不会跳。
+ *
+ * 对应关系（调用方按语义选，别混用）：
+ *   "show"          → 可见（visibility:visible + display 清空）
+ *   "hideKeepSpace" → 隐藏但保留占位（临时态：视图类型不允许等）
+ *   "hideRemove"    → 隐藏且彻底移出渲染树（持久态：全局关闭）
+ *
+ * @param {Object} el
+ * @param {"show"|"hideKeepSpace"|"hideRemove"} mode
+ * @returns {boolean} 是否成功（el 为空 / mode 未知 / 抛异常 → false，且尽量不动 DOM）
+ */
+function lmbSetToolbarVisibility(el, mode) {
+  if (!el) return false;
+  try {
+    const st = el.style;
+    if (!st) return false;
+    if (mode === "show") {
+      st.visibility = "visible";
+      st.display = "";
+      return true;
+    }
+    if (mode === "hideKeepSpace") {
+      st.visibility = "hidden";
+      st.display = "";
+      return true;
+    }
+    if (mode === "hideRemove") {
+      st.display = "none";
+      return true;
+    }
+    // 未知 mode：不动 DOM
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* ---- 测试钩子：node 离线单测直接 require 本文件即可拿到；
+ *      拼接进 main.js 后 module 依然存在于 CommonJS 作用域，钩子同样有效。 ---- */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.__lmbToolbar = {
+    LMB_VIEW_SPECS, lmbResolveToolbarAnchor, LmbDomCache, lmbSetToolbarVisibility,
+  };
+}
+
+/* ============================================================
+ * 26-pure-canvasbar —— canvas 卡片悬浮操作栏的纯计算层
+ *   （坐标换算 / 按钮可用性判定 / 轮询指纹）
+ * 修改注意：
+ *   1. 本文件**不依赖 Obsidian API**（没有 require("obsidian")）。坐标一律是视口坐标
+ *      （就是 getBoundingClientRect() 返回的那种），入参只用 plain object / string /
+ *      number，**不要期待传进来的是真 DOM 元素**（离线单测传的是 mock）。
+ *   2. 构建顺序由 build.config.js 显式声明，**顶层 const/function/class 共享同一 bundle
+ *      作用域**，所以所有导出名统一 lmb / LMB_ 前缀，避免和别的片段撞名。
+ *   3. 本层只出「算什么、往哪放、哪些按钮能点」的结论，**不碰 DOM、不读 canvas 实例**。
+ *      真正的 DOM 挂载与事件绑定在 37-plugin-canvasbar.js（并行开发中）。
+ *   4. 三个函数**一律吞异常、绝不 throw**：它们跑在 120ms 的 setInterval 里，
+ *      抛一次就会打断整个轮询链（后续帧全没了），宁可这一帧画错位置也不能崩。
+ * ============================================================ */
+
+/* ==================== 悬浮栏基础常量 ====================
+ * 三个功能（评论 / 跳转 / 切换视图）在 v0.11.0 ~ v0.11.3 都已实现，
+ * 本文件只是把入口从「卡内」搬到「卡片上方的悬浮栏」，不新增业务逻辑。
+ */
+const LMB_BAR_POLL_MS = 120;      // 悬浮栏轮询间隔（ms）
+const LMB_BAR_GAP = 8;            // 悬浮栏与卡片边缘的间距（px）
+const LMB_BAR_MARGIN = 4;         // 贴边时的安全留白（px）
+const LMB_BAR_SEL = ".lmb-canvas-bar";  // 悬浮栏容器 class
+
+// v0.13.8：悬浮栏**结构版本**。改浮动栏的按钮组成 / 事件绑定方式时**必须 +1**。
+//   为什么需要它：重载插件时 Obsidian 只重新执行插件 JS，**workspace layout 与 canvas
+//   leaf 的 DOM 不会重建**。而 lmbEnsureCanvasBarEl 是靠 className 幂等复用浮层的 ——
+//   于是"旧版本创建的那颗浮层"会被新代码一直复用，它的按钮绑的是**旧版 click 回调**
+//   （例如 v0.13.4 的 fit 按钮绑的是 `if (!c) return` 静默版）。
+//   表现极其迷惑：代码明明改了、也重载了，行为却是老样子。
+//   加版本号后，版本不匹配的浮层会被移除重建，保证用户手上的永远是"当前代码造的"浮层。
+const LMB_BAR_VERSION = "v0.16.14";
+
+/* LMB_BAR_POLL_MS 为什么是 120ms：
+ *   - canvas **没有原生「选中变化」事件**。advanced-canvas 插件那个 `selection-changed`
+ *     不是 Obsidian 原生 API，是它自己 monkey-patch canvas 内部方法造出来的；
+ *     我们不依赖 advanced-canvas，所以只能轮询。
+ *   - 120ms 是「跟手」和「不烧 CPU」的折中：人眼对 >150ms 的延迟才有明显迟滞感，
+ *     120ms 内刷新基本感觉不到；同时每秒 ~8 次，每次只做一次 rect 读取 + 几次比较，
+ *     开销可以忽略。
+ *   - **一次轮询同时解决两件事**，这是选轮询而非监听的额外收益：
+ *       ① 选中变化 → 要**重建按钮**（不同卡片能点的按钮不一样，见 lmbPickBarActions）
+ *       ② 视口平移/缩放 → 要**重算位置**（卡片在屏幕上的位置变了，浮层要跟着走）
+ *     监听方案得同时挂 selection-changed + 平移 + 缩放三套事件，还容易漏；
+ *     轮询一个定时器全包，逻辑只有一条路径。
+ */
+
+/* ---- 内部小工具：取有限数，非数字/NaN/Infinity 一律退回默认值 ----
+ * 名字带 lmb 前缀（拼接作用域要求），不导出到 __test。 */
+function lmbBarNum(v, dflt) {
+  const n = (typeof v === "number") ? v : parseFloat(v);
+  return (typeof n === "number" && isFinite(n)) ? n : dflt;
+}
+
+/* ---- 内部小工具：格式化指纹里的浮点数，固定 2 位小数 ---- */
+function lmbBarFix2(v) {
+  return lmbBarNum(v, 0).toFixed(2);
+}
+
+/**
+ * 计算悬浮栏在挂载容器内的位置（纯函数，绝不抛异常）。
+ *
+ * ==================== 为什么浮层要挂在 wrapper 上，而不是卡片上 ====================
+ * 实测 Obsidian canvas typings + 翻 DOM 得出的结论（写下来免得后人再踩一遍）：
+ *   - canvas 的缩放 `transform: scale(...)` 是加在 **`.canvas`** 元素上的；
+ *   - 而 `canvas.wrapperEl`（即 **`.canvas-wrapper`**）是 `.canvas` 的**父级**，
+ *     它自己**不参与**这个 scale 变换。
+ * 所以浮层挂到卡片（`.canvas-node`）里的话，按钮会跟着画布一起被缩放：
+ * 用户把画布缩到 30%，按钮就变成蚂蚁大小点不中；放大到 300%，按钮又蠢大。
+ * 挂在 wrapperEl 上，浮层的 px 尺寸恒定，**按钮大小永远不变**，
+ * 代价只是每帧要把卡片 rect 换算成 wrapper 内相对坐标（本函数干的就是这件事）。
+ * ===============================================================================
+ *
+ * 算法（顺序不能改）：
+ *   1. 坐标系换算：nodeRect / wrapperRect 都在视口坐标系，
+ *      浮层要定位在 wrapper 内部（position:absolute 相对 wrapper），故：
+ *          relLeft = nodeRect.left  - wrapperRect.left
+ *          relTop  = nodeRect.top   - wrapperRect.top
+ *   2. 默认放卡片正上方、水平居中：
+ *          left = relLeft + (nodeRect.width - barSize.width) / 2
+ *          top  = relTop - barSize.height - gap
+ *          placement = "top"
+ *   3. 上方空间不够（top < margin，说明卡片已经贴着 wrapper 顶边，
+ *      浮层会被裁掉看不见）→ 翻到卡片下方：
+ *          top = relTop + nodeRect.height + gap
+ *          placement = "bottom"
+ *      （只翻一次，不做二次钳制：翻下去还溢出说明 wrapper 本身矮得离谱，
+ *        这时让用户自己滚动画布更合理，硬塞反而更怪。）
+ *   4. 左右钳制到 [margin, wrapperRect.width - barSize.width - margin]。
+ *      ⚠ 边界：当 `wrapperRect.width - barSize.width - margin < margin`
+ *      （浮层比容器还宽的极端情况），区间左右端点是**颠倒**的，
+ *      直接 Math.min/Math.max 会算出负数上界。此时**直接取 margin**，
+ *      宁可右边溢出一点，也不要给出负 left（负 left 在视觉上等于"凭空消失"，极难查）。
+ *   5. 返回值 Math.round 取整：亚像素坐标会让文字渲染走灰度抗锯齿，看着发虚。
+ *
+ * 异常策略：nodeRect / wrapperRect / barSize 任一为 null、字段缺失、值为 NaN
+ *   → 一律返回 { left: 0, top: 0, placement: "top" }，绝不抛异常。
+ *
+ * @param {{left:number, top:number, width:number, height:number}} nodeRect     卡片元素的视口 rect
+ * @param {{left:number, top:number, width:number, height:number}} wrapperRect  挂载容器（canvas.wrapperEl 或 .canvas-wrapper）的视口 rect
+ * @param {{width:number, height:number}} barSize  悬浮栏自身尺寸
+ * @param {{gap?:number, margin?:number}} [opts]   可选；不传用 LMB_BAR_GAP / LMB_BAR_MARGIN
+ * @returns {{left:number, top:number, placement:"left"|"inside"}} placement：
+ *   "left" = 卡片左边缘外侧（默认）、"inside" = 卡片内侧左侧（贴边时的退路）
+ */
+function lmbCalcBarPos(nodeRect, wrapperRect, barSize, opts) {
+  try {
+    const gap = lmbBarNum(opts && opts.gap, LMB_BAR_GAP);
+    const margin = lmbBarNum(opts && opts.margin, LMB_BAR_MARGIN);
+
+    const nodeLeft = lmbBarNum(nodeRect && nodeRect.left, NaN);
+    const nodeTop = lmbBarNum(nodeRect && nodeRect.top, NaN);
+    const nodeW = lmbBarNum(nodeRect && nodeRect.width, NaN);
+    const nodeH = lmbBarNum(nodeRect && nodeRect.height, NaN);
+    const wrapLeft = lmbBarNum(wrapperRect && wrapperRect.left, NaN);
+    const wrapTop = lmbBarNum(wrapperRect && wrapperRect.top, NaN);
+    const wrapW = lmbBarNum(wrapperRect && wrapperRect.width, NaN);
+    const wrapH = lmbBarNum(wrapperRect && wrapperRect.height, NaN);   // v0.13.2：竖排后浮层变高，需要 top 钳制
+    const barW = lmbBarNum(barSize && barSize.width, NaN);
+    const barH = lmbBarNum(barSize && barSize.height, NaN);
+
+    // 缺字段 / NaN 一律走兜底（NaN 会让下面的比较全为 false，静默算出错误坐标）
+    if (!isFinite(nodeLeft) || !isFinite(nodeTop) || !isFinite(nodeW) || !isFinite(nodeH)
+      || !isFinite(wrapLeft) || !isFinite(wrapTop) || !isFinite(wrapW) || !isFinite(wrapH)
+      || !isFinite(barW) || !isFinite(barH)) {
+      return { left: 0, top: 0, placement: "left" };
+    }
+
+    // 1. 视口坐标 → wrapper 内相对坐标
+    const relLeft = nodeLeft - wrapLeft;
+    const relTop = nodeTop - wrapTop;
+
+    // 2. v0.13.2：默认贴在卡片**左侧**（竖排，顶端对齐卡片顶端）
+    //    上一版是「卡片上边缘外侧」，用户反馈贴左更顺手、视觉上更像"卡片的"工具栏。
+    let left = relLeft - barW - gap;
+    let top = relTop;
+    let placement = "left";
+
+    // 3. 左侧放不下 → 退到卡片**内侧**左侧（左对齐 + 顶端对齐，会遮挡卡片左侧一点点）
+    //    刻意不翻到右侧 —— 那是别人的领域，且不叫"左侧"了。
+    if (left < margin) {
+      left = relLeft + gap;
+      placement = "inside";
+    }
+
+    // 4. 左右钳制（含「浮层比容器还宽」的颠倒区间边界）
+    const maxLeft = wrapW - barW - margin;
+    if (maxLeft < margin) {
+      left = margin;              // 区间无效，贴左留白，不要算出负数
+    } else if (left < margin) {
+      left = margin;
+    } else if (left > maxLeft) {
+      left = maxLeft;
+    }
+
+    // 5. 上下钳制（v0.13.2 竖排后浮层高度可达 86px，wrapper 可能放不下）
+    const maxTop = wrapH - barH - margin;
+    if (maxTop < margin) {
+      top = margin;
+    } else if (top < margin) {
+      top = margin;
+    } else if (top > maxTop) {
+      top = maxTop;
+    }
+
+    // 6. 取整
+    return { left: Math.round(left), top: Math.round(top), placement: placement };
+  } catch (e) {
+    return { left: 0, top: 0, placement: "left" };
+  }
+}
+
+/* ==================== 按钮可用性判定用的两条正则 ====================
+ * 为什么要自己写、不直接复用 LMB_LINK_RE（10-constants.js）：
+ *   LMB_LINK_RE 是给「解析出 page=/selection=/rect= 参数」用的，捕获组只抓了文件名，
+ *   而本函数要的正好相反 —— **只要链接正文的壳，不要里面的参数**。
+ *   另外它是 /g 正则、共享模块作用域，复用要手动管 lastIndex，容易出事故
+ *   （32-plugin-canvas.js 就为此写过 lastIndex = 0 的补丁注释）。
+ *   所以这里另写一条**只做「找出来 + 剥壳」**的正则，判定标准仍与 LMB_LINK_RE
+ *   保持一致（必须 .pdf#page=数字），避免两处对「什么算 pdf 链接」的理解漂移。
+ *
+ * ⚠⚠ 明确职责边界：本函数**只剥壳、绝不解析 page=/selection= 参数**。
+ *   参数解析是 lmbParsePdfLink() 的活（src/36-plugin-jump.js）。
+ *   在这里重复实现一次，等于把同一份规则抄成两份，将来改格式必漂。
+ *   调用方拿到 lmbPickBarActions().jump 后，直接丢给 lmbParsePdfLink() 即可。
+ */
+// 扫描用：抓出所有 [[...]] 的完整内层；match(/g) 内部会自重置 lastIndex，可安全复用
+const LMB_BAR_WIKILINK_RE = /\[\[([^\]\n]*)\]\]/g;
+// 判定用：这一段算不算「pdf 链接」（宽松版，与 LMB_LINK_RE 的核心特征对齐）
+const LMB_BAR_PDF_HINT_RE = /\.pdf#page=\d+/i;
+// 截图 embed：![[xxx.webp]] / ![[xxx.webp|400]]（v0.16.0：双重卡判定的「有图」半边）
+const LMB_BAR_EMBED_RE = /!\[\[[^\]\n]+\]\]/;
+// 双重摘录卡的视图切换标记：> [!lmb-view] 或 > [!lmb-view]-（宽松容忍多个空格 / 折叠符 / 行尾）
+//   v0.16.0：lmbPickBarActions 的 view 判定**已不再使用它**（新卡不写这行了，见下）。
+//   保留正则只为存量卡 / 兼容期排查，新代码不要依赖它。
+const LMB_BAR_VIEW_RE = /^[ \t]*>[ \t]*\[!lmb-view\][ \t]*(?:[+-][ \t]*)?(?:$|\s)/m;
+
+/**
+ * 按卡片内容决定悬浮栏显示哪些按钮（纯函数，绝不抛异常）。
+ *
+ * 为什么要按内容动态判定：
+ *   三个按钮**不是每张卡都适用**。无脑全显示的话，会出现点了没反应的死按钮
+ *   （比如纯截图卡没有文字引用块，点「跳转」根本无处可跳），
+ *   用户会以为插件坏了。宁可少显示，也不要死按钮。
+ *
+ * 判定规则：
+ *   comment —— 卡片是**文本节点**就能加评论。判据：nodeText 是非空字符串（trim 后非空）。
+ *   jump    —— 卡片里有 pdf 引用行才能跳回 PDF。引用行形如
+ *              `> [[某文件.pdf#page=12&selection=1,2,3,4|📖]]`
+ *              （`|` 后是显示别名，v0.12.0 起收拢成一个 📖 图标；也可能是别的别名，
+ *                也可能干脆没有别名 —— 三种都要认）。
+ *              取**第一个**命中的 pdf 链接（同一张卡可能有多个 = 多重摘录），
+ *              返回**不含 [[]] 包裹、且剥掉 |别名 的链接正文**，如
+ *              `"某文件.pdf#page=12&selection=1,2,3,4"`；找不到返回 null。
+ *              链接不会跨行（canvas text 节点里一行就是一个引用块），故逐行扫描足够。
+ *   view    —— 只有「双重摘录卡」（文字引用块 + 截图同时在卡里）才有切换视图按钮。
+ *              v0.16.0 判定改版：= **同时含「PDF 引用行」+「截图 embed」**。
+ *              旧版（v0.13.0~v0.15.0）靠卡里那行 `> [!lmb-view]` callout 当标记；
+ *              v0.16.0 起新卡不再写这行（卡片精简 v2：用户要求卡内不放控件），
+ *              若判定仍依赖它 → 新双重卡的「视图」按钮永远不显示 = 功能静默消失。
+ *              所以改为按**内容**判定：有 pdf 引用行（jump 命中）+ 有 ![[xxx.webp]] embed。
+ *              副作用是好的：老卡（markdown 里还留着 lmb-view 行）同样满足这两个条件，
+ *              判定结果一致 → **新老卡零迁移、行为统一**。
+ *
+ * @param {string} nodeText  卡片的 markdown 文本（canvas text 节点的 text 字段）
+ * @returns {{comment:boolean, jump:string|null, view:boolean, fit:boolean}}
+ */
+function lmbPickBarActions(nodeText) {
+  try {
+    const hasText = (typeof nodeText === "string") && nodeText.trim() !== "";
+    // comment：文本节点就能加评论（与卡片有没有 pdf 链接无关）
+    const comment = hasText;
+    // v0.16.0：截图 embed（双重卡的「有图」半边；判据与 callout 无关）
+    const hasEmbed = hasText && LMB_BAR_EMBED_RE.test(nodeText);
+
+    let jump = null;
+    if (hasText) {
+      const hits = nodeText.match(LMB_BAR_WIKILINK_RE);   // /g 的 match 返回全部匹配，不污染 lastIndex
+      if (hits && hits.length) {
+        for (let i = 0; i < hits.length; i++) {
+          const raw = hits[i];
+          // 剥掉外层 [[ ]]
+          const inner = raw.slice(2, raw.length - 2);
+          // 剥掉 |别名（只按第一个 | 切；链接正文里不会出现 |）
+          const pipe = inner.indexOf("|");
+          const body = (pipe >= 0 ? inner.slice(0, pipe) : inner).trim();
+          if (body !== "" && LMB_BAR_PDF_HINT_RE.test(body)) {
+            jump = body;
+            break;                                        // 多重摘录取第一个
+          }
+        }
+      }
+    }
+
+    // v0.16.0：view = 有截图 embed **且** 有 pdf 引用行（两者同时满足才算双重摘录卡）
+    const view = hasEmbed && (jump !== null);
+    // v0.13.3：fit = 自适应高度。文本节点都能调（lmbFitNodeById 内部判断 node.type）
+    const fit = hasText;
+    return { comment: comment, jump: jump, view: view, fit: fit, disconnect: false };
+  } catch (e) {
+    return { comment: false, jump: null, view: false, fit: false, disconnect: false };
+  }
+}
+
+/** 决定断线行为：优先父边；否则单边直删，多边选择。 */
+function lmbPlanDisconnect(nodeId, edges, autoEdgeIds) {
+  try {
+    const all = Array.isArray(edges) ? edges : [];
+    const auto = autoEdgeIds instanceof Set ? autoEdgeIds : new Set(autoEdgeIds || []);
+    const incident = all.filter((e) => e && e.id
+      && (e.fromNode === nodeId || e.toNode === nodeId));
+    if (!incident.length) return { kind: "none", candidates: [] };
+    const parentEdges = incident.filter((e) => e.toNode === nodeId && auto.has(e.id));
+    if (parentEdges.length) {
+      return { kind: "direct", edgeId: parentEdges[0].id, candidates: incident, reason: "parent" };
+    }
+    if (incident.length === 1) {
+      return { kind: "direct", edgeId: incident[0].id, candidates: incident, reason: "only" };
+    }
+    return { kind: "choose", candidates: incident };
+  } catch (_) { return { kind: "none", candidates: [] }; }
+}
+
+/**
+ * 生成轮询指纹（纯函数，绝不抛异常）。
+ *
+ * 用途：轮询每 120ms 跑一次，但**绝大多数帧什么都没变**（用户只是盯着看 / 在打字）。
+ * 用指纹比对决定这一轮要不要**重建按钮**。
+ *
+ * 为什么「位置每轮都重算」而「按钮只在指纹变化时才重建」：
+ *   - 位置：拖动卡片 / 平移画布时位置一直在变，而且 getBoundingClientRect()
+ *     本身很便宜（一次布局读取），每轮算一遍完全扛得住，还能保证浮层严丝合缝跟手。
+ *   - 按钮：重建是要**动 DOM** 的（清掉旧按钮、新建、绑事件、setIcon），
+ *     比算坐标贵一两个数量级；而且选中没变时重建出来的一模一样，纯属白干
+ *     （还会把正在 hover / 按下的按钮状态打断）。所以只在指纹变了才重建。
+ *
+ * 两个必须注意的细节：
+ *   - nodeIds **先排序再拼接**：选中的遍历顺序（Map/Set 的插入顺序）不保证稳定，
+ *     不排序的话「同一组选中」会因为顺序不同算出不同指纹，白重建一整轮。
+ *   - viewport 的 x/y/zoom **保留 2 位小数**：平移缩放会产生 -20.000000000000004
+ *     这种浮点毛刺，不截断的话指纹每帧都变，等于指纹机制完全失效。
+ *
+ * 格式：`"id1,id2|100.50,-20.00,0.80"`（节点段 + "|" + 视口段）
+ *   空数组 → 节点段为空串，视口段照常输出，如 `"|100.50,-20.00,0.80"`
+ *
+ * @param {string[]} nodeIds   当前选中的节点 id 数组（顺序无关）
+ * @param {{x:number, y:number, zoom:number}} viewport  canvas 视口状态
+ * @returns {string}  指纹字符串；与本轮指纹相同则可跳过重建
+ */
+function lmbBarSignature(nodeIds, viewport) {
+  try {
+    // 节点段：排序后拼接（顺序无关）
+    const ids = (nodeIds && typeof nodeIds.length === "number")
+      ? Array.prototype.slice.call(nodeIds, 0)
+      : [];
+    const sorted = ids
+      .map(function (id) { return (id == null) ? "" : String(id); })
+      .sort();
+
+    // 视口段：非数字一律按 0 处理（viewport 传 null 不该让指纹机制整个废掉）
+    const vp = viewport || {};
+    const v = lmbBarFix2(vp.x) + "," + lmbBarFix2(vp.y) + "," + lmbBarFix2(vp.zoom);
+
+    return sorted.join(",") + "|" + v;
+  } catch (e) {
+    return "";
+  }
+}
+
+/* ---- 测试钩子：node 离线单测直接 require 本文件即可拿到；
+ *      拼接进 main.js 后 module 依然存在于 CommonJS 作用域，钩子同样有效。 ---- */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.__lmbCanvasBar = {
+    LMB_BAR_POLL_MS, LMB_BAR_GAP, LMB_BAR_MARGIN, LMB_BAR_SEL,
+    lmbCalcBarPos, lmbPickBarActions, lmbBarSignature,
+  };
+}
+
+/* core/runtime-state — owns mutable, session-scoped plugin state */
+
+class LmbRuntimeState {
+  constructor() {
+    this.syncTimers = new Map();
+    this.selfWritten = new Map();
+    this.autoSize = new Map();
+    this.imgDims = new Map();
+    this.canvasPositions = new Map();
+    this.autoEdges = new Map();
+    this.nodeMeta = new Map();
+    this.excerptIndex = new Map();
+    this.indexMtime = new Map();
+    this.excerptCanvasIndex = new Map();
+    this.relatedCache = new Map();
+  }
+
+  /**
+   * Expose stable compatibility aliases while controllers are incrementally
+   * migrated away from direct fields on the Obsidian Plugin instance.
+   */
+  attach(plugin) {
+    for (const key of Object.keys(this)) plugin[key] = this[key];
+    return this;
+  }
+}
+
+/* core/settings-store — defaults, migrations, and persistence shape */
+
+const LMB_DEFAULT_SETTINGS = Object.freeze({
+  debug: false,
+  colorMap: "",
+  noteCalloutType: "ppd-note",
+  noteTitle: "补充描述",
+  noteFoldByDefault: false,
+  noteIntoSync: false,
+  noteAutoBoxOnNew: false,
+  commentAutoBoxOnNew: false,
+  autoAttachScreenshot: true,
+  autoCleanOnDelete: false,
+  notePlaceholderOffMigrated: false,
+  commentBoxOffMigrated: false,
+  naturalHeightV2Migrated: false,
+  overflowHeightVerifiedMigrated: false
+});
+
+class LmbSettingsStore {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+
+  async load() {
+    const settings = Object.assign({}, LMB_DEFAULT_SETTINGS, await this.plugin.loadData());
+    let migrated = false;
+    if (!settings.notePlaceholderOffMigrated) {
+      settings.noteAutoBoxOnNew = false;
+      settings.notePlaceholderOffMigrated = true;
+      migrated = true;
+    }
+    if (!settings.commentBoxOffMigrated) {
+      settings.commentAutoBoxOnNew = false;
+      settings.commentBoxOffMigrated = true;
+      migrated = true;
+    }
+    return { settings, migrated };
+  }
+
+  serialize(settings, state) {
+    const obj = {
+      debug: !!settings.debug,
+      recallDefault: !!settings.recallDefault,
+      colorMap: settings.colorMap,
+      noteCalloutType: settings.noteCalloutType,
+      noteTitle: settings.noteTitle,
+      noteFoldByDefault: !!settings.noteFoldByDefault,
+      noteIntoSync: !!settings.noteIntoSync,
+      noteAutoBoxOnNew: settings.noteAutoBoxOnNew !== false,
+      commentAutoBoxOnNew: settings.commentAutoBoxOnNew === true,
+      autoAttachScreenshot: settings.autoAttachScreenshot !== false,
+      autoCleanOnDelete: settings.autoCleanOnDelete === true,
+      notePlaceholderOffMigrated: !!settings.notePlaceholderOffMigrated,
+      commentBoxOffMigrated: !!settings.commentBoxOffMigrated,
+      naturalHeightV2Migrated: !!settings.naturalHeightV2Migrated,
+      overflowHeightVerifiedMigrated: !!settings.overflowHeightVerifiedMigrated
+    };
+    if (state.autoSize.size) {
+      obj.autoSizes = Object.fromEntries(Array.from(state.autoSize, ([path, store]) => [path, Array.from(store)]));
+    }
+    if (state.imgDims.size) obj.imgDims = Object.fromEntries(state.imgDims);
+    const positions = this._nonEmptyEntries(state.canvasPositions);
+    if (positions) obj.canvasPositions = positions;
+    const edges = this._nonEmptyEntries(state.autoEdges);
+    if (edges) obj.autoEdges = edges;
+    return obj;
+  }
+
+  _nonEmptyEntries(source) {
+    const result = {};
+    for (const [path, values] of source || []) {
+      if (values.size) result[path] = Array.from(values);
+    }
+    return Object.keys(result).length ? result : null;
+  }
+}
+
 /* 30-plugin-core —— 插件类核心：构造器/生命周期/设置/样式注入 */
 
 class LuciasMarginBookPlugin extends Plugin {
 
   async onload() {
-    this.syncTimers = new Map();
-    this.selfWritten = new Map();
-    this.autoSize = new Map();
-    this.imgDims = new Map();        // webp 全名 -> {w,h}
+    this._unloaded = false;          // v0.16.5 R8：卸载后异步链的退出标记
+    this.runtimeState = new LmbRuntimeState();
+    this.runtimeState.attach(this);
     this.chipEl = null;
     this._saveTimer = null;
     this._chipSig = null;            // 当前 chip 承载的选区签名（text@page），防重复重建
-    this.canvasPositions = new Map(); // v0.7.0：canvas 路径 -> 节点 id -> {x,y,width,height}（位置 diff 识别「刚被拖动」的卡）
-    this.autoEdges = new Map();      // v0.7.1：canvas 路径 -> 自动建边的 id 集合（用于清理不再重叠的瞬时孤儿边，防重复连线）
     this._lastNoSelNotice = 0;
-    this.rectMode = false;           // ribbon 按钮的一次性框选模式
+    this.rectMode = false;           // 框选模式（v0.11.2 起为常驻开关：ribbon/工具栏按钮/命令共用）
     this._ribbonEl = null;
+    this._toolbarBtnTimer = null;    // v0.11.2：PDF 工具栏按钮注入的重试定时器
+    // v0.12.1：工具栏宿主 DOM 缓存（LmbDomCache，见 25-pure-toolbar.js）
+    //   key = leaf 对象本身（一个 leaf 一份工具栏，绝不能用 "pdf" 这种全局单例 key）
+    //   value = 该 leaf 解析出来的工具栏宿主 el（get() 内部用 isConnected 自动判失效）
+    this._toolbarCache = new LmbDomCache();
     this._dragArm = null;            // 我们的 chip 拖拽进行中（drop 捕获用）
     this._instantSkip = 0;           // 即时通道成功后短暂抑制文件层自动父子（防双写）
     this._dropFlush = null;          // v0.7.2：canvas 内松手后的快速通道 {path, t, timer}
 
     // P1：摘录索引层（反向索引：摘录 md → PDF/页/选区）
-    this.excerptIndex = new Map();   // pdf 路径 -> 条目数组
-    this.indexMtime = new Map();     // 摘录文档路径 -> mtime（增量判定用）
     this._isIndexing = false;        // 全量重建进行中标记（防重入）
     // P3.5：exId -> canvas 卡片位置（反向跳转优先进画布，而非 md）
-    this.excerptCanvasIndex = new Map();
 
     // 补丁 B：相关笔记缓存 + 颜色归一化上下文（须在 settings 与 canvas 监听之前就绪）
-    this.relatedCache = new Map();   // 摘录 id -> 相关笔记 wikilink 数组（每 id 只检索一次）
     this._colorCtx = null;           // 颜色归一化用的离屏 canvas 2d context（惰性创建）
-    this.settings = Object.assign({
-      debug: true, colorMap: "",
-      // v0.8.0：卡片补充描述
-      noteCalloutType: "ppd-note",  // callout 类型名（渲染成框）
-      noteTitle: "补充描述",         // callout 标题
-      noteFoldByDefault: false,     // 新建时是否默认折叠
-      noteIntoSync: false,          // 补充描述是否同步进摘录 md（默认否，保持摘录文档干净）
-      noteAutoBoxOnNew: true,       // v0.8.2：新摘录卡自动挂一个空的补充描述框（一眼能看见）
-      commentAutoBoxOnNew: true     // v0.11.0：新摘录卡自动挂评论栏（PDF Flow 式底栏按钮）
-    }, await this.loadData());
+    this.settingsStore = new LmbSettingsStore(this);
+    const loadedSettings = await this.settingsStore.load();
+    this.settings = loadedSettings.settings;
+    // v0.12.0 一次性迁移：老配置里 noteAutoBoxOnNew 已被持久化成 true，
+    //   只改默认值不生效。用标记保证只强制关这一次，之后用户在设置里改回 true 不再被覆盖。
+    let settingsMigrated = loadedSettings.migrated;
+    // v0.16.0 一次性迁移（与上面同一套机制）：老配置里 commentAutoBoxOnNew 已被持久化成 true，
+    //   只改默认值对存量用户不生效。强制关这一次，之后用户在设置里改回 true 不再被覆盖。
+    // 两项迁移合并成一次有序写入，避免并发 saveData 互相覆盖。
+    if (settingsMigrated) await this.saveSettings();
     // 补丁 C：Recall 回忆模式状态（settings.recallDefault = 是否默认开启）
     this.recallMode = !!this.settings.recallDefault;
     try {
@@ -776,6 +1985,30 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     } catch (_) { /* noop */ }
 
+    // v0.16.12：旧缓存中的 hash 与文本仍相同；若不失效，新算法永远没有机会运行。
+    // 保留 locked（用户明确手动锁定）的卡片，其余只标成 pendingActual，等待对应画布
+    // 渲染后定点实测，不在启动时直接改文件，也不会触碰卡片坐标。
+    if (!this.settings.naturalHeightV2Migrated) {
+      for (const store of this.autoSize.values()) {
+        for (const [id, entry] of store.entries()) {
+          if (!entry || entry.locked) continue;
+          store.set(id, Object.assign({}, entry, { pendingActual: true }));
+        }
+      }
+      this.settings.naturalHeightV2Migrated = true;
+      await this.saveSettings();
+    }
+    if (!this.settings.overflowHeightVerifiedMigrated) {
+      for (const store of this.autoSize.values()) {
+        for (const [id, entry] of store.entries()) {
+          if (!entry || entry.locked) continue;
+          store.set(id, Object.assign({}, entry, { pendingActual: true }));
+        }
+      }
+      this.settings.overflowHeightVerifiedMigrated = true;
+      await this.saveSettings();
+    }
+
     this.registerDomEvent(document, "mousedown", (e) => this.onDocMouseDown(e), true);
     this.registerDomEvent(document, "mouseup", (e) => this.onDocMouseUp(e), true);
     this.registerDomEvent(document, "scroll", () => this.hideChip(), true);
@@ -789,9 +2022,10 @@ class LuciasMarginBookPlugin extends Plugin {
         const f = this.canvasFileFromEvent(e);
         if (f) this.armDropFlush(f);
         if (e.button === 0) {
-          const canvasObj = this.canvasObjFromEvent(e);
-          if (canvasObj) {
-            this.instantMoveAttach(canvasObj).catch((err) =>
+          // v0.11.1：canvasCtxFromEvent 同时拿 file 与 canvasObj（避开 canvasObj.view 的填值时机坑）
+          const ctx = this.canvasCtxFromEvent(e);
+          if (ctx && ctx.canvasObj) {
+            this.instantMoveAttach(ctx.canvasObj, ctx.file).catch((err) =>
               console.warn("[lmb] instant move error:", err));
           }
         }
@@ -800,7 +2034,14 @@ class LuciasMarginBookPlugin extends Plugin {
 
     this.registerEvent(this.app.vault.on("modify", (f) => {
       if (f instanceof TFile && f.extension === "canvas") {
-        if (this.selfWritten.get(f.path)) { this.selfWritten.delete(f.path); return; }
+        // v0.16.4 修复 P2-4：selfWritten 的值改为写入时刻的时间戳。
+        //   旧版存 true 且靠下一次 modify 清除——若该 modify 未触发，残留标志会吞掉
+        //   用户的下一次真实修改。现在超过 5s 的旧标志不再吞。
+        const selfT = this.selfWritten.get(f.path);
+        if (selfT) {
+          this.selfWritten.delete(f.path);
+          if (Date.now() - selfT < 5000) return;
+        }
         // v0.7.2 快速通道：刚在 canvas 松手 → 用 80ms 而非 400ms（省 ~320ms 延迟）
         const flush = this._dropFlush;
         if (flush && flush.path === f.path && Date.now() - flush.t < 1500) {
@@ -822,30 +2063,45 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.5.0 即时通道：捕获我们的 chip 落进 canvas 的 drop 事件，走 canvas 内部 API
     // （getData/setData/requestSave）直接改内存数据，毫秒级生效；
     // 内部 API 缺失/超时/没压中卡 → 静默退回文件层管线（250ms + 出生重试）。
+    // v0.11.1：canvasCtxFromEvent 同时拿 file → 即时通道建边时直接登记 sidecar，
+    //   不再依赖 canvasObj.view 是否已挂 .file（polling 早期可能为 null）
     this.registerDomEvent(document, "drop", (e) => {
       try {
         if (!this._dragArm) return;
         const target = e.target && e.target.nodeType === 1 ? e.target : null;
         if (!target) return;
-        const leaf = this.app.workspace.getLeavesOfType("canvas").find((l) => l.containerEl.contains(target));
-        const canvasObj = leaf && leaf.view && leaf.view.canvas;
-        if (!canvasObj || typeof canvasObj.getData !== "function" ||
-            typeof canvasObj.setData !== "function" || typeof canvasObj.requestSave !== "function") {
+        const ctx = this.canvasCtxFromEvent(e);
+        if (!ctx || !ctx.canvasObj) {
           console.log("[lmb] canvas 内部 API 不可用 → 文件层兜底（250ms）");
           return;
         }
-        this.instantAttach(canvasObj).catch((err) => console.warn("[lmb] instant attach error:", err));
+        this.instantAttach(ctx.canvasObj, ctx.file).catch((err) => console.warn("[lmb] instant attach error:", err));
       } catch (err) {
         console.warn("[lmb] drop capture error:", err);
       }
     }, true);
 
-    // 侧边栏按钮：一次性图片框选模式
-    this._ribbonEl = this.addRibbonIcon("scan-search", "MarginBook: 图片框选（点击后在 PDF 上直接拖拽）", () => {
-      this.rectMode = !this.rectMode;
-      this.updateRibbonState();
+    // v0.11.2：PDF 原生工具栏注入「图片框选」按钮（PDF++ 式 crop 按钮，摆脱 Alt）。
+    //   工具栏由 pdf.js 异步渲染，所以在布局事件后做有限次重试（lmbScheduleToolbarButtons）。
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.lmbScheduleToolbarButtons()));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.lmbScheduleToolbarButtons()));
+    this.registerEvent(this.app.workspace.on("file-open", (f) => {
+      if (f && f.extension === "pdf") this.lmbScheduleToolbarButtons();
+    }));
+
+    // v0.11.2：Esc 退出框选模式（与按钮开关对称；Alt 临时拖拽不受影响）
+    this.registerDomEvent(document, "keydown", (e) => {
+      if (e.key === "Escape" && this.rectMode) {
+        this.setRectMode(false);
+        new Notice("MarginBook: 图片框选模式已关闭", 2000);
+      }
+    }, true);
+
+    // 侧边栏按钮：图片框选模式（v0.11.2 起为常驻开关：再点一次/Esc 关闭，截图后不自动关）
+    this._ribbonEl = this.addRibbonIcon("scan-search", "MarginBook: 图片框选（点击开启，直接在 PDF 上拖拽截图；再点一次/Esc 关闭）", () => {
+      this.setRectMode(!this.rectMode);
       new Notice(this.rectMode
-        ? "MarginBook: 图片框选模式已开启 —— 在 PDF 上直接拖拽即可（一次性）"
+        ? "MarginBook: 图片框选模式已开启 —— 在 PDF 上直接拖拽即可（再点一次/Esc 关闭）"
         : "MarginBook: 图片框选模式已关闭", 3000);
     });
     if (this._ribbonEl) this._ribbonEl.addClass("lmb-btn");
@@ -885,7 +2141,7 @@ class LuciasMarginBookPlugin extends Plugin {
      * （不链 pdf 且不在索引中 → 跳过；mtime 未变 → 跳过），不会读盘。
      */
     this.registerEvent(this.app.vault.on("modify", (f) => {
-      if (f && f.extension === "canvas") this.lmbIndexCanvasFile(f);   // P3.5：canvas 索引
+      if (f && f.extension === "canvas") this.lmbScheduleCanvasIndex(f); // P3.5 canvas 索引（v0.16.5 R7 防抖）
       else this.reindexFile(f);
     }));
     this.registerEvent(this.app.vault.on("create", (f) => {
@@ -900,7 +2156,13 @@ class LuciasMarginBookPlugin extends Plugin {
         }
       } else this.dropFileFromIndex(f.path);
     }));
-    this.app.workspace.onLayoutReady(() => { this.buildExcerptIndex(); });
+    this.app.workspace.onLayoutReady(() => {
+      this.buildExcerptIndex();
+      // v0.11.2：启动时若 PDF 已打开（layout-change/file-open 不会补发），也要注入工具栏按钮
+      this.lmbScheduleToolbarButtons();
+      // v0.13.0：启动 canvas 卡片悬浮栏轮询（每 120ms 比对选中集合与视口状态）
+      if (typeof this.lmbStartCanvasBarWatch === "function") this.lmbStartCanvasBarWatch();
+    });
 
     /* ---- P2：回绘标记的触发时机 ----
      * 注意 pdf.js 虚拟化：不能假设"打开 PDF 就能画"。
@@ -923,11 +2185,12 @@ class LuciasMarginBookPlugin extends Plugin {
 
     this.addCommand({
       id: "rect-select-mode",
-      name: "图片框选模式（下一次拖拽生效）",
+      name: "图片框选模式（开关，开启后直接拖拽截图）",
       callback: () => {
-        this.rectMode = true;
-        this.updateRibbonState();
-        new Notice("MarginBook: 图片框选模式已开启 —— 在 PDF 上直接拖拽即可（一次性）", 3000);
+        this.setRectMode(!this.rectMode);
+        new Notice(this.rectMode
+          ? "MarginBook: 图片框选模式已开启 —— 在 PDF 上直接拖拽即可（再点一次/Esc 关闭）"
+          : "MarginBook: 图片框选模式已关闭", 3000);
       }
     });
 
@@ -944,6 +2207,11 @@ class LuciasMarginBookPlugin extends Plugin {
               n.classList.remove("lmb-recall-blur", "lmb-recall-reveal");
               if (n._ppdReblurTimer) clearTimeout(n._ppdReblurTimer);
             });
+          } else {
+            // v0.16.5 修复 R4：开启侧此前什么都没做 —— MarkdownPostProcessor 只在
+            //   **渲染时**跑一次，已打开的阅读视图不会重渲染 → 用户开了 Recall 却
+            //   看不到任何模糊，必须手动切走再切回才生效。现在主动触发一次重渲染。
+            this.lmbRerenderRecallViews();
           }
           new Notice(this.recallMode
             ? "回忆模式已开启：摘录已模糊，点击揭示（3 秒后重新模糊）"
@@ -1040,6 +2308,19 @@ class LuciasMarginBookPlugin extends Plugin {
       callback: async () => { await this.addNoteBoxToAllCards(); }
     });
 
+    /* ---- v0.13.9：卡片高度自适应命令（悬浮栏之外的独立入口）----
+     * 为什么单独加命令：悬浮栏按钮链路排查了 5 版（v0.13.4→v0.13.8）用户仍反馈
+     * "完全没反应、Notice 也不弹"，无法定位是按钮 DOM 的问题还是 fit 逻辑的问题。
+     * 命令面板是 Obsidian 最稳的入口（不依赖任何自建 DOM）——
+     *   命令能用  → fit 逻辑没问题，问题锁定在悬浮栏链路
+     *   命令也坏  → fit 逻辑本身有问题，换方向修
+     * 无论哪种结果都能立刻收敛，而且命令本身就是一个永久可用的备选入口。 */
+    this.addCommand({
+      id: "fit-card-height",
+      name: "调整选中卡片高度（按内容自适应）",
+      callback: () => { this.lmbFitSelectedCard(); }
+    });
+
     /* ---- v0.11.0：独立评论（批注评论底栏）命令 ---- */
     this.addCommand({
       id: "edit-card-comment",
@@ -1115,14 +2396,31 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     });
 
-    this.debugNotice("已加载 ✓（v0.8.1：拖拽摘录 / 自动父子组居中 / 卡片补充描述）");
-    console.log("[lmb] loaded (v0.11.0)");
+    this.debugNotice("已加载 ✓（v0.16.14：卡片断线与撤销）");
+    console.log("[lmb] loaded (v0.16.14)");
   }
 
   onunload() {
     this.hideChip();
     this.syncTimers.forEach((t) => clearTimeout(t));
     this.syncTimers.clear();
+
+    // v0.11.2：拆掉 PDF 工具栏注入的框选按钮 + 重试定时器 + body 模式类
+    try {
+      if (this._toolbarBtnTimer) { clearTimeout(this._toolbarBtnTimer); this._toolbarBtnTimer = null; }
+      // v0.16.4 修复 P2-1：此前只删 crop，md / canvas 两颗按钮残留成死按钮
+      document.querySelectorAll(".lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas")
+        .forEach((b) => { if (b.parentNode) b.remove(); });
+      document.body.removeClass("lmb-rect-mode");
+      // v0.12.1：清掉工具栏宿主的 DOM 缓存（不清的话 Map 里会残留整棵已卸载的 leaf 引用）
+      if (this._toolbarCache) this._toolbarCache.clear();
+      // v0.13.0：停掉 canvas 悬浮栏轮询 + 移除浮层 DOM
+      //   （不清 interval 的话插件卸载后它还会每 120ms 继续跑，且持有已销毁 leaf 的引用）
+      if (typeof this.lmbStopCanvasBarWatch === "function") this.lmbStopCanvasBarWatch();
+      // v0.16.5 修复 R8：清掉所有自建定时器 + 置卸载标记（异步链入口自行退出）
+      this._unloaded = true;
+      this._lmbClearTimers();
+    } catch (_) { /* noop */ }
 
     // P3.5：先拆 DOM 层链接拦截（越早越好，避免卸载过程中还拦截点击）
     this.lmbTeardownLinkInterception();
@@ -1161,9 +2459,259 @@ class LuciasMarginBookPlugin extends Plugin {
     if (st) st.remove();
   }
 
+  /* ==================== v0.11.2：框选模式（常驻开关）+ PDF 工具栏按钮 ==================== */
+
+  /**
+   * 框选模式统一开关入口：ribbon / 命令 / PDF 工具栏按钮 / Esc 全走这里，
+   * 保证三处 UI（ribbon、所有 PDF 工具栏按钮、body 模式类）同步刷新。
+   */
+  setRectMode(on) {
+    this.rectMode = !!on;
+    this.updateRibbonState();
+  }
+
+  /**
+   * v0.11.2：同步所有框选模式 UI。
+   *   ribbon 图标 + 每个 PDF 工具栏里注入的 .lmb-toolbar-crop + body.lmb-rect-mode
+   *   （body 类供 CSS 把 PDF 页面光标换成 crosshair，给「正在框选」的视觉反馈）。
+   */
   updateRibbonState() {
-    if (!this._ribbonEl) return;
-    this._ribbonEl.toggleClass("is-active", !!this.rectMode);
+    if (this._ribbonEl) this._ribbonEl.toggleClass("is-active", !!this.rectMode);
+    try {
+      document.querySelectorAll(".lmb-toolbar-crop").forEach((b) => b.toggleClass("is-active", !!this.rectMode));
+      document.body.toggleClass("lmb-rect-mode", !!this.rectMode);
+    } catch (_) { /* noop */ }
+  }
+
+  /**
+   * v0.11.2：工具栏按钮注入的有限重试调度。
+   *   pdf.js 的 .pdf-toolbar 在视图打开后异步渲染，单次注入大概率扑空；
+   *   这里 250ms × 最多 8 次（2 秒），全部就绪后提前停。
+   *
+   * v0.12.1：每轮 tick 开头先 prune 工具栏宿主缓存，清掉已被 Obsidian 摘掉的游离节点，
+   *   避免关掉分屏后缓存里残留死引用、也保证下一轮对失效 leaf 重新解析。
+   *   重试节奏**故意保持不变**：120ms 首延 + 250ms × 最多 8 次（有次数上限 + 有节流），
+   *   比 editing-toolbar v4.1.1 那种「裸 setTimeout(200) 无节流重建」更稳 —— 它每个
+   *   事件都全量重建一遍按钮，事件密集时会反复 remove/append 抖动，我们不会。
+   *
+   * v0.12.1（修订）：allowFallback 只在**最后一次** tick 才放行。
+   *   tries 自增时机是「先 setTimeout、后 tries++」，所以进入第 N 次 tick 时 tries === N-1：
+   *     tick1(tries=0) … tick8(tries=7) → false；tick9(tries=8) → true，且 8 < 8 不成立、
+   *     不再排下一轮，所以 tick9 就是最后一轮。共 9 轮（120ms + 250ms × 8 ≈ 2.12s）。
+   */
+  lmbScheduleToolbarButtons() {
+    if (this._toolbarBtnTimer) clearTimeout(this._toolbarBtnTimer);
+    let tries = 0;
+    const tick = () => {
+      this._toolbarBtnTimer = null;
+      // v0.12.1：先清游离缓存，再解析（不清的话命中旧节点就永远跳过 querySelector）
+      try { if (this._toolbarCache) this._toolbarCache.prune(); } catch (_) { /* noop */ }
+      // v0.12.1（修订）：除最后一轮外都不准用兜底宿主（详见 lmbEnsureToolbarButtons 注释）
+      const missing = this.lmbEnsureToolbarButtons(tries >= 8);
+      if (missing && tries < 8) {
+        tries++;
+        this._toolbarBtnTimer = setTimeout(tick, 250);
+      }
+    };
+    this._toolbarBtnTimer = setTimeout(tick, 120);
+  }
+
+  /**
+   * v0.11.2：给所有打开的 PDF 视图的 .pdf-toolbar 补挂按钮（幂等）。
+   * 返回是否仍有视图的工具栏未就绪（true = 需要重试）。
+   * DOM 参照（与 PDF++ 同款挂法）：.pdf-toolbar 内 .clickable-icon 按钮；
+   * PDF 嵌入（.pdf-embed）的迷你工具栏不注入（空间小、框选主战场是完整视图）。
+   *
+   * v0.12.0：按钮从 1 个扩到 3 个，各自独立判定是否已挂（不能再按 crop 存在与否
+   * 提前 continue，否则旧版本升级后 crop 在、新按钮永远挂不上）：
+   *   ① .lmb-toolbar-crop   图片框选（v0.11.2）
+   *   ② .lmb-toolbar-md     打开/创建该 PDF 的摘录文档（<PDF名>-摘录.md）
+   *   ③ .lmb-toolbar-canvas 打开/创建该 PDF 的专属画布（<PDF名>.canvas）
+   * 文件一律在点击时从按钮所在 leaf 反查（注入时闭包存 file 会在切文件后失效）。
+   *
+   * v0.12.1：宿主不再硬编码 `.pdf-toolbar`，改走 lmbResolveToolbarAnchor 查
+   *   LMB_VIEW_SPECS（判定 + 选择器 + enabled 三合一的单一真相源，见 25-pure-toolbar.js），
+   *   并加了一层 per-leaf 缓存（key = leaf 对象）避免每次事件都全量 querySelector。
+   *   三个按钮自身的判定结构（各自独立判存在 / 幂等追加）**保持原样不动**。
+   *
+   * v0.12.1（修订）：**fallback 只在重试用尽后才允许**（allowFallback，默认 false）。
+   *   为什么必须分：`.pdf-toolbar` 是 pdf.js **异步渲染**的，在它出现之前的那一两帧，
+   *   lmbResolveToolbarAnchor 的兜底会命中 PDF 视图里一直存在的 `.view-content`，
+   *   于是：① 三个按钮被 append 进内容区而不是顶部工具栏 → 按钮跑到 PDF 正文上面、
+   *   破坏布局；② 这个错误宿主被写进 per-leaf 缓存 → 等真正的 `.pdf-toolbar` 渲出来时
+   *   缓存命中、不再重新解析，**按钮永远迁移不回真正的工具栏**。
+   *   重试机制本来就是为「等 `.pdf-toolbar` 渲染」而设计的，fallback 的语义是
+   *   「这个视图类型确实没有我们期望的宿主容器」，不是「异步还没准备好」——两者不能混。
+   *   所以 allowFallback === false 时遇到 fallback：**不注入、不写缓存、算 missing**。
+   *
+   * @param {boolean} [allowFallback=false] 是否允许用兜底宿主（由调度层按重试进度给，
+   *   只在最后一轮为 true）
+   * @returns {boolean} missing（true = 还有视图未就绪，需要重试）
+   */
+  lmbEnsureToolbarButtons(allowFallback = false) {
+    let missing = false;
+    const cache = this._toolbarCache;
+    let leaves = [];
+    try { leaves = this.app.workspace.getLeavesOfType("pdf"); } catch (_) { return true; }
+    for (const leaf of leaves) {
+      // v0.11.2：从 leaf.containerEl 找（比 view.containerEl 更宽，工具栏挂在任何子层级都能命中）
+      const root = leaf && leaf.containerEl;
+      if (!root || !root.querySelector) continue;
+
+      // v0.12.1：viewType 从 leaf.view 上取（查规格表用），取不到回落 "pdf"
+      //   （Obsidian 的 PDF 视图 getViewType() 返回的就是 "pdf"）
+      let viewType = "pdf";
+      try {
+        const v = leaf.view;
+        if (v && typeof v.getViewType === "function") viewType = v.getViewType() || "pdf";
+      } catch (_) { viewType = "pdf"; }
+
+      // v0.12.1：先查缓存。key 用 leaf 对象本身 —— 每个 leaf 有自己独立的一份工具栏，
+      //   绝不能用 "pdf" 这种全局单例 key（多 PDF 分屏时会把按钮注到第一个 leaf 里）。
+      //   缓存命中且 isConnected 为真（LmbDomCache.get 内部已判）→ 直接复用，跳过 querySelector。
+      let el = null;
+      try { el = cache ? cache.get(leaf) : null; } catch (_) { el = null; }
+      if (!el) {
+        let resolved = null;
+        try { resolved = lmbResolveToolbarAnchor(root, viewType); } catch (_) { resolved = null; }
+        const spec = resolved && resolved.spec;
+        const source = resolved ? resolved.source : null;
+
+        // v0.12.1（修订）：按 source 分三路。**写缓存只有两条路径**：
+        //   ① source === "spec"；② source === "fallback" 且 allowFallback 为 true。
+        //   其余一律不写缓存（否则错误宿主被缓存住就再也纠正不回来）。
+        if (source === "fallback" && allowFallback !== true) {
+          // 「还没渲染出来」不是「没有宿主」→ 不注入、不写缓存，留给外层继续等真正的
+          // .pdf-toolbar（下一轮这里会重新解析，因为缓存里根本没有条目）
+          missing = true;
+          continue;
+        }
+        if (source === null) {
+          // 情况一：spec 登记了但 enabled === false（用户/规格有意关掉）→ 不是「未就绪」，
+          //   静默跳过，不让外层白重试；顺手清掉该 leaf 的旧缓存条目。
+          // 情况二：未知视图 / 连兜底都没找到 → 算 missing，交给外层重试。
+          if (spec && spec.enabled === false) {
+            try { if (cache) cache.delete(leaf); } catch (_) { /* noop */ }
+            continue;
+          }
+          missing = true;
+          continue;
+        }
+        el = resolved.el;
+        try { if (cache) cache.set(leaf, el); } catch (_) { /* noop */ }
+      }
+
+      // v0.12.1：以下三个按钮的注入逻辑与 v0.12.0 完全一致，只把宿主从硬编码的
+      //   toolbar 换成上面解析出来（可能来自缓存）的 el。
+      // ① 图片框选
+      if (!el.querySelector(".lmb-toolbar-crop")) {
+        const btn = document.createElement("div");
+        btn.className = "clickable-icon lmb-toolbar-crop";
+        btn.setAttribute("aria-label",
+          "MarginBook: 图片框选（开启后直接在 PDF 上拖拽截图；Esc 或再点一次关闭）");
+        try { setIcon(btn, "box-select"); }
+        catch (_) { btn.setText("▦"); } // 图标缺失时兜底一个字形，按钮功能不受影响
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.setRectMode(!this.rectMode);
+          new Notice(this.rectMode
+            ? "MarginBook: 图片框选模式已开启 —— 直接拖拽截图，Esc 或再点一次关闭"
+            : "MarginBook: 图片框选模式已关闭", 2500);
+        });
+        el.appendChild(btn);
+        btn.toggleClass("is-active", !!this.rectMode);
+      }
+
+      // ② 打开/创建摘录文档
+      if (!el.querySelector(".lmb-toolbar-md")) {
+        const btn = document.createElement("div");
+        btn.className = "clickable-icon lmb-toolbar-md";
+        btn.setAttribute("aria-label",
+          "MarginBook: 打开 / 创建该 PDF 的摘录文档（<PDF名>-摘录.md，与 PDF 同目录）");
+        try { setIcon(btn, "file-text"); }
+        catch (_) { btn.setText("📄"); }
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          // v0.12.1：宿主在点击时从按钮自身反查（parentElement），而不是直接用闭包里的 el。
+          //   理由：el 现在可能来自缓存，「缓存命中」与「按钮当初被挂进去的那个节点」不是
+          //   一回事（Obsidian 重排/搬家工具栏时按钮和 el 可能一起换地方）。从按钮反查拿到
+          //   的永远是它当时真正所在的宿主，最稳；反查不到再退回闭包 el 兜底。
+          //   fallback 路径下按钮挂在 .view-content（或其首个子 div）里，parentElement 拿到的
+          //   就不是 .pdf-toolbar —— 但没关系：lmbPdfFileFromToolbar 只做 closest(
+          //   ".workspace-leaf")，兜底宿主和 .pdf-toolbar 同属一个 .workspace-leaf，照样反查得到。
+          const host = (e.currentTarget && e.currentTarget.parentElement) || el;
+          const f = this.lmbPdfFileFromToolbar(host);
+          if (!f) { new Notice("MarginBook: 该工具栏没有对应的 PDF 文件"); return; }
+          this.lmbOpenOrCreateExcerptMd(f).catch((err) => {
+            console.error("[lmb] open excerpt md failed:", err);
+            new Notice("MarginBook: 打开摘录文档失败，详情见控制台");
+          });
+        });
+        el.appendChild(btn);
+      }
+
+      // ③ 打开/创建专属画布
+      if (!el.querySelector(".lmb-toolbar-canvas")) {
+        const btn = document.createElement("div");
+        btn.className = "clickable-icon lmb-toolbar-canvas";
+        btn.setAttribute("aria-label",
+          "MarginBook: 打开 / 创建该 PDF 的专属画布（<PDF名>.canvas，与 PDF 同目录）");
+        try { setIcon(btn, "layout-dashboard"); }
+        catch (_) { btn.setText("▦"); }
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          // v0.12.1：同 ② —— 点击时从按钮反查宿主，闭包 el 仅作兜底
+          const host = (e.currentTarget && e.currentTarget.parentElement) || el;
+          const f = this.lmbPdfFileFromToolbar(host);
+          if (!f) { new Notice("MarginBook: 该工具栏没有对应的 PDF 文件"); return; }
+          this.lmbOpenOrCreatePdfCanvas(f).catch((err) => {
+            console.error("[lmb] open pdf canvas failed:", err);
+            new Notice("MarginBook: 打开专属画布失败，详情见控制台");
+          });
+        });
+        el.appendChild(btn);
+      }
+    }
+    return missing;
+  }
+
+  /**
+   * v0.12.0：从按钮所在的 .pdf-toolbar 反查当前 PDF 文件。
+   * 点击时实时解析（不在注入时闭包存 file）：同一 leaf 换了文件后按钮依然正确。
+   *
+   * v0.12.1：入参只要求是「按钮所在的宿主容器内/本身」的任意元素 —— 可能是 .pdf-toolbar，
+   *   也可能是重试用尽后走兜底时的 .view-content（或其首个子 div）。本函数只关心
+   *   closest(".workspace-leaf")，两者同属一个 leaf，结果一致。
+   */
+  lmbPdfFileFromToolbar(toolbar) {
+    try {
+      const leafEl = toolbar.closest(".workspace-leaf");
+      const leaf = leafEl
+        ? this.app.workspace.getLeavesOfType("pdf").find((l) => l.containerEl === leafEl)
+        : null;
+      const view = leaf && leaf.view;
+      return (view && view.file) ? view.file : null;
+    } catch (_) { return null; }
+  }
+
+  /**
+   * v0.12.1：对所有已注入的工具栏按钮做显隐分级。
+   *
+   * ⚠️ 目前**没有调用方**，这是预留能力，别当死代码删掉：
+   *   下一步要做「切到非 PDF 视图时用 hideKeepSpace 保留占位，而不是把按钮 DOM 移除」
+   *   （移除 = 切回来要重新注入 + 原生按钮重排抖动），接线点在 workspace 的
+   *   active-leaf-change 里，到时候本方法就是那个调用入口。
+   *   显隐分级的实现在 25-pure-toolbar.js 的 lmbSetToolbarVisibility。
+   *
+   * @param {"show"|"hideKeepSpace"|"hideRemove"} mode
+   */
+  lmbApplyToolbarVisibility(mode) {
+    try {
+      // LmbDomCache 没有对外暴露遍历接口（那是别人的文件，不为遍历去改它），
+      // 所以退化成全局选择器：这三个类名是本插件独占的，命中集合 == 已注入的按钮集合。
+      const sels = ".lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas";
+      document.querySelectorAll(sels).forEach((b) => lmbSetToolbarVisibility(b, mode));
+    } catch (_) { /* noop：绝不让异常打断调用方的事件链 */ }
   }
 
   /**
@@ -1179,6 +2727,69 @@ class LuciasMarginBookPlugin extends Plugin {
     this._noteRibbonEl.toggleClass("is-idle", !inCanvas);
   }
 
+  /**
+   * v0.16.5 修复 R4：回忆模式开启后主动重渲染已打开的阅读视图。
+   *   registerMarkdownPostProcessor 只在**渲染时**触发一次，开关切换不会重跑它 ——
+   *   旧版开启侧什么都没做，用户开了 Recall 却看不到模糊，要手动切页才生效。
+   *   previewMode 是内部对象，故全部能力检测，拿不到就静默跳过（只慢一拍）。
+   */
+  lmbRerenderRecallViews() {
+    try {
+      const leaves = this.app.workspace.getLeavesOfType("markdown") || [];
+      for (const l of leaves) {
+        try {
+          const v = l && l.view;
+          const pm = v && v.previewMode;
+          if (pm && typeof pm.rerender === "function") pm.rerender(true);
+        } catch (_) { /* 单个视图失败不影响其它 */ }
+      }
+    } catch (_) { /* noop */ }
+  }
+
+  /**
+   * v0.16.5 修复 R7：canvas 索引的防抖入口。
+   *   canvas 的 modify 在拖拽期连续触发（Obsidian 频繁落盘），旧版每次都全量
+   *   cachedRead + JSON.parse 整张画布。按文件防抖 400ms，与 processCanvas 同节奏。
+   */
+  lmbScheduleCanvasIndex(f) {
+    try {
+      if (!this._canvasIndexTimers) this._canvasIndexTimers = new Map();
+      const old = this._canvasIndexTimers.get(f.path);
+      if (old) clearTimeout(old);
+      this._canvasIndexTimers.set(f.path, setTimeout(() => {
+        this._canvasIndexTimers.delete(f.path);
+        this.lmbIndexCanvasFile(f).catch(() => {});
+      }, 400));
+    } catch (_) {
+      try { this.lmbIndexCanvasFile(f).catch(() => {}); } catch (_2) { /* noop */ }
+    }
+  }
+
+  /**
+   * v0.16.5 修复 R8：集中清掉所有自建定时器。
+   *   图片等待重试链（_actualFitRetryForFile）的 setTimeout 没有保留句柄，靠
+   *   _unloaded 标记在入口处自行退出兜底。
+   */
+  _lmbClearTimers() {
+    try {
+      if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+      if (this._dropFlush && this._dropFlush.timer) clearTimeout(this._dropFlush.timer);
+      this._dropFlush = null;
+      if (this._fitRetry) {
+        for (const k of Object.keys(this._fitRetry)) {
+          const r = this._fitRetry[k];
+          if (r && r.timer) clearTimeout(r.timer);
+        }
+        this._fitRetry = {};
+      }
+      this._fitRetryImg = {};
+      if (this._canvasIndexTimers) {
+        this._canvasIndexTimers.forEach((t) => clearTimeout(t));
+        this._canvasIndexTimers.clear();
+      }
+    } catch (_) { /* noop */ }
+  }
+
   debugNotice(msg) {
     console.log("[lmb]", msg);
     if (this.settings && this.settings.debug) new Notice("MarginBook: " + msg, 4000);
@@ -1187,39 +2798,33 @@ class LuciasMarginBookPlugin extends Plugin {
   /* ==================== 设置 ==================== */
 
   async saveSettings() {
-    const obj = { debug: this.settings.debug };
-    obj.recallDefault = !!this.settings.recallDefault; // 补丁 C：回忆模式默认值
-    obj.colorMap = this.settings.colorMap;             // 补丁 B：颜色语义映射
-    // v0.8.0：卡片补充描述设置
-    obj.noteCalloutType = this.settings.noteCalloutType;
-    obj.noteTitle = this.settings.noteTitle;
-    obj.noteFoldByDefault = !!this.settings.noteFoldByDefault;
-    obj.noteIntoSync = !!this.settings.noteIntoSync;
-    obj.noteAutoBoxOnNew = this.settings.noteAutoBoxOnNew !== false;
-    obj.commentAutoBoxOnNew = this.settings.commentAutoBoxOnNew !== false; // v0.11.0
-    if (this.autoSize.size) {
-      const autoSizes = {};
-      for (const [path, store] of this.autoSize) autoSizes[path] = Array.from(store.entries());
-      obj.autoSizes = autoSizes;
-    }
-    if (this.imgDims.size) obj.imgDims = Object.fromEntries(this.imgDims);
-    // v0.7.0：持久化画布节点位置（用于位置 diff 识别「刚被拖动」的卡）
-    if (this.canvasPositions && this.canvasPositions.size) {
-      const pos = {};
-      for (const [p, m] of this.canvasPositions) {
-        if (m.size) pos[p] = Array.from(m.entries());
-      }
-      if (Object.keys(pos).length) obj.canvasPositions = pos;
-    }
-    // v0.7.1：持久化「自动建边 id」档案（用于清理瞬时重叠产生的孤儿边）
-    if (this.autoEdges && this.autoEdges.size) {
-      const ae = {};
-      for (const [p, s] of this.autoEdges) {
-        if (s.size) ae[p] = Array.from(s);
-      }
-      if (Object.keys(ae).length) obj.autoEdges = ae;
-    }
+    this._lmbPrunePersistedCaches();
+    const obj = this.settingsStore.serialize(this.settings, this.runtimeState);
     await this.saveData(obj);
+  }
+
+  /** 清除已删除画布和附件留下的持久化缓存，避免 data.json 无限制增长。 */
+  _lmbPrunePersistedCaches() {
+    try {
+      const files = this.app && this.app.vault && typeof this.app.vault.getFiles === "function"
+        ? this.app.vault.getFiles() : [];
+      const canvasPaths = new Set(files.filter((f) => f && f.extension === "canvas").map((f) => f.path));
+      const imageNames = new Set(files
+        .filter((f) => f && /^(?:webp|png|jpe?g)$/i.test(f.extension || ""))
+        .map((f) => f.name));
+      for (const map of [this.autoSize, this.canvasPositions, this.autoEdges, this.nodeMeta]) {
+        if (!map || typeof map.keys !== "function") continue;
+        for (const path of Array.from(map.keys())) if (!canvasPaths.has(path)) map.delete(path);
+      }
+      if (this.imgDims && typeof this.imgDims.keys === "function") {
+        for (const name of Array.from(this.imgDims.keys())) {
+          const base = String(name).split("/").pop();
+          if (!imageNames.has(base)) this.imgDims.delete(name);
+        }
+      }
+    } catch (err) {
+      console.warn("[lmb] cache prune failed:", err);
+    }
   }
 
   /* ==================== 样式 ==================== */
@@ -1228,59 +2833,9 @@ class LuciasMarginBookPlugin extends Plugin {
     if (document.getElementById("lmb-styles")) return;
     const st = document.createElement("style");
     st.id = "lmb-styles";
-    st.textContent = [
-      ".lmb-chip{position:fixed;z-index:1000;",
-      "background:var(--interactive-accent,#7c6cf0);color:var(--text-on-accent,#fff);",
-      "font-size:12px;padding:6px 12px;border-radius:16px;cursor:grab;",
-      "box-shadow:0 4px 14px rgba(0,0,0,.5);user-select:none;white-space:nowrap;}",
-      ".lmb-chip:active{cursor:grabbing}",
-      ".lmb-rect{position:fixed;z-index:999;",
-      "border:2px dashed var(--interactive-accent,#7c6cf0);",
-      "background:rgba(124,108,240,.15);pointer-events:none;}",
-      ".lmb-btn.is-active{color:var(--text-on-accent);background:var(--interactive-accent);}",
-      // v0.8.1：动作按钮（补充描述）在不可用上下文里灰显，区别于「模式已开启」的 is-active
-      ".lmb-btn.is-idle{opacity:.35;}",
-      ".lmb-btn{cursor:pointer;}",
-      // ===== 补丁 C：Recall 回忆模式 =====
-      ".lmb-recall-blur{position:relative;cursor:pointer;}",
-      ".lmb-recall-blur>*{filter:blur(6px);transition:filter .25s;}",
-      ".lmb-recall-blur.lmb-recall-reveal>*{filter:none;}",
-      // ::after 挂在容器上（blur 只作用于子元素 > *，提示本身不会被糊掉）
-      ".lmb-recall-blur::after{content:'\\1F50D  点击回忆';position:absolute;top:6px;right:10px;", // Bugfix: 转义后首空格被 CSS 吃掉，补一个
-      "font-size:11px;line-height:1.4;color:var(--text-muted);",
-      "background:var(--background-secondary);border:1px solid var(--background-modifier-border);",
-      "border-radius:10px;padding:1px 8px;opacity:.85;pointer-events:none;}",
-      ".lmb-recall-blur.lmb-recall-reveal::after{display:none;}",
-      // ===== P2：摘录回绘标记 =====
-      // 关键：百分比定位 + .page 相对定位 → 覆盖层随页面缩放自动跟随，
-      //       完全不需要监听 zoom 事件重算（P0 实测 span 索引与缩放无关）。
-      'div[data-type="pdf"] .page{position:relative !important;}',
-      // 标记保持 pointer-events:none（见下）：单击/划选穿透，双击才跳转（P3）。
-      // 原因：标记覆盖在已摘录文字上，若单击可交互，会吃掉划选的起笔事件，
-      //       而"在 PDF 上划选拖拽"是本插件的主工作流，不能破坏。
-      ".lmb-mark{position:absolute;pointer-events:none;border-radius:2px;",
-      "mix-blend-mode:multiply;box-sizing:border-box;}",
-      // 降级标记：selection 缺失或 span 对不上时画页顶细条，宁可不准也不消失
-      '.lmb-mark[data-fallback="1"]{left:0 !important;right:0 !important;',
-      "top:0 !important;height:3px !important;width:auto !important;opacity:.75;}",
-      // ===== P3：跳转闪烁 =====
-      // 跳到目标选区后闪 3 次（0.5s × 3 = 1.5s），动画结束 opacity 回 0，2.2s 后 JS 移除节点
-      ".lmb-flash{position:absolute;pointer-events:none;border-radius:2px;",
-      "background:var(--interactive-accent,#7c6cf0);mix-blend-mode:multiply;",
-      "animation:lmb-flash-anim .5s ease-in-out 3;}",
-      "@keyframes lmb-flash-anim{0%,100%{opacity:0}45%,55%{opacity:.6}}",
-      // ===== v0.11.0：评论栏（仿 PDF Flow 批注底栏） =====
-      // 未知 callout 类型 Obsidian 默认给铅笔图标（✎）——正合底栏视觉；
-      // 折叠态 = 单行按钮条，展开态 = 标题 + 评论内容
-      '.callout[data-callout="lmb-comment"]{background:var(--background-secondary,transparent);',
-      "border:none !important;border-top:1px solid var(--background-modifier-border) !important;",
-      "border-radius:0 !important;box-shadow:none !important;padding:6px 10px !important;margin-top:10px;}",
-      '.callout[data-callout="lmb-comment"] .callout-title{gap:6px;}',
-      '.callout[data-callout="lmb-comment"] .callout-title-inner{color:var(--text-muted);font-weight:400;font-size:12.5px;}',
-      '.callout[data-callout="lmb-comment"] .callout-icon{color:var(--text-faint);}',
-      // 折叠箭头推到最右（PDF Flow 的「›」位置）；lmb-comment-clickable 供 JS/测试识别
-      '.callout[data-callout="lmb-comment"] .callout-fold{margin-left:auto;}'
-    ].join("");
+    // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
+    //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
+    st.textContent = LMB_STYLES.join("");
     document.head.appendChild(st);
   }
 
@@ -1302,7 +2857,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     // Alt 或 按钮模式 → 启动自带框选
     if ((e.altKey || this.rectMode) && e.button === 0 && leaf && leaf.view && leaf.view.file) {
-      if (!e.altKey) e.preventDefault(); // 按钮模式拦截文字选择（Alt 亦然）
+      // v0.16.4 修复 P2-6：按钮模式与 Alt 模式都拦截原生文字选择
+      //   （旧注释声称"Alt 亦然"，代码却 if (!e.altKey) 跳过 → Alt 框选时选区同时发生）
+      e.preventDefault();
       e.stopPropagation();
       this.startRectDrag(leaf, e);
       return;
@@ -1339,13 +2896,73 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         left: Math.min(sx, ev.clientX), top: Math.min(sy, ev.clientY),
         right: Math.max(sx, ev.clientX), bottom: Math.max(sy, ev.clientY)
       };
-      const ctx = await this.captureRectImage(leaf.view, pageEl, screenRect, pageNum);
+      // v0.14.8：settings.autoAttachScreenshot 关掉时不生成 webp 附件 —— 用户嫌附件占空间，
+  // 关掉后摘录更紧凑，且不影响自动 fit（fit 测的是 markdown 文字本身的高度）。
+  const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+  const ctx = autoAttach ? await this.captureRectImage(leaf.view, pageEl, screenRect, pageNum) : null;
       if (ctx) {
-        if (this.rectMode) { this.rectMode = false; this.updateRibbonState(); } // 一次性消费
-        this.debugNotice("✓ 截图已保存 " + ctx.attachmentName + "（" + ctx.imgW + "×" + ctx.imgH + "）");
-        this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图 · 按住拖到 md 或画布", ctx);
+        // v0.11.3：框选模式一次性复原（用户定版行为）—— 截完一次自动关闭，
+        //   不再能直接拖拽选区，再截需再点按钮；Esc 关闭路径不变
+        if (this.rectMode) {
+          this.setRectMode(false);
+          new Notice("MarginBook: 框选完成 —— 模式已自动关闭（再点一次按钮继续框选）", 2500);
+        }
+        // v0.11.4 双重识别（框选路径）：框到的区域里有文字 → 也出双重卡
+        //   （文字引用块 + 截图 + lmb-view 切换按钮，默认文字视图）；
+        //   没提不到文字（纯图/公式/图表）→ 维持纯截图卡。
+        const rectText = this.extractRectText(pageEl, screenRect);
+        if (rectText) {
+          const info = {
+            file: ctx.file, pageNum: ctx.pageNum, display: ctx.display,
+            link: ctx.link,          // 框选路径回跳链接仍是 rect=（精确回到截取区域）
+            text: rectText, isImage: false,
+            img: {
+              attachmentName: ctx.attachmentName, embed: ctx.embed,
+              imgW: ctx.imgW, imgH: ctx.imgH, rectParam: ctx.rectParam
+            }
+          };
+          this.debugNotice("✓ 框选双重摘录：文字 " + rectText.length
+            + " 字 + 截图 " + ctx.attachmentName);
+          this.showChip(ev.clientX, ev.clientY,
+            "📝 " + rectText.length + " 字 + 🖼 截图 · 按住拖到 md 或画布", info);
+        } else {
+          this.debugNotice("✓ 截图已保存 " + ctx.attachmentName + "（" + ctx.imgW + "×" + ctx.imgH + "）");
+          this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图 · 按住拖到 md 或画布", ctx);
+        }
       } else {
-        this.debugNotice("✗ 截图失败（页面画布不可用）");
+        // v0.16.4 修复 P1-1：关闭「自动附截图」（或截图失败）时框选不再整链路报废——
+        //   降级为纯文字摘录（rect= 回跳链接照常生成，无 webp 附件）。
+        //   旧版 ctx=null 直接走「✗ 截图失败」，与设置文案"关闭后新摘录只有文字"矛盾。
+        const view = leaf.view;
+        const file = view && view.file;
+        if (!file) { this.debugNotice("✗ 框选失败：拿不到 PDF 文件"); return; }
+        const display = "【" + file.basename + "-P." + pageNum + "】";
+        let rectParam = null;
+        try {
+          const pr = pageEl.getBoundingClientRect();
+          if (pr.width > 0 && pr.height > 0) {
+            const rl = 100 * (screenRect.left - pr.left) / pr.width;
+            const rt = 100 * (screenRect.top - pr.top) / pr.height;
+            const rw = 100 * (screenRect.right - screenRect.left) / pr.width;
+            const rh = 100 * (screenRect.bottom - screenRect.top) / pr.height;
+            rectParam = [rl, rt, rw, rh].map((v) => Math.round(v * 100) / 100).join(",");
+          }
+        } catch (_) { /* 算不出就不写 rect */ }
+        const link = "[[" + file.path + "#page=" + pageNum
+          + (rectParam ? "&rect=" + rectParam : "") + "|" + display + "]]";
+        const rectText = this.extractRectText(pageEl, screenRect);
+        if (!rectText) {
+          this.debugNotice("✗ 框选区域没有文字，且截图不可用（自动附截图已关闭或截图失败）");
+          return;
+        }
+        if (this.rectMode) {
+          this.setRectMode(false);
+          new Notice("MarginBook: 框选完成 —— 模式已自动关闭（再点一次按钮继续框选）", 2500);
+        }
+        const info = { file, pageNum, display, link, text: rectText, isImage: false };
+        this.debugNotice("✓ 框选摘录（无截图）：文字 " + rectText.length + " 字");
+        this.showChip(ev.clientX, ev.clientY,
+          "📝 " + rectText.length + " 字 · 按住拖到 md 或画布", info);
       }
     };
     document.addEventListener("mousemove", mv, true);
@@ -1355,6 +2972,93 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   pageAtPoint(doc, x, y) {
     const hit = doc.elementFromPoint(x, y);
     return hit && hit.closest ? hit.closest(".page[data-page-number]") : null;
+  },
+
+  /**
+   * v0.11.4 框选路径的文字提取：屏幕矩形 → 与页面 textLayer 的 span 求交集 → 拼文字。
+   *   零 OCR / 零 pdfjs 内部 API：pdf.js 已把文字渲染成 textLayer 的 span（按行分块），
+   *   只做几何求交 + 按行聚合一版阅读顺序文本。
+   *   提不到（无 textLayer / 纯图区域 / 虚拟化页未渲染文本层）→ 返回 null → 纯截图卡。
+   * 聚合规则：span 按 top 分行（行距超过 span 高度一半算换行），行内按 left 排序，
+   *   行间以空格连接（与 extractSelection 的空白归一语义一致）。
+   */
+  extractRectText(pageEl, screenRect) {
+    try {
+      const layer = pageEl.querySelector(".textLayer");
+      if (!layer) return null;
+      const spans = layer.querySelectorAll("span");
+      if (!spans.length) return null;
+      const hits = [];
+      for (const sp of spans) {
+        const t = sp.textContent || "";
+        if (!t.trim()) continue;
+        const r = sp.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        // 矩形相交测试（边缘相切不算命中）
+        if (r.right <= screenRect.left || r.left >= screenRect.right) continue;
+        if (r.bottom <= screenRect.top || r.top >= screenRect.bottom) continue;
+        hits.push({ r, text: t });
+      }
+      if (!hits.length) return null;
+      hits.sort((a, b) => (a.r.top - b.r.top) || (a.r.left - b.r.left));
+      // 按行聚类：与上一个 span 的 top 差超过其高度一半 → 新行
+      const lines = [];
+      let lastTop = null;
+      for (const h of hits) {
+        const newLine = lastTop === null
+          || Math.abs(h.r.top - lastTop) > Math.max(6, h.r.height * 0.5);
+        if (newLine) lines.push([h]);
+        else lines[lines.length - 1].push(h);
+        lastTop = h.r.top;
+      }
+      const text = lines
+        .map((l) => l.sort((a, b) => a.r.left - b.r.left)
+          .map((h) => h.text.trim()).join(" ").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return text || null;
+    } catch (err) {
+      console.warn("[lmb] extractRectText error:", err);
+      return null;
+    }
+  },
+
+  /**
+   * v0.11.3 双重识别：文字选区 → 同时截一张选区外接矩形的区域图。
+   *   复用 captureRectImage（零 pdfjs 内部 API，直接裁页面画布）；
+   *   截图失败 / 选区不在 PDF 页内 → 返回 null，降级为纯文字摘录（与旧行为一致）。
+   * 返回 { attachmentName, embed, imgW, imgH, rectParam } 或 null（挂到 info.img）。
+   * 已知边界：跨页选区只按起始页画布截图（超出部分被裁掉）——跨页文字本就罕见，
+   *   不为此引入跨页拼接的复杂度。
+   */
+  async captureSelectionImage(sel, info) {
+    try {
+      if (!sel || sel.rangeCount === 0) return null;
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      const el = node.nodeType === 1 ? node : node.parentElement;
+      if (!el || !el.closest) return null;
+      const pageEl = el.closest(".page[data-page-number]");
+      if (!pageEl) return null;
+      const ctx = this.resolvePdfContext(pageEl);
+      if (!ctx || !ctx.view || !ctx.view.file) return null;
+      const rect = range.getBoundingClientRect();
+      if (!rect || rect.width < 4 || rect.height < 4) return null;
+      const screenRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      // v0.14.8：settings.autoAttachScreenshot 关掉时不生成 webp
+      const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+      const cap = autoAttach ? await this.captureRectImage(ctx.view, pageEl, screenRect, info.pageNum || ctx.pageNum) : null;
+      if (!cap) return null;
+      return {
+        attachmentName: cap.attachmentName, embed: cap.embed,
+        imgW: cap.imgW, imgH: cap.imgH, rectParam: cap.rectParam
+      };
+    } catch (err) {
+      console.warn("[lmb] captureSelectionImage error:", err);
+      return null;
+    }
   },
 
   /* ==================== mouseup：出示手柄 ==================== */
@@ -1380,6 +3084,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (show) {
           this._chipSig = sig; // 记录 chip 当前承载的选区签名（dragend 时清除）
           this.debugNotice("✓ 文字选区 " + info.display + "（" + info.text.length + " 字）");
+          /* v0.16.6 P1-1：截图从「mouseup 无条件生成」改为「用户真的开始拖才生成」。
+           *   旧版 mouseup 里直接 captureSelectionImage → captureRectImage → vault.createBinary，
+           *   **与用户是否拖拽无关** —— 只是双击选个词，vault 里就多一个永不清理的 webp
+           *   孤儿；同时 imgDims 每多一项就写进 data.json，配置无限膨胀、启动 loadData 变慢。
+           *   难点：dataTransfer.setData 必须同步调用，dragstart 里不能 await 截图。
+           *   解法 = 分两步：
+           *     ① mouseup 只把选区 Range **克隆**下来（克隆 Range 不随 live selection 变化，
+           *        用户后续点 chip / 拖动都不会让它失效）；
+           *     ② chip 的 mousedown/touchstart（= 用户明确要拖了）才启动截图，
+           *        dragstart 通常晚于 mousedown 几十~几百毫秒，截图基本已就绪；
+           *        万一没赶上 → info.img 为 undefined，自动降级为纯文字摘录（成熟降级路径）。
+           *   降级是安全的：与「关掉自动附截图」走同一条分支，不会报错也不会写坏卡。 */
+          try { info._range = sel.getRangeAt(0).cloneRange(); } catch (_) { info._range = null; }
           this.showChip(e.clientX, e.clientY, "📑 " + info.text.length + " 字 · 按住拖到 md 或画布", info);
           return;
         }
@@ -1396,7 +3113,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const now = Date.now();
     if (now - this._lastNoSelNotice > 5000) {
       this._lastNoSelNotice = now;
-      this.debugNotice("mouseup：无文字选区（图片框选 = 侧栏按钮 或 Alt+拖）");
+      this.debugNotice("mouseup：无文字选区（图片框选 = PDF 工具栏按钮 / Alt+拖）");
     }
   },
 
@@ -1437,10 +3154,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   /**
-   * v0.9.3：由鼠标事件找到所在 canvas 视图的内部 canvas 对象（API 齐全才返回），
-   * 供 instantMoveAttach 在内存数据上直接做父子判定（不等落盘）。
+   * v0.9.3 + v0.11.1：由鼠标事件同时拿到 canvas 视图的内部 canvas 对象 **和** 所属 file/path，
+   *   避免老版「canvasObj.view.file.path」在 polling 早期偶发为 null 的陷阱
+   *   （canvas 渲染引擎的 back-reference 在 canvas 还没完全加载时可能没填充 .view.file）。
+   *   返回 { canvasObj, leaf, file } 或 null。供 instantAttach 与 instantMoveAttach 使用。
    */
-  canvasObjFromEvent(e) {
+  canvasCtxFromEvent(e) {
     const t = e && e.target;
     const el = t && t.nodeType === 1 ? t : (t && t.parentElement);
     if (!el || !el.closest) return null;
@@ -1448,12 +3167,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!leafEl) return null;
     try {
       const leaf = this.app.workspace.getLeavesOfType("canvas").find((l) => l.containerEl === leafEl);
-      const c = leaf && leaf.view && leaf.view.canvas;
-      return (c && typeof c.getData === "function" &&
-        typeof c.setData === "function" && typeof c.requestSave === "function") ? c : null;
+      if (!leaf || !leaf.view) return null;
+      const c = leaf.view.canvas;
+      const f = leaf.view.file;
+      if (!c || typeof c.getData !== "function" ||
+          typeof c.setData !== "function" || typeof c.requestSave !== "function") return null;
+      return f && f.extension === "canvas" ? { canvasObj: c, leaf, file: f } : { canvasObj: c, leaf, file: null };
     } catch (_) {
       return null;
     }
+  },
+
+  /**
+   * v0.9.3 兼容垫层：保留旧名返回 canvasObj（drop/mouseup 老调用方不传 file 才用得上），
+   *   新代码优先用 canvasCtxFromEvent 同时拿 file。
+   */
+  canvasObjFromEvent(e) {
+    const ctx = this.canvasCtxFromEvent(e);
+    return ctx ? ctx.canvasObj : null;
   },
 
   /**
@@ -1672,10 +3403,28 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // 补丁 B 颜色语义标签行（extractSelection 注入 info.colorTag，非空才输出），
       // 位于 ^ex 行之前；info.colorTag 不存在/为空时行为与旧版完全一致。
       const tagLine = (info && info.colorTag) ? "\n> #" + info.colorTag : "";
+      // v0.12.0：引用行只显示 📖（点击跳转不变，lmbBookLink 只改显示名不改链接本体）；
+      //   导出摘录 md 时由 lmbRestoreRefDisplayName 还原【文件名-P.N】全名。
+      //   旧版「> ([[..|【x-P.4】]])」外层括号一并去掉（📖 后括号纯占宽度）。
+      const refLine = "> " + lmbBookLink(info.link);
       if (info.isImage) {
-        return info.embed + "\n> (" + info.link + ")" + tagLine + "\n^" + exId;
+        return info.embed + "\n" + refLine + tagLine + "\n^" + exId;
       }
-      return "> (" + info.link + ")\n> " + info.text + tagLine + "\n^" + exId;
+// v0.11.3 双重摘录：文字选区同时截了图（info.img）→ 引用块 + 截图 embed 一起进卡。
+    //   v0.16.0：**不再写 `> [!lmb-view]` 切换按钮行**（卡片精简 v2 —— 用户要求卡内不放控件）。
+    //   视图切换改由悬浮栏「视图」按钮接管：判定「双重卡」= 同时含 PDF 引用行 + 截图 embed
+    //   （26-pure-canvasbar.js lmbPickBarActions），切换走 toggleCardViewByHost 直接给 host
+    //   加/去 lmb-view-img class —— **不再依赖 lmb-view callout 存在**（详见 33-plugin-note-comment.js）。
+    //   副作用：老版本建的双重卡（markdown 里已带 lmb-view 行）仍然能被识别与切换，零迁移。
+    //   纯文字路径（无 img）输出与旧版完全一致。
+    // v0.14.8：settings.autoAttachScreenshot 关掉时不挂 img.embed（防御性双保险）。
+    let s = refLine + "\n> " + info.text + tagLine;
+    const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+    if (autoAttach && info.img && info.img.embed) {
+      s += "\n\n" + info.img.embed + "\n\n^" + exId;
+      return s;
+    }
+    return s + "\n^" + exId;
     } catch (err) {
       console.error("[lmb] buildDropText error:", err);
       // 降级：恢复旧版随机 id 行为
@@ -1689,6 +3438,41 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 拖拽手柄（纯原生 HTML5 drag） ==================== */
 
+  /**
+   * v0.16.6 P1-1：按需截图的触发入口 —— 只在用户按下 chip（明确要拖）时才真正生成 webp。
+   *   背景与取舍见 onDocMouseUp 的同名注释：旧版 mouseup 无条件落盘，产生大量孤儿附件。
+   * @param {Object} info extractSelection 的返回（需带克隆出来的 _range）
+   */
+  _armPendingImage(info) {
+    try {
+      if (!info || info.isImage || info.img || info._imgPending) return;
+      const range = info._range;
+      if (!range) return;
+      // 关掉「自动附截图」时连生成都不用做（与 buildDropText 里的判据同源）
+      if (this.settings && this.settings.autoAttachScreenshot === false) return;
+      // 已卸载 / chip 已消失 → 不再生成（避免异步链在插件停止后写文件）
+      if (this._unloaded) return;
+      info._imgPending = true;
+      // captureSelectionImage 只用到 rangeCount 与 getRangeAt(0)，用克隆 Range 造一个最小 sel。
+      // 克隆 Range 不随 live selection 变化 —— 用户点 chip 导致原生选区被清也照样能截。
+      const fakeSel = { rangeCount: 1, getRangeAt: () => range };
+      this.captureSelectionImage(fakeSel, info).then((img) => {
+        info._imgPending = false;
+        if (!img) return;
+        info.img = img;
+        // 截到了就把 chip 文案补上「+ 🖼 截图」，让用户看得见这次拖拽会带图
+        try {
+          if (this.chipEl) {
+            this.chipEl.textContent = "📑 " + String(info.text || "").length + " 字 + 🖼 截图 · 拖到 md 或画布";
+          }
+        } catch (_) {}
+      }).catch((err) => {
+        info._imgPending = false;
+        console.warn("[lmb] 按需截图失败，本次拖拽降级为纯文字摘录:", err);
+      });
+    } catch (_) { /* 预取失败不影响拖拽本身 */ }
+  },
+
   showChip(x, y, label, info) {
     this.hideChip();
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
@@ -1700,6 +3484,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     chip.style.top = (y + 16) + "px";
     doc.body.appendChild(chip);
     this.chipEl = chip;
+
+    /* v0.16.6 P1-1：按下 chip = 用户明确要拖 → 这一刻才启动截图（详见 onDocMouseUp 的注释）。
+     *   只挂监听不干活，成本可忽略；截图失败则 info.img 保持 undefined → 降级纯文字摘录。 */
+    const armImage = () => this._armPendingImage(info);
+    chip.addEventListener("mousedown", armImage);
+    chip.addEventListener("touchstart", armImage, { passive: true });
 
     chip.addEventListener("dragstart", (e) => {
       // Bugfix(严重回归)：守卫必须限定图片路径。文字选区的 info 没有 attachmentName 字段，
@@ -1746,8 +3536,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * v0.5.0 即时通道：drop 后轮询内存 canvas 数据（60ms 间隔，最多 1.2s），
    * 新 ^ex 卡一出现立即做父子判定，命中则 setData + requestSave（毫秒级，绕过磁盘往返）。
    * 失败/超时/没压中卡 → 什么都不做，文件层管线（250ms + 出生重试）自然兜底。
+   * v0.11.1：file 参数由 caller 从 canvasCtxFromEvent 传入（不再依赖 canvasObj.view，
+   *   后者在 polling 早期可能没填充 .file → 漏 sidecar → processCanvas lmbRecenterNode 失效 → 侧翻）。
    */
-  async instantAttach(canvasObj) {
+  async instantAttach(canvasObj, file) {
+    const filePath = (file && file.path) || (canvasObj.view && canvasObj.view.file && canvasObj.view.file.path) || null;
     const before = new Set(((canvasObj.getData() || {}).nodes || []).map((n) => n.id));
     const t0 = Date.now();
     while (Date.now() - t0 < 1200) {
@@ -1762,8 +3555,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!hit) return; // 没压到卡 → 交给文件层（含出生重试）
       const parent = hit.node;
       if (!Array.isArray(data.edges)) data.edges = [];
-      const path2 = canvasObj.view && canvasObj.view.file ? canvasObj.view.file.path : null;
-      const sidecar0 = (path2 && this.autoEdges.get(path2)) || new Set();
+      // v0.11.1：caller 给的 file.path 优先（更稳定）；fallback 到 canvasObj.view 旧路径
+      const sidecar0 = (filePath && this.autoEdges.get(filePath)) || new Set();
       const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar0);
       if (plan.op === "create") {
         const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
@@ -1775,12 +3568,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           id: eid, fromNode: parent.id, toNode: nn.id,
           fromSide: ends.fromSide, toSide: ends.toSide
         });
-        // v0.11.0 修复：即时通道建的边此前漏登记 sidecar → 文件层不认账（当作手动边），
-        //   首连锁定 / 自动边清理全都失明。现在建边即登记。
-        if (path2) {
-          const ae = this.autoEdges.get(path2) || new Set();
+        // v0.11.0 修复 + v0.11.1 强化：拿不到 file 时落到 caller 传进来的；
+        //   setData 后 processCanvas 端 movedOrNew 还有一次性兜底补登（见 32-plugin-canvas.js）
+        if (filePath) {
+          const ae = this.autoEdges.get(filePath) || new Set();
           ae.add(eid);
-          this.autoEdges.set(path2, ae);
+          this.autoEdges.set(filePath, ae);
         }
         canvasObj.setData(data);
         canvasObj.requestSave();
@@ -1801,10 +3594,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   - 命中父卡 → 换父摘旧自动边 → lmbLayoutGroup → setData + requestSave（毫秒级生效），
    *     并同步位置档案，防文件层把同一批移动再处理一遍；
    *   - 没压到卡 / API 不可用 → 静默返回，文件层管线自然兜底。
+   * v0.11.1：file 参数由 caller 传入（参上 instantAttach 注释）。
    */
-  async instantMoveAttach(canvasObj) {
-    const file = canvasObj && canvasObj.view && canvasObj.view.file;
-    const path = file && file.path;
+  async instantMoveAttach(canvasObj, file) {
+    const path = (file && file.path) || (canvasObj.view && canvasObj.view.file && canvasObj.view.file.path) || null;
     if (!path) return;
     const lastPos = this.canvasPositions && this.canvasPositions.get(path);
     if (!lastPos || !lastPos.size) return; // 首见画布 → 交给文件层建档
@@ -1832,19 +3625,33 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const parent = hit.node;
         if (!Array.isArray(data.edges)) data.edges = [];
         const sidecar = this.autoEdges.get(path) || new Set();
-        // v0.11.0：首连锁定 + 改挂侧（取代 v0.7.3 换父）
-        const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar);
+        // v0.11.0：首连锁定 + 改挂侧（取代 v0.7.3 换父）。
+        // v0.11.1：明确传 sizeOnly=false（这里是用户主动拖动，不是尺寸变化）
+        const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar, { sizeOnly: false });
         if (plan.op === "skip") continue;
+        if (plan.op === "recenter") {
+          // v0.11.1：防御性同样过滤 nn 自身（auto edge 可能在 data.edges 里导致重复）
+          const kidsBySideR = lmbGroupBySide(parent, nodes, data.edges);
+          const groupR = [...(kidsBySideR.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
+          lmbLayoutGroup(parent, groupR, plan.side, 30);
+          if (!sidecar.has(plan.edge.id)) sidecar.add(plan.edge.id);
+          changed = true;
+          continue;
+        }
         if (plan.op === "reside") {
           // R4：拖回已连线的卡上 → 按落点方位改挂侧 + 两侧组重排（同侧 = 重新对齐）
           const r = lmbApplyReside(parent, nn, plan, nodes, data.edges);
+          if (!sidecar.has(plan.edge.id)) sidecar.add(plan.edge.id);
           changed = true;
           console.log("[lmb] 即时通道（改挂侧）: ", parent.id.slice(0, 8), "->", nn.id.slice(0, 8),
             "(" + plan.oldSide + "→" + r.side + ")");
           continue;
         }
+        // 取父卡现有子卡按侧分组；把新卡 nn 加进同侧组，整组贴边对齐+组居中排布
+        // v0.11.1 防御：lmbGroupBySide 会通过已存在的 edge 把 nn 也算进来（虽然这里是 create
+        //   路径理论上不会有，但若 nn 是从别处拖过来并且已经存在连线就可能），filter 防御
         const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
-        const group = [...(kidsBySide.get(plan.side) || []), nn];
+        const group = [...(kidsBySide.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
         lmbLayoutGroup(parent, group, plan.side, 30);
         const ends = lmbSideEnds(plan.side);
         const eid = "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -1892,10 +3699,105 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }, 400));
   },
 
+  /**
+   * v0.16.1：拿目标画布的**内存最新数据**（canvas.getData()）。
+   *   Bug6 的根因与修法说明见 processCanvas 顶部注释。找不到打开着的这个画布 → null
+   *   （后台文件 / 未打开），调用方回退读文件。
+   */
+  _lmbMemCanvasData(cf) {
+    try {
+      const leaves = this.app.workspace.getLeavesOfType("canvas") || [];
+      const leaf = leaves.find((l) => l && l.view && l.view.file && l.view.file.path === cf.path);
+      if (!leaf) return null;
+      const canvas = leaf.view.canvas;
+      if (!canvas || typeof canvas.getData !== "function") return null;
+      const data = canvas.getData();
+      if (!data || !Array.isArray(data.nodes)) return null;
+      /* v0.16.6 P0-1：nodes 为空 + 档案非空 = 画布正在加载（onOpenFile → setData 之间）
+       *   的瞬时脏数据。旧版照常返回 → _lmbUpdateNodeMeta 的 alive 集合为空 →
+       *   档案里**全部**条目被判成「已删除」→ 开启级联清理时该画布的 webp 被全删、
+       *   摘录 md 的条目被整片删除（不可逆）。
+       *   宁可这一次不处理（返回 null → 走文件读取 / 直接跳过），也绝不误删。 */
+      if (data.nodes.length === 0) {
+        const meta = this.nodeMeta && this.nodeMeta.get(cf.path);
+        if (meta && meta.size > 0) return null;
+      }
+      return { canvas, data };
+    } catch (_) { return null; }
+  },
+
+  /**
+   * v0.16.1：processCanvas 的统一写回 —— **setData + requestSave + 同一份数据写盘**。
+   *   关键纪律：写盘用的 data 必须就是刚 setData 的那份内存数据。
+   *   旧版「改完再 adapter.write(改过的 data)」看似等价，但如果 data 的来源是**文件**
+   *   （而不是内存），写盘等于把「文件里的陈旧位置」钉回去 —— 用户刚拖未落盘的移动丢失，
+   *   表现为卡片弹回原位 / 在几个位置间瞬移（Bug6）。
+   *   内存优先写（setData 毫秒级刷新渲染 + requestSave 让 Obsidian 自己落盘），
+   *   文件写是同一份数据的持久化，不是「再改一次」。
+   * @returns {boolean} 是否写盘成功
+   */
+  async _lmbWriteCanvasData(cf, data, memCanvas, rawForIndent) {
+    let indent = "  ";
+    try { indent = /\n\t"/.test(rawForIndent || "") ? "\t" : "  "; } catch (_) {}
+    if (memCanvas && typeof memCanvas.setData === "function"
+        && typeof memCanvas.requestSave === "function") {
+      try {
+        // 活动画布只保留一个写入者，避免 requestSave 与 adapter.write 竞态重载旧坐标。
+        this.selfWritten.set(cf.path, Date.now());
+        memCanvas.setData(data);
+        memCanvas.requestSave();
+        return true;
+      } catch (_) {
+        this.selfWritten.delete(cf.path);
+        // 内部 API 失败时才回退文件写。
+      }
+    }
+    this.selfWritten.set(cf.path, Date.now()); // v0.16.4 P2-4：存时间戳（过期不吞真实 modify）
+    try {
+      await this.app.vault.adapter.write(cf.path, JSON.stringify(data, null, indent));
+      return true;
+    } catch (err) {
+      this.selfWritten.delete(cf.path);
+      console.error("[lmb] canvas write failed:", err);
+      return false;
+    }
+  },
+
+  /**
+   * v0.16.4（修复 P1-3）：评论/补充描述/批量挂框等单卡编辑链路的统一读取入口。
+   *   与 processCanvas 同纪律：画布正打开 → 用 getData() 的内存数据（含未落盘改动）；
+   *   拿不到 → 回退读文件。raw 一并返回（供 _lmbWriteCanvasData 探测缩进）。
+   * @returns {{data:object, memCanvas:object|null, raw:string|null}|null}
+   */
+  async _lmbReadCanvasData(cf) {
+    let raw = null;
+    try { raw = await this.app.vault.adapter.read(cf.path); } catch (_) { raw = null; }
+    const mem = this._lmbMemCanvasData(cf);
+    if (mem) return { data: mem.data, memCanvas: mem.canvas, raw };
+    if (!raw) return null;
+    try { return { data: JSON.parse(raw), memCanvas: null, raw }; } catch (_) { return null; }
+  },
+
   async processCanvas(cf) {
-    const raw = await this.app.vault.read(cf);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return; }
+    // v0.16.1【Bug6 根因修复】：数据源从「文件」改为「canvas 内存」优先。
+    //   旧版第 17 行 vault.read(cf) 读到的是**磁盘内容**：用户刚拖动 / 删除卡片后
+    //   Obsidian 未必已落盘（modify 防抖 400ms + Obsidian 自身落盘时机不定），此时
+    //   本函数若做了任何改动（fit 高度 / 自动挂框 / 自动父子）并写回，等于把**拖动前
+    //   的旧位置**钉回文件 → Obsidian 重载画布 → 卡片弹回原位 / 在几个位置间瞬移。
+    //   这与 v0.14.9 修 lmbFitNodeById 的是同一个坑 —— 那条链路修了，本函数漏了。
+    //   修法：_lmbMemCanvasData(cf) 能拿到（画布正打开）就用 getData() 的内存数据
+    //   （必然含用户未落盘的改动）；拿不到才回退读文件。raw 仍要读一次 —— 只为探测
+    //   缩进风格（写入格式与用户文件保持一致），内容本身以内存为准。
+    let raw = null;
+    try { raw = await this.app.vault.read(cf); } catch (_) { raw = null; }
+    let data = null;
+    let memCanvas = null;
+    const mem = this._lmbMemCanvasData(cf);
+    if (mem) { data = mem.data; memCanvas = mem.canvas; }
+    if (!data) {
+      if (!raw) return;
+      try { data = JSON.parse(raw); } catch (_) { return; }
+    }
     const nodes = data.nodes || [];
 
     let changed = false;
@@ -1909,7 +3811,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
      *   注意：插件首次扫描某画布时 lastPos 为空 → 所有卡都算「新」→ 会给存量卡也加框，
      *   这是有意为之（用户要的就是「能看到框」）；不想要就在设置里关掉自动。 */
     const attachNote = this.settings.noteAutoBoxOnNew !== false;
-    const attachComment = this.settings.commentAutoBoxOnNew !== false; // v0.11.0：评论栏
+    // v0.16.0：默认 false（卡片精简 v2 —— 卡内不再自动出现「💬 添加评论」栏）。
+    //   评论能力本身保留，入口 = 悬浮栏「评论」按钮 / 命令面板 / ribbon；存量卡与已写评论不受影响。
+    //   用户在设置里手动开回 true 时行为与旧版完全一致。
+    const attachComment = this.settings.commentAutoBoxOnNew === true; // v0.11.0：评论栏
     if (attachNote || attachComment) {
       const lastPos0 = this.canvasPositions.get(cf.path) || new Map();
       const fold0 = !!this.settings.noteFoldByDefault;
@@ -1917,7 +3822,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (node.type !== "text" || !node.text || !EX_ID_RE.test(node.text)) continue;
         if (lastPos0.has(node.id)) continue;              // 见过的卡 → 不动
         let touched = false;
-        if (attachNote && !lmbSplitNote(node.text).hasNote) {   // 已有描述 → 不动
+        // v0.16.6：note 类型白名单随设置走（旧版任意 callout 都会被当成补充描述）
+        const noteTypes0 = this.settings.noteCalloutType || "ppd-note";
+        if (attachNote && !lmbSplitNote(node.text, noteTypes0).hasNote) {   // 已有描述 → 不动
           node.text = lmbJoinNote(node.text, "", {
             type: this.settings.noteCalloutType || "ppd-note",
             title: this.settings.noteTitle || "补充描述",
@@ -1964,14 +3871,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
     }
     if (changed) {
-      const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-      this.selfWritten.set(cf.path, true);
-      try {
-        await this.app.vault.adapter.write(cf.path, JSON.stringify(data, null, indent));
-      } catch (err) {
-        this.selfWritten.delete(cf.path);
-        console.error("[lmb] canvas resize write failed:", err);
-      }
+      // v0.16.1：统一写回（setData + requestSave + 同一份内存数据写盘，防覆盖用户拖动）
+      await this._lmbWriteCanvasData(cf, data, memCanvas, raw);
     }
 
     /* ---- v0.7.0：通用自动父子 + 组居中（任意画布卡片，拖动即生效） ----
@@ -2024,21 +3925,58 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const lastPos = this.canvasPositions.get(cf.path) || new Map();
     const currentPos = new Map();
     const movedOrNew = [];
+    // v0.11.1：拆分「尺寸变化」与「位置变化」——fitNode 撑大是尺寸变化（位置没动），
+    //   由 lmbRecenterNode 在前面已居中过；这里若再走 lmbPlanAutoLink 会因
+    //   lmbSideOf CURRENT（中心偏移）算出相反侧 → 触发 lmbApplyReside 把侧翻转
+    //   （用户截图的"下变右"bug 根因）。sizeOnly 让 lmbPlanAutoLink 走 recenter op
+    //   保留原侧。user-truly-moved 的 nn 则 sizeOnly=false，照常 detect。
+    const sizeOnlyIds = new Set();
     for (const n of nodes) {
       if (n.type === "group") continue;
       const cur = { x: n.x, y: n.y, width: n.width || 0, height: n.height || 0 };
       currentPos.set(n.id, cur);
       const prev = lastPos.get(n.id);
-      if (!prev || prev.x !== cur.x || prev.y !== cur.y ||
-          prev.width !== cur.width || prev.height !== cur.height) {
+      if (!prev) {
         movedOrNew.push(n);
+      } else if (prev.x !== cur.x || prev.y !== cur.y) {
+        movedOrNew.push(n);
+      } else if (prev.width !== cur.width || prev.height !== cur.height) {
+        // 仅尺寸变化——lmbRecenterNode 已经基于原 side 居中过，跳过本循环（防侧翻）
+        sizeOnlyIds.add(n.id);
       }
     }
+    // 当前画布已经成功解析，可安全清除已不存在节点的尺寸缓存。
+    const aliveNodeIds = new Set(nodes.filter((n) => n && n.id).map((n) => n.id));
+    for (const id of Array.from(store.keys())) if (!aliveNodeIds.has(id)) store.delete(id);
     this.canvasPositions.set(cf.path, currentPos);
     this.persistAutoSizeSoon(); // 落盘档案（canvasPositions + autoEdges + autoSize 共用防抖）
 
+    // ---- v0.15.0：删除级联（实时检测）----
+    //   canvasPositions 只存位置，不存 text；而节点一旦删除，data.nodes 里就没了，
+    //   拿不到 text 就无法知道它引用了哪个附件/哪条摘录。所以另存一份**轻量元数据**
+    //   （只存附件名 + exId，不存全文，避免内存膨胀），删除时靠它定位清理目标。
+    const gone = this._lmbUpdateNodeMeta(cf, nodes);   // 顺带返回本次消失的节点
+    if (gone.length && this.settings && this.settings.autoCleanOnDelete === true) {
+      // 不 await：清理是异步的，不能拖慢 processCanvas 主流程
+      this._lmbCleanupDeletedNodes(cf, gone).catch((err) => {
+        console.warn("[lmb] cascade cleanup failed:", err);
+      });
+    }
+
     if (movedOrNew.length) {
+      // hoisted：所有迭代共用同一个 sidecar 引用，统一在末尾持久化
+      const sidecar2 = this.autoEdges.get(cf.path) || new Set();
       for (const nn of movedOrNew) {
+        // v0.11.1：新卡（drop 下的 ^ex 卡）走 instantAttach 设了位置，
+        //   再被 fitNode 撑大——x/y 与 instantAttach 之后一致但 size 已变。
+        //   用 sizeOnly 标记，让 lmbPlanAutoLink 保留原侧不翻转。
+        // 真正的 user drag（canvas 内移动）会有 lastPos 与当前 x/y 不同，sizeOnly=false 照常 detect。
+        const prevForNew = sizeOnlyIds.has(nn.id);
+        // 新卡（不在 sizeOnlyIds）lastPos 里没记录：它的「位置变化」是 instantAttach 写入的，
+        //   后续 fitNode 改尺寸由 lmbRecenterNode 处理，不属于 user-truly-moved。
+        //   标记为 sizeOnly 让 lmbPlanAutoLink 走 recenter 而不是 reside。
+        const isNewCard = !lastPos.has(nn.id);
+        const sizeOnly = prevForNew || isNewCard;
         const others = nodes.filter((n) => n.id !== nn.id && n.type !== "group");
         const hit = lmbPickDropParent(nn, others);
         if (!hit) continue;
@@ -2050,11 +3988,26 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
          *   不再自动换父（想换父请手动删线重拖）；压中已连线的卡 → reside 改挂侧；
          *   手动边不参与锁定。副作用：旧版「排布紧密顺带碰到别的卡就换父」的误触发
          *   也被一并消除（这正是锁定规则的收益）。 */
-        const sidecar2 = this.autoEdges.get(cf.path) || new Set();
-        const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar2);
+        const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar2, { sizeOnly });
         if (plan.op === "skip") continue;
+        if (plan.op === "recenter") {
+          // v0.11.1：尺寸变化触发的 recenter——只整组重排，不动 edge side。
+          // ⚠️ 必须从 kidsBySide 过滤掉 nn 自身（lmbGroupBySide 通过 edge 找子卡，会把 nn 也算进来），
+          //   否则 group = [nn, nn] → lmbLayoutGroup 当成两卡分组排布，x 算错。
+          const kidsBySideRecenter = lmbGroupBySide(parent, nodes, data.edges);
+          const groupRecenter = [...(kidsBySideRecenter.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
+          lmbLayoutGroup(parent, groupRecenter, plan.side, 30);
+          // 顺便把 instantAttach 漏登记的边补进 sidecar（一次性兜底）
+          if (!sidecar2.has(plan.edge.id)) sidecar2.add(plan.edge.id);
+          changed = true;
+          console.log("[lmb] 自动父子（尺寸变化 + recenter v0.11.1）:", parent.id.slice(0, 8), "->", nn.id.slice(0, 8),
+            "(保留" + plan.side + ")" + (isNewCard ? " [新卡 fitNode]" : ""));
+          continue;
+        }
         if (plan.op === "reside") {
           const r = lmbApplyReside(parent, nn, plan, nodes, data.edges);
+          // 顺便把 instantAttach 漏登记的边补进 sidecar
+          if (!sidecar2.has(plan.edge.id)) sidecar2.add(plan.edge.id);
           changed = true;
           console.log("[lmb] 自动父子（改挂侧）:", parent.id.slice(0, 8), "->", nn.id.slice(0, 8),
             "(" + plan.oldSide + "→" + r.side + ", 相交" + Math.round(hit.ratio * 100) + "%)");
@@ -2062,8 +4015,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
 
         // 取父卡现有子卡按侧分组；把新卡 nn 加进同侧组，整组贴边对齐+组居中排布（v0.9.3 不再拉伸尺寸）
+        // v0.11.1 防御：lmbGroupBySide 会通过任何 edge 把 nn 算进来（理论上 create 路径不会，
+        //   但若 instantAttach 已建边 + 文件层兜底未删干净，这里会重复。仍然 filter 一遍）
         const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
-        const group = [...(kidsBySide.get(plan.side) || []), nn];
+        const group = [...(kidsBySide.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
         lmbLayoutGroup(parent, group, plan.side, 30);
         const ends = lmbSideEnds(plan.side);
         const eid = "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -2073,21 +4028,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         });
         // 标记为自动边（用于后续清理）
         sidecar2.add(eid);
-        this.autoEdges.set(cf.path, sidecar2);
         changed = true;
         console.log("[lmb] 自动父子（首连锁定 v0.11.0）:", parent.id.slice(0, 8), "->", nn.id.slice(0, 8),
           "(" + ends.fromSide + "→" + ends.toSide + ", 相交" + Math.round(hit.ratio * 100) + "%, 组" + group.length + ")");
       }
 
       if (changed) {
-        const indent2 = /\n\t"/.test(raw) ? "\t" : "  ";
-        this.selfWritten.set(cf.path, true);
-        try {
-          await this.app.vault.adapter.write(cf.path, JSON.stringify(data, null, indent2));
-        } catch (err) {
-          this.selfWritten.delete(cf.path);
-          console.error("[lmb] hierarchy write failed:", err);
-        }
+        // 持续持久化 sidecar 的兜底补登条目（含本次循环内所有 recenter/reside 补的）
+        this.autoEdges.set(cf.path, sidecar2);
+        // v0.16.1：统一写回（与上方 fit 写入同一条纪律 —— 以内存数据为准，防瞬移）
+        await this._lmbWriteCanvasData(cf, data, memCanvas, raw);
       }
     }
 
@@ -2106,10 +4056,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       seenIds.add(id);
       // v0.8.0：除非设置里明确要同步，否则补充描述不进摘录文档（保持摘录文档是「原文」的镜像）
-      const srcText = this.settings.noteIntoSync ? node.text : lmbStripNote(node.text);
+      // v0.16.6 P1-4：传 note 类型白名单 —— 旧版会把用户自有的 [!warning]/[!quote] 整段删掉
+      const srcText = this.settings.noteIntoSync
+        ? node.text
+        : lmbStripNote(node.text, this.settings.noteCalloutType || "ppd-note");
       const body = srcText
         .split("\n")
         .filter((l) => !/^\s*\^ex-[0-9a-z]{4,8}\s*$/.test(l))
+        // v0.11.3：lmb-view 是卡片上的视图切换按钮（UI 开关），不属于摘录内容，剥掉
+        .filter((l) => !LMB_VIEW_CALLOUT_RE.test(l))
         .join("\n")
         .trim();
       // 补丁 A（P1-3）：回跳链接页码 #page=12 → entry.page；提取失败为 null（归入「未定位」）
@@ -2139,6 +4094,160 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         console.error("[lmb] excerpt sync failed for", pdfPath, err);
       }
     }
+
+    // v0.13.4：节点刚挂载时 canvas DOM 未填充，fitNode 走估算（可能偏大）；
+    //   延迟 250ms 再 actual 重测一次（详见 _scheduleActualFitRetry）—— 用户反馈
+    //   "直接摘录的卡片高度还是太高"，根因是 processCanvas 跑时新节点 nodeEl 还没
+    //   填充（canvas reactive 异步渲染），fitNode 走估算 + 写文件，导致估算值被永久化。
+    // 只有 DOM 未就绪、曾走估算路径的卡才需要延迟重测。普通移动/手动拉伸不触发全卡扫描。
+    if (Array.from(store.values()).some((v) => v && v.pendingActual)) {
+      this._scheduleActualFitRetry(cf);
+    }
+  },
+
+  /**
+   * v0.13.4：节点刚挂载时 canvas DOM 未填充，fitNode 走估算（可能偏大），
+   *   延迟一次 actual 测量重试，等渲染完成用 DOM 真值修正高度。
+   *   setTimeout 250ms：Obsidian canvas reactive 渲染通常在状态变更后 100-200ms 内完成。
+   *   每文件独立 timer（防抖），processCanvas 可能连续跑（比如 drop flush + 后续 modify）。
+   */
+  _scheduleActualFitRetry(cf) {
+    try {
+      const k = cf.path;
+      if (!this._fitRetry) this._fitRetry = {};
+      const prev = this._fitRetry[k];
+      if (prev && prev.timer) clearTimeout(prev.timer);
+      this._fitRetry[k] = { timer: setTimeout(() => {
+        try { delete this._fitRetry[k]; } catch (_) {}
+        this._actualFitRetryForFile(cf).catch(() => {});
+      }, 250) };
+    } catch (_) {}
+  },
+
+  /**
+   * v0.13.4：actual 测量重试 + 写回 canvas json。
+   *   为什么不复用 processCanvas：那个流程还要做自动连线/组居中/摘录同步，
+   *   这里只要"按 DOM 真值重 fit"，多跑一遍主流程代价大且可能引入 side 翻转。
+   */
+  async _actualFitRetryForFile(cf) {
+    try {
+      // v0.16.5 R8：插件已卸载 → 退出（本函数的图片等待重试链没有保留 setTimeout
+      //   句柄，无法从 onunload 直接取消，只能靠入口标记兜底）
+      if (this._unloaded) return;
+      const leaves = this.app.workspace.getLeavesOfType("canvas") || [];
+      const leaf = leaves.find((l) => l && l.view && l.view.file && l.view.file.path === cf.path);
+      if (!leaf) return;
+      const canvas = leaf.view.canvas;
+      if (!canvas || !canvas.nodes) return;
+      // v0.16.3【图片等待重试链】：卡内有 img 未加载完时，lmbFitNodeActual 会返回 null
+      //   （v0.16.3 起）→ fitNode 回退估算 → 估算值被写进档案。若没有这轮补测，图片加载
+      //   完成后就**没人再量一次**，偏小的估算值被固化 —— 「自动高度依旧偏小」的主根因。
+      //   递增间隔追加最多 3 轮（800ms / 1600ms / 2400ms），测到真值那轮写回后自然收敛；
+      //   计数表独立于 _fitRetry（那是 250ms 主调度的防抖位，语义不同）。
+      try {
+        let pendingImg = false;
+        const entries = (typeof canvas.nodes.entries === "function")
+          ? Array.from(canvas.nodes.entries())
+          : Object.entries(canvas.nodes);
+        for (const [, n] of entries) {
+          const el = n && (n.nodeEl || n.contentEl);
+          const imgs = el && el.querySelectorAll ? el.querySelectorAll("img") : null;
+          if (!imgs) continue;
+          for (let i = 0; i < imgs.length; i++) {
+            if (!imgs[i].complete) { pendingImg = true; break; }
+          }
+          if (pendingImg) break;
+        }
+        if (pendingImg) {
+          if (!this._fitRetryImg) this._fitRetryImg = {};
+          const k = cf.path;
+          const cnt = (this._fitRetryImg[k] || 0) + 1;
+          if (cnt <= 3) {
+            this._fitRetryImg[k] = cnt;
+            setTimeout(() => {
+              try { this._actualFitRetryForFile(cf).catch(() => {}); } catch (_) {}
+            }, 800 * cnt);
+            return;                       // 本轮不测（测了也是偏小值）
+          }
+          try { delete this._fitRetryImg[k]; } catch (_) {}   // 放弃：按现状测
+        } else {
+          if (this._fitRetryImg) { try { delete this._fitRetryImg[cf.path]; } catch (_) {} }
+        }
+      } catch (_) { /* 重试链自身异常不阻断本轮测量 */ }
+      const store = this.autoSize ? this.autoSize.get(cf.path) : null;
+      if (!store) return;
+      // v0.13.6：优先 canvas 内部 API（getData / setData / requestSave），毫秒级生效。
+      //   磁盘写最终也会让 canvas view reload（Obsidian 原生监听），但改 live node 后
+      //   不调 requestSave 的话 canvas 内部 state 不刷新 —— 用户看到"没反应"。
+      const canInternal = typeof canvas.getData === "function"
+        && typeof canvas.setData === "function"
+        && typeof canvas.requestSave === "function";
+      let data = null;
+      if (canInternal) { try { data = canvas.getData(); } catch (_) { data = null; } }
+      if (!data) {
+        let raw; try { raw = await this.app.vault.read(cf); } catch (_) { return; }
+        try { data = JSON.parse(raw); } catch (_) { return; }
+      }
+      if (!data || !Array.isArray(data.nodes)) return;
+      const sizeUpdates = new Map();
+      for (const n of data.nodes) {
+        if (n.type !== "text" || !n.text || !EX_ID_RE.test(n.text)) continue;
+        const cached = store.get(n.id);
+        const textHash = this.simpleHash(n.text);
+        if (cached && cached.locked) continue;
+        const outerWidth = Number(n.width) || 0;
+        if (cached && cached.hash === textHash && !cached.pendingActual
+          && (outerWidth <= 0 || Math.abs((Number(cached.w) || 0) - outerWidth) < 2)) continue;
+        const live = canvas.nodes.get ? canvas.nodes.get(n.id) : canvas.nodes[n.id];
+        if (!live) continue;
+        // v0.13.5：actual 可能拿不到（markdown 异步渲染还没 layout）—— 200ms 后多试一次
+        //   仍拿不到就用 estimate（保证至少有值可写，否则 retry 永远静默失败）
+        let actual = this.lmbFitNodeActual(live, store);
+        if (!actual) {
+          await new Promise((r) => setTimeout(r, 200));
+          actual = this.lmbFitNodeActual(live, store);
+        }
+        if (actual && !actual.unchanged) {
+          sizeUpdates.set(n.id, { width: Math.round(actual.w), height: Math.round(actual.h) });
+        }
+      }
+      if (sizeUpdates.size) {
+        let done = false;
+        if (canInternal) {
+          try {
+            // 测量期间用户可能移动卡片；提交前重读最新状态，只合并宽高。
+            const fresh = canvas.getData();
+            if (fresh && Array.isArray(fresh.nodes)) {
+              for (const n of fresh.nodes) {
+                const next = sizeUpdates.get(n.id);
+                if (!next) continue;
+                n.width = next.width;
+                n.height = next.height;
+              }
+              this.selfWritten.set(cf.path, Date.now());
+              canvas.setData(fresh);
+              canvas.requestSave();
+              done = true;
+            }
+          } catch (_) { /* 回退文件写 */ }
+        }
+        if (!done) {
+          let raw; try { raw = await this.app.vault.read(cf); } catch (_) { return; }
+          let fresh; try { fresh = JSON.parse(raw); } catch (_) { return; }
+          if (!fresh || !Array.isArray(fresh.nodes)) return;
+          for (const n of fresh.nodes) {
+            const next = sizeUpdates.get(n.id);
+            if (!next) continue;
+            n.width = next.width;
+            n.height = next.height;
+          }
+          const indent = /\n\t"/.test(raw) ? "\t" : "  ";
+          this.selfWritten.set(cf.path, Date.now()); // v0.16.4 P2-4：存时间戳（过期不吞真实 modify）
+          await this.app.vault.adapter.write(cf.path, JSON.stringify(fresh, null, indent));
+        }
+        this.persistAutoSizeSoon();
+      }
+    } catch (_) {}
   },
 
   /**
@@ -2152,7 +4261,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * v0.6.0：重叠规范化。v0.9.2 起支持传入 targetFile（只处理这一张画布），
    *   供「跳转落地后的重叠自愈」定点调用；不传参时行为与旧版完全一致。
    */
-  async normalizeOverlappingExcerpts(targetFile) {
+  async normalizeOverlappingExcerpts(targetFile, opts) {
+    // v0.16.5 修复 R1：opts.healOnly = true 时只「重排已有父子关系且当前仍重叠」的组，
+    //   **不新建任何边** —— 自动自愈不该替用户决定父子关系。
+    //   命令路径沿用 v0.6.0 的重叠建边语义，但加两道约束：
+    //     ① 已有自动父边的卡跳过 —— 不许绕过 v0.11.0「首连锁定（一卡一线）」；
+    //     ② 新建的边必须登记进 sidecar（autoEdges）—— 否则会出现「recenter 认它
+    //        （e<base36> 命名兜底）但清理按 sidecar 过滤不认它」的账本矛盾 → 孤儿边残留。
+    const healOnly = !!(opts && opts.healOnly);
     let targets;
     if (targetFile) {
       targets = [targetFile];                       // 定点：只处理这一张画布
@@ -2168,18 +4284,46 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     let totalEdges = 0, totalMoves = 0;
     for (const cf of targets) {
       try {
-        const raw = await this.app.vault.read(cf);
-        let data; try { data = JSON.parse(raw); } catch (_) { continue; }
+        // v0.16.1：数据源与 processCanvas 同纪律 —— 内存优先（防覆盖用户未落盘的拖动）
+        let raw = null;
+        try { raw = await this.app.vault.read(cf); } catch (_) { raw = null; }
+        let data = null;
+        let memCanvas = null;
+        const mem = this._lmbMemCanvasData(cf);
+        if (mem) { data = mem.data; memCanvas = mem.canvas; }
+        if (!data) {
+          if (!raw) continue;
+          try { data = JSON.parse(raw); } catch (_) { continue; }
+        }
         const nodes = data.nodes || [];
         if (!Array.isArray(data.edges)) data.edges = [];
+        let sidecarDirty = false;   // v0.16.5 R1：是否有新建边需要写回 sidecar 账本
 
         const ex = nodes.filter((n) => n.type === "text" && n.text && EX_ID_RE.test(n.text));
+        const sidecarN = this.autoEdges.get(cf.path) || new Set();
         // 每张 ^ex 卡：选相交面积最大的另一张 ^ex 作父；阈值与 processCanvas 一致
         const parentOfCard = new Map(); // childId -> parentId
-        for (const nn of ex) {
-          const others = ex.filter((o) => o.id !== nn.id);
-          const hit = lmbPickDropParent(nn, others, 0.2);
-          if (hit) parentOfCard.set(nn.id, hit.node.id);
+        if (healOnly) {
+          // v0.16.5 R1：自愈模式 —— 只用「现有边 + 当前仍重叠」的父子对，不新建关系。
+          //   边的方向可能是 child→parent（用户手连），两端都试，以带 ^ex 的那端为子。
+          for (const ed of data.edges) {
+            if (!ed || !ed.fromNode || !ed.toNode || ed.fromNode === ed.toNode) continue;
+            let p = nodes.find((n) => n.id === ed.fromNode);
+            let c = nodes.find((n) => n.id === ed.toNode);
+            const isEx = (n) => n && n.type === "text" && n.text && EX_ID_RE.test(n.text);
+            if (!isEx(c)) { const t = p; p = c; c = t; }
+            if (!isEx(c) || !p || p.type === "group") continue;
+            if (!lmbPickDropParent(c, [p], 0.2)) continue;      // 不重叠 → 无需自愈
+            if (!parentOfCard.has(c.id)) parentOfCard.set(c.id, p.id);
+          }
+        } else {
+          for (const nn of ex) {
+            // ① 已有自动父边 → 跳过（首连锁定：想换父请手动删线重拖）
+            if (lmbAutoParentEdgeOf(nn.id, data.edges, sidecarN)) continue;
+            const others = ex.filter((o) => o.id !== nn.id);
+            const hit = lmbPickDropParent(nn, others, 0.2);
+            if (hit) parentOfCard.set(nn.id, hit.node.id);
+          }
         }
 
         // 分组：按 (parentId, side) 收集
@@ -2208,21 +4352,23 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
               (ed.fromNode === g.parent.id && ed.toNode === k.id) ||
               (ed.fromNode === k.id && ed.toNode === g.parent.id));
             if (!exists) {
+              const eid = "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
               data.edges.push({
-                id: "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-                fromNode: g.parent.id, toNode: k.id,
+                id: eid, fromNode: g.parent.id, toNode: k.id,
                 fromSide: ends.fromSide, toSide: ends.toSide
               });
+              // ② 新建的边登记进 sidecar（自动边账本）—— 自愈模式不建边，故不受影响
+              if (!sidecarN.has(eid)) { sidecarN.add(eid); sidecarDirty = true; }
               totalEdges++;
             }
           }
           changed = true;
         }
+        if (sidecarDirty) this.autoEdges.set(cf.path, sidecarN);
 
         if (changed) {
-          const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-          this.selfWritten.set(cf.path, true);
-          await this.app.vault.adapter.write(cf.path, JSON.stringify(data, null, indent));
+          // v0.16.1：统一写回（setData + requestSave + 同一份数据写盘，防瞬移）
+          await this._lmbWriteCanvasData(cf, data, memCanvas, raw);
           console.log("[lmb] 规范化画布:", cf.path,
             "组数=" + groups.size + " 移动=" + groups.size + "组 新边=" + totalEdges);
         }
@@ -2233,23 +4379,148 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     new Notice(`已规范化：新建 ${totalEdges} 条边，整组移动 ${totalMoves} 张卡（${targets.length} 个画布）`);
   },
 
+  /**
+   * v0.13.3：自动适配卡片尺寸到内容高度。
+   *   优先用**实际 DOM 测量**（lmbFitNodeActual）—— canvas 节点已渲染时这是真相。
+   *   节点未渲染（首次扫描 / 节点在视口外）回退到 estimateSizeFor 的估算。
+   *   返回 null 表示不需要变（hash 没变或尺寸差 < 2px）。
+   */
   fitNode(node, store) {
+    // v0.14.8：手动 fit 过的卡片「锁定」，自动 fit 不再覆盖（避免子节点 fit 后被 processCanvas
+    //   的 estimateSizeFor 误差覆盖回错的尺寸 —— 用户反馈「子节点调整高度失效」）。
+    const prev0 = store.get(node.id);
+    if (prev0 && prev0.locked) return null;
     const hash = this.simpleHash(node.text);
+    // 文本没变说明这次 modify 只是移动、连线或手动调尺寸；绝不能再次测量高度。
+    const currentWidth = Number(node.width) || 0;
+    if (prev0 && prev0.hash === hash
+      && (currentWidth <= 0 || Math.abs((Number(prev0.w) || 0) - currentWidth) < 2)) return null;
+    const actual = this.lmbFitNodeActual(node, store);
+    if (actual) return actual.unchanged ? null : { w: actual.w, h: actual.h };
+    // 估算回退（节点未渲染或 DOM 拿不到）
     const prev = store.get(node.id);
-    if (prev && prev.hash === hash) return null;  // 已适配或用户手动调整过
+    if (prev && prev.hash === hash) return null;
     const size = this.estimateSizeFor(node.text);
-    store.set(node.id, { hash, w: size.w, h: size.h });
+    // DOM/图片尚未就绪时只估算一次，并明确标记供延迟重测定点处理。
+    store.set(node.id, { hash, w: size.w, h: size.h, pendingActual: true });
     this.persistAutoSizeSoon();
     if (prev && Math.abs(prev.w - size.w) < 2 && Math.abs(prev.h - size.h) < 2) return null;
     return size;
   },
 
-  /** 图片卡：按截图真实宽高比；文本卡：按行宽/行数估算 */
+  /**
+   * v0.13.3：实际测量 canvas 节点**已渲染**的内容高度，设回 node.height。
+   *   比 estimateSizeFor 精确 —— DOM 是真相。前提：节点已渲染（nodeEl / contentEl
+   *   可查）。否则返回 null 让调用者回退估算。
+   *   scrollHeight 是内容刚好需要的最小高度（包含 contentEl 自身 padding，**不含**
+   *   margin，也不含 contentEl 之外的节点 padding）。
+   *
+   *   v0.16.3【自动路径与手动路径对齐】：此前这里还是 `scrollHeight + 24` 老逻辑，
+   *   而 v0.16.1/v0.16.2 的三项增强全改在了手动路径（lmbFitNodeById）—— 自动 fit
+   *   （新卡拖入 / processCanvas / 250ms 重测）走的就是本函数，结果：
+   *     ① 节点 chrome 靠 +24 经验值 → 评论 callout 余量不足 → 裁底；
+   *     ② **没有图片等待** —— 自动 fit 几乎总发生在卡片刚创建、webp 还没加载完时，
+   *        scrollHeight 偏小 → 高度偏小**且被写进档案**（hash 没变就不再重测），
+   *        偏小值被固化 —— 这就是「自动高度调整依旧小于实际所需」的主根因。
+   *   修法（本函数是同步的，不能 await 图片）：
+   *     - h = scrollHeight + chromePad(nodeEl 上下 padding+border 实测) + buffer(28/8)
+   *     - **卡内有 img 未加载完 → 返回 null**（调用方 fitNode 回退估算），配合
+   *       _actualFitRetryForFile 的图片等待重试链（v0.16.3）在加载完后测出真值写回。
+   *   用途：自动 fit / 250ms 重测 / 评论区保存后刷新。
+   */
+  lmbFitNodeActual(node, store) {
+    try {
+      if (!node) return null;
+      const wrapperEl = node.nodeEl || node.contentEl;
+      if (!wrapperEl || typeof wrapperEl.querySelector !== "function") return null;
+      const contentEl = wrapperEl.querySelector(".canvas-node-content")
+        || wrapperEl.querySelector(".markdown-rendered")
+        || wrapperEl;
+      if (!contentEl || typeof contentEl.scrollHeight !== "number") return null;
+      // scrollHeight === 0：元素不可见（display:none / 刚挂载未布局）
+      if (contentEl.scrollHeight <= 0) return null;
+      // v0.16.3：卡内有图片未加载完 → 高度必然偏小，宁可用估算+重试链，不固化错值
+      try {
+        const imgs = contentEl.querySelectorAll("img");
+        for (let i = 0; i < imgs.length; i++) {
+          if (!imgs[i].complete) return null;
+        }
+      } catch (_) { /* 查不了就照旧测（最坏情况回到旧行为） */ }
+      // v0.16.3：节点 chrome 精确测量（上下 padding + border），不再用 +24 经验值。
+      //   buffer 与手动路径同源：有评论 28（末尾 callout 的 padding+border+余量）、无 8。
+      let chromePad = 0;
+      try {
+        const ncs = getComputedStyle(wrapperEl);
+        if (ncs) {
+          chromePad = (parseFloat(ncs.paddingTop) || 0) + (parseFloat(ncs.borderTopWidth) || 0)
+            + (parseFloat(ncs.paddingBottom) || 0) + (parseFloat(ncs.borderBottomWidth) || 0);
+        }
+      } catch (_) { chromePad = 0; }
+      const hasComment = (function () {
+        try {
+          const t = node && node.text;
+          if (typeof t !== "string" || !LMB_COMMENT_CALLOUT_RE) return false;
+          return t.split(/\r?\n/).some((line) => LMB_COMMENT_CALLOUT_RE.test(line));
+        } catch (_) { return false; }
+      })();
+      // 缓存和写回都使用 Canvas JSON 的外框宽度。clientWidth 是内部宽度，若把它写回
+      // node.width 会让卡片每次 fit 变窄、文本重新换行，随后高度自然又变了。
+      const w = Math.max(80, Number(node.width) || Number(wrapperEl.offsetWidth)
+        || Number(contentEl.offsetWidth) || 280);
+      let measureScale = 1;
+      try {
+        const rr = contentEl.getBoundingClientRect();
+        const layoutW = contentEl.offsetWidth || contentEl.clientWidth;
+        if (rr && rr.width > 0 && layoutW > 0) measureScale = rr.width / layoutW;
+      } catch (_) {}
+      const naturalCardH = lmbMeasureNaturalCard(wrapperEl, contentEl, measureScale);
+      const contentH = naturalCardH > 0
+        ? naturalCardH
+        : lmbMeasureRenderedContent(contentEl, measureScale);
+      if (contentH <= 0) return null;
+      // 无 DOM 克隆能力（测试桩或旧环境）才回退叶节点算法和旧安全余量。
+      const h = naturalCardH > 0
+        ? naturalCardH
+        : lmbFinalizeCardHeight(contentH, chromePad, hasComment, false);
+      const prev = store && store.get(node.id);
+      const hash = this.simpleHash(node.text);
+      if (prev && prev.hash === hash
+        && Math.abs(prev.w - w) < 2 && Math.abs(prev.h - h) < 2) {
+        // pendingActual 是一次性任务；实际尺寸已稳定时必须清除，否则每次 modify 都会重试。
+        if (prev.pendingActual && store) {
+          store.set(node.id, { hash, w, h, locked: !!prev.locked });
+          this.persistAutoSizeSoon();
+        }
+        return { w, h, unchanged: true };
+      }
+      if (store) {
+        store.set(node.id, { hash, w, h });
+        this.persistAutoSizeSoon();
+      }
+      return { w, h };
+    } catch (_) { return null; }
+  },
+
+  /** 图片卡：按截图真实宽高比；文本卡：按行宽/行数估算；v0.11.3 双重卡：取文字/图片布局的较大高 */
   estimateSizeFor(text) {
     const em = text.match(/!\[\[([^\]|]+?)\]\]/);   // em[1] = 完整附件名（含 .webp）
     if (em) {
       const dims = this.imgDims.get(em[1]);
       const w = 380;
+      // v0.11.3 双重卡判定：卡里同时有 embed 和 PDF 引用块行（文字+截图并存，
+      //   靠 lmb-view 切换视图）。两种视图共用同一张卡 → 高取两者较大值，
+      //   宽度固定不随切换变化（用户要求：切换内容显示方式时固定卡片宽度）。
+      const hasQuote = LMB_LINK_RE.test(text);
+      LMB_LINK_RE.lastIndex = 0; // 全局正则复用后必须重置（否则下一次 test 从旧 lastIndex 开始漏匹配）
+      if (hasQuote) {
+        const imgH = (dims && dims.w > 0)
+          ? Math.round(w * dims.h / dims.w) + 78   // 图片高（等比）+ 回跳引用行 + 内边距
+          : 460;                                    // 尺寸档案缺失时的兜底
+        // v0.16.6：note 类型白名单随设置走（estimateSizeFor 里的两处调用同源）
+        const nt = (this.settings && this.settings.noteCalloutType) || "ppd-note";
+        const textH = this.estimateTextSize(lmbRenderedText(text, nt)).h;
+        return this.addNoteChrome({ w, h: Math.max(imgH, textH) }, text);
+      }
       if (dims && dims.w > 0) {
         // 图片高（按卡片宽等比）+ 回跳引用行（约 2 行）+ 内边距
         const imgH = Math.round(w * dims.h / dims.w);
@@ -2257,8 +4528,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       return this.addNoteChrome({ w, h: 460 }, text);
     }
-    // v0.8.0：不可见的注释锚点行不计入高度，按「实际渲染的文本」估算，再补 callout 框高
-    return this.addNoteChrome(this.estimateTextSize(lmbRenderedText(text)), text);
+    // v0.13.3：lmbRenderedText 现在真正剥离 callout，纯文字行高度更准；
+    //   addNoteChrome 加 ppd-note 高度，新增 addCommentChrome 加 lmb-comment 展开态高度
+    return this.addCommentChrome(
+      this.addNoteChrome(
+        this.estimateTextSize(lmbRenderedText(text, (this.settings && this.settings.noteCalloutType) || "ppd-note")),
+        text
+      ),
+      text
+    );
   },
 
   /**
@@ -2267,8 +4545,31 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   估约 46px（标题行 25 + 上下 padding 约 21），近似值，够用。
    */
   addNoteChrome(size, text) {
-    if (!lmbSplitNote(text).hasNote) return size;
-    return { w: size.w, h: Math.ceil(Math.min(900, size.h + 46)) };
+    // v0.16.6：只认插件自有的 note 类型（用户自有 callout 不该被算成补充描述高度）
+    const types = (this.settings && this.settings.noteCalloutType) || "ppd-note";
+    if (!lmbSplitNote(text, types).hasNote) return size;
+    return { w: size.w, h: Math.ceil(Math.min(2000, size.h + 46)) };
+  },
+  /**
+   * v0.13.3：给尺寸补上 lmb-comment callout 的额外高度。
+   *   - 折叠态（标题行 + 单行「添加评论」）：约 30px（标题 25 + 上下 padding + 边框）
+   *   - 展开态：v0.16.1 改为**按评论内容行数**算 —— 旧版固定 +50 是 Bug1 的主根因：
+   *     estimateTextSize 的输入 lmbRenderedText 已把评论内容剥掉，内容行全靠这里补，
+   *     而展开态评论一超过一行（50 - 标题25 - padding ≈ 只够 0 行内容！）就必然
+   *     把卡片算矮 → 自动 fit 后评论底部被裁（用户实测「有评论的卡片自动高度
+   *     裁掉评论底部」）。修法：标题 25 + 内容行数×25 + callout 自身 padding/边框 24。
+   *     多行评论按行数线性增长，与实际渲染趋势一致。
+   */
+  addCommentChrome(size, text) {
+    if (!lmbSplitComment(text).hasComment) return size;
+    const c = lmbSplitComment(text);
+    if (!c.comment || c.fold) {
+      // 折叠态 / 空占位：单行按钮，30 不变
+      return { w: size.w, h: Math.ceil(Math.min(2000, size.h + 30)) };
+    }
+    const lines = Math.max(1, String(c.comment).split("\n").length);
+    const extra = 25 + lines * 25 + 24;   // 标题行 + 内容行 + callout padding/边框
+    return { w: size.w, h: Math.ceil(Math.min(2000, size.h + extra)) };
   },
 
   estimateTextSize(text) {
@@ -2294,7 +4595,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     for (const l of lines) {
       h += Math.max(1, Math.ceil(l.w / innerW)) * lineH + (l.quote ? 4 : 0);
     }
-    return { w, h: Math.ceil(Math.min(900, Math.max(80, h))) };
+    return { w, h: Math.ceil(Math.min(2000, Math.max(80, h))) };
   },
 
   simpleHash(s) {
@@ -2327,16 +4628,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   async addNoteBoxToAllCards() {
     const ctx = this.activeCanvasContext();
     if (!ctx) { new Notice("请先在 canvas 里操作（当前不在画布视图）"); return; }
-    const raw = await this.app.vault.adapter.read(ctx.file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { new Notice("画布解析失败"); return; }
+    // v0.16.4 修复 P1-3：读改写迁移到内存优先（与 processCanvas v0.16.1 同纪律），
+    //   不再把「磁盘上的旧位置」钉回去（Bug6 同款坑：用户刚拖动未落盘时被覆盖）。
+    const rd = await this._lmbReadCanvasData(ctx.file);
+    if (!rd) { new Notice("画布读取失败"); return; }
+    const data = rd.data;
     const nodes = data.nodes || [];
     const fold = !!this.settings.noteFoldByDefault;   // 跟随设置（默认 false = 展开，一眼能看见）
     let n = 0;
     for (const node of nodes) {
       if (node.type !== "text" || !node.text) continue;
       if (!EX_ID_RE.test(node.text)) continue;             // 只处理摘录卡
-      if (lmbSplitNote(node.text).hasNote) continue;       // 已有描述 → 跳过，不覆盖
+      // v0.16.6 P1-4：只认插件自有的 note 类型，用户自有 callout 不再被当「已有描述」
+      if (lmbSplitNote(node.text, this.settings.noteCalloutType || "ppd-note").hasNote) continue;
       node.text = lmbJoinNote(node.text, "", {
         type: this.settings.noteCalloutType || "ppd-note",
         title: this.settings.noteTitle || "补充描述",
@@ -2352,9 +4656,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       n++;
     }
     if (!n) { new Notice("这个画布里没有需要添加描述框的摘录卡（可能都已经有了）"); return; }
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(ctx.file.path, true);
-    await this.app.vault.adapter.write(ctx.file.path, JSON.stringify(data, null, indent));
+    // v0.16.4 P1-3：统一写回（setData + requestSave + 同一份内存数据写盘）
+    await this._lmbWriteCanvasData(ctx.file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     new Notice(`已给 ${n} 张摘录卡添加补充描述框（${fold ? "已折叠" : "已展开"}，点开即可写）`);
   },
@@ -2366,9 +4669,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   async addCommentBoxToAllCards() {
     const ctx = this.activeCanvasContext();
     if (!ctx) { new Notice("请先在 canvas 里操作（当前不在画布视图）"); return; }
-    const raw = await this.app.vault.adapter.read(ctx.file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { new Notice("画布解析失败"); return; }
+    // v0.16.4 修复 P1-3：读改写迁移到内存优先（同 addNoteBoxToAllCards）
+    const rd = await this._lmbReadCanvasData(ctx.file);
+    if (!rd) { new Notice("画布读取失败"); return; }
+    const data = rd.data;
     const nodes = data.nodes || [];
     let n = 0;
     for (const node of nodes) {
@@ -2385,9 +4689,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       n++;
     }
     if (!n) { new Notice("这个画布里的摘录卡都已经有评论栏了"); return; }
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(ctx.file.path, true);
-    await this.app.vault.adapter.write(ctx.file.path, JSON.stringify(data, null, indent));
+    // v0.16.4 P1-3：统一写回（setData + requestSave + 同一份内存数据写盘）
+    await this._lmbWriteCanvasData(ctx.file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     new Notice(`已给 ${n} 张摘录卡添加评论栏（点评论栏直接写）`);
   },
@@ -2400,9 +4703,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 写完同步 autoSize 档案 + 组内重新居中（高度变化不再产生「乱放」）。
    */
   async applyCardComment(file, nodeId, commentText) {
-    const raw = await this.app.vault.adapter.read(file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return { ok: false, msg: "画布解析失败" }; }
+    // v0.16.4 修复 P1-3：内存优先读取 + 统一写回（防覆盖用户未落盘的拖动，Bug6 同款坑）
+    const rd = await this._lmbReadCanvasData(file);
+    if (!rd) return { ok: false, msg: "画布读取失败" };
+    const data = rd.data;
     const node = (data.nodes || []).find((n) => n.id === nodeId);
     if (!node) return { ok: false, msg: "找不到该卡片（可能已被删除）" };
     if (node.type !== "text") return { ok: false, msg: "只有文本卡片支持评论" };
@@ -2420,9 +4724,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!store) { store = new Map(); this.autoSize.set(file.path, store); }
     store.set(node.id, { hash: this.simpleHash(node.text), w: node.width, h: node.height });
 
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(file.path, true);
-    await this.app.vault.adapter.write(file.path, JSON.stringify(data, null, indent));
+    await this._lmbWriteCanvasData(file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     return { ok: true, msg: "" };
   },
@@ -2461,6 +4763,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const t = e.target;
       if (!t || !t.closest) return;
       if (t.closest(".callout-fold")) return; // 折叠箭头 → 原生折叠/展开
+      // v0.11.3：双重摘录卡的「视图切换按钮」——点击在 文字/图片 显示间切换。
+      //   不拦截事件（不 preventDefault/stopPropagation），保留 canvas 原生的
+      //   选中卡片等交互；切换纯靠 DOM class + CSS 显隐，不改卡片文本 → 宽度不变。
+      const viewCallout = t.closest('.callout[data-callout="lmb-view"]');
+      if (viewCallout) { this.toggleCardView(viewCallout); return; }
       const callout = t.closest('.callout[data-callout="lmb-comment"]');
       if (!callout) return;
       const leafEl = callout.closest(".workspace-leaf");
@@ -2485,13 +4792,64 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { /* noop：点击拦截绝不能抛错破坏 canvas */ }
   },
 
+  /**
+   * v0.16.0：视图切换的**核心实现** —— 只认渲染容器（host），**不依赖任何 callout 存在**。
+   *
+   * 为什么要拆出来：v0.11.3 ~ v0.15.0 的双重卡靠卡里那行 `> [!lmb-view]` callout 当「切换按钮」，
+   *   toggleCardView(callout) 用 callout.closest() 反查 host 再切 class。v0.16.0 起新建的卡
+   *   不再写这行（卡片精简 v2：用户要求卡内不放控件）→ 那条反查路径对**新卡**永远找不到 callout
+   *   → 悬浮栏「视图」按钮会变成点了没反应的死按钮（v0.13.1 踩过同款坑）。
+   *   所以把「切 class」这步抽成独立函数，悬浮栏直接把 host 传进来。
+   *
+   * @param {HTMLElement} host  canvas 的 .canvas-node-content / md 的 .markdown-rendered
+   * @returns {boolean|null} 切换后的状态：true=图片视图 / false=文字视图；host 无效返回 null
+   */
+  toggleCardViewByHost(host) {
+    try {
+      if (!host || !host.classList) return null;
+      const toImg = !host.classList.contains("lmb-view-img");
+      host.classList.toggle("lmb-view-img", toImg);
+      return toImg;
+    } catch (_) { return null; }
+  },
+
+  /**
+   * v0.11.3：切换双重摘录卡的显示视图（文字 ↔ 图片）。
+   *   实现 = 给渲染容器（canvas 的 .canvas-node-content / md 的 .markdown-rendered）
+   *   切换 lmb-view-img class，CSS 负责显隐（默认文字视图隐藏图片；图片视图隐藏引用块）。
+   *   不改节点 markdown 文本 → fitNode hash 不变 → 卡片宽度（和高度）保持不变。
+   *
+   *   v0.16.0：切 class 的活委托给 toggleCardViewByHost。**本函数保留是为存量卡兼容** ——
+   *   老版本建的双重卡 markdown 里仍然有 `> [!lmb-view]` 行，点它照样能切、标题文字也跟着变。
+   *   新建的卡走 37-plugin-canvasbar.js 悬浮栏 → 直接调 toggleCardViewByHost。
+   *
+   *   已知边界：切换态存 DOM，不落盘 —— 重载/重渲染后回到默认文字视图。
+   * @param {HTMLElement} callout  lmb-view callout 元素（仅存量卡才有）
+   */
+  toggleCardView(callout) {
+    try {
+      const host = callout.closest(".canvas-node-content")
+        || callout.closest(".markdown-rendered")
+        || callout.parentElement;
+      const toImg = this.toggleCardViewByHost(host);
+      if (toImg === null) return;
+      // 按钮标题即时反馈（重渲染后会回到落盘的默认标题，无碍——显隐以 class 为准）
+      const inner = callout.querySelector(".callout-title-inner");
+      if (inner) {
+        const next = toImg ? LMB_VIEW_TITLE_IMG : LMB_VIEW_TITLE_TEXT;
+        if (typeof inner.setText === "function") inner.setText(next);
+        else inner.textContent = next;
+      }
+    } catch (_) { /* noop：切换失败绝不能抛错破坏 canvas */ }
+  },
+
   /** 按节点 id 直开评论编辑弹窗（点击评论栏的入口，无需选择器） */
   async editCommentForNode(file, nodeId) {
     if (!file) return;
-    const raw = await this.app.vault.adapter.read(file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return; }
-    const node = (data.nodes || []).find((n) => n.id === nodeId);
+    // v0.16.4 P1-3：弹窗初值也走内存优先（旧版读文件，刚拖动未落盘时可能显示旧值）
+    const rd = await this._lmbReadCanvasData(file);
+    if (!rd) return;
+    const node = (rd.data.nodes || []).find((n) => n.id === nodeId);
     if (!node || node.type !== "text") { new Notice("找不到该卡片（可能已被删除）"); return; }
     const cur = lmbSplitComment(node.text || "");
     new LMBNoteModal(this.app, {
@@ -2504,17 +4862,31 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }).open();
   },
 
-  /** 拿到当前 canvas 上下文 { file, leaf }；不在 canvas 里则返回 null */
+  /** 拿到当前 canvas 上下文 { file, leaf }；当前活动视图不是 canvas 则返回 null */
   activeCanvasContext() {
-    const leaves = this.app.workspace.getLeavesOfType("canvas") || [];
-    if (!leaves.length) return null;
-    let leaf = null;
-    try { leaf = this.app.workspace.activeLeaf; } catch (_) { leaf = null; }
-    const isCanvas = (l) => l && l.view && (!l.view.getViewType || l.view.getViewType() === "canvas");
-    if (!isCanvas(leaf)) leaf = leaves.find(isCanvas) || leaves[0];
-    const f = leaf && leaf.view && leaf.view.file;
-    if (!f || f.extension !== "canvas") return null;
-    return { file: f, leaf };
+    // v0.16.4 修复 P2-5：不再静默回退到「任意一个打开的 canvas leaf」——
+    //   旧行为会让用户在 md/PDF 视图触发命令时，操作悄悄落到某个后台画布上。
+    //   现在只认当前活动 leaf 是 canvas，否则返回 null（调用方各自提示/灰显）。
+    try {
+      // v0.16.5 修复 R6：activeLeaf 是 deprecated API，一旦被移除，所有 canvas 命令
+      //   会全部失效。加 getMostRecentLeaf() 兜底（返回最近使用过的 leaf；用户不在
+      //   canvas 视图时它同样不是 canvas → 与严格判定的语义一致）。
+      let leaf = null;
+      try { leaf = this.app.workspace.activeLeaf || null; } catch (_) { leaf = null; }
+      if (!leaf) {
+        try {
+          leaf = typeof this.app.workspace.getMostRecentLeaf === "function"
+            ? this.app.workspace.getMostRecentLeaf() : null;
+        } catch (_) { leaf = null; }
+      }
+      if (!leaf || !leaf.view) return null;
+      let vt = null;
+      try { vt = typeof leaf.view.getViewType === "function" ? leaf.view.getViewType() : null; } catch (_) { vt = null; }
+      if (vt !== "canvas") return null;
+      const f = leaf.view.file;
+      if (!f || f.extension !== "canvas") return null;
+      return { file: f, leaf };
+    } catch (_) { return null; }
   },
 
   /**
@@ -2538,7 +4910,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const nodes = (data && data.nodes) || [];
         const items = nodes.filter((n) => n.type === "text" && n.text).map((n) => {
           const first = String(n.text).split("\n").find((l) => l.trim()) || "(空卡片)";
-          const has = lmbSplitNote(n.text).hasNote;
+          const has = lmbSplitNote(n.text, this.settings.noteCalloutType || "ppd-note").hasNote;
           return { id: n.id, label: (has ? "📝 " : "") + first.slice(0, 60), node: n };
         });
         if (!items.length) { new Notice("这个画布里没有文本卡片"); resolve(null); return; }
@@ -2556,14 +4928,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    */
   async applyCardNote(file, nodeId, noteText, opts) {
     const o = opts || {};
-    const raw = await this.app.vault.adapter.read(file.path);
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return { ok: false, msg: "画布解析失败" }; }
+    // v0.16.4 修复 P1-3：内存优先读取 + 统一写回（同 applyCardComment）
+    const rd = await this._lmbReadCanvasData(file);
+    if (!rd) return { ok: false, msg: "画布读取失败" };
+    const data = rd.data;
     const node = (data.nodes || []).find((n) => n.id === nodeId);
     if (!node) return { ok: false, msg: "找不到该卡片（可能已被删除）" };
     if (node.type !== "text") return { ok: false, msg: "只有文本卡片支持补充描述" };
 
-    const cur = lmbSplitNote(node.text || "");
+    // v0.16.6 P1-4：只认插件自有的 note 类型（用户自有 callout 不再被改写覆盖）
+    const cur = lmbSplitNote(node.text || "", this.settings.noteCalloutType || "ppd-note");
     // 折叠态优先级：显式传入 > 沿用原有 > 新建时用设置里的默认值
     const fold = (typeof o.fold === "boolean")
       ? o.fold
@@ -2587,9 +4961,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!store) { store = new Map(); this.autoSize.set(file.path, store); }
     store.set(node.id, { hash: this.simpleHash(node.text), w: node.width, h: node.height });
 
-    const indent = /\n\t"/.test(raw) ? "\t" : "  ";
-    this.selfWritten.set(file.path, true);
-    await this.app.vault.adapter.write(file.path, JSON.stringify(data, null, indent));
+    await this._lmbWriteCanvasData(file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
     return { ok: true, msg: "" };
   },
@@ -2600,7 +4972,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!ctx) { new Notice("请先在 canvas 里操作（当前不在画布视图）"); return; }
     const pick = await this.pickCanvasNode(ctx);
     if (!pick || !pick.node) return;
-    const cur = lmbSplitNote(pick.node.text || "");
+    const cur = lmbSplitNote(pick.node.text || "", this.settings.noteCalloutType || "ppd-note");
 
     if (mode === "fold") {
       if (!cur.hasNote) { new Notice("该卡片还没有补充描述"); return; }
@@ -2677,7 +5049,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       let lastKey = null;
       const emitEntry = (en, depth) => {
         const q = depth > 0 ? "> ".repeat(depth) : "";
-        for (const line of en.body.split("\n")) body += (q + line) + "\n";
+        // v0.12.0：卡片引用行是 📖 收拢形态（lmbBookLink），导出到摘录 md 时
+        //   还原成完整【文件名-P.N】——md 要能独立阅读、Recall 模糊也靠全名命中。
+        for (const line of en.body.split("\n")) {
+          body += (q + lmbRestoreRefDisplayName(line, pdfBase, en.page)) + "\n";
+        }
         body += q + "^" + en.id + "\n";
         const rel = this.relatedCache ? this.relatedCache.get(en.id) : null;
         if (rel && rel.length) body += q + "> 相关：" + rel.join(" · ") + "\n";
@@ -2722,9 +5098,81 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         new Notice("MarginBook: 已创建摘录文档 " + mdPath);
         console.log("[lmb] excerpt doc created:", mdPath);
       }
+      // v0.16.4 P3-5：文档刚创建/更新后立即强制入索引（不等 resolvedLinks 异步解析 +
+      //   下一次 modify）——否则回绘标记要等很久才出现。
+      try {
+        const nf = this.app.vault.getAbstractFileByPath(mdPath);
+        if (nf instanceof TFile) this.reindexFile(nf, true).catch(() => {});
+      } catch (_) { /* 索引失败不影响写入结果 */ }
     } catch (err) {
       console.error("[lmb] writeExcerptMd error:", err);
     }
+  },
+
+  /* ==================== v0.12.0：PDF 工具栏「打开摘录 md / 打开专属 canvas」 ==================== */
+
+  /**
+   * 打开（必要时创建）PDF 专属摘录文档：<PDF名>-摘录.md（与 PDF 同目录）。
+   * 存在 → 直接打开；已打开的 md 视图复用（绝不重开第二个标签）。
+   * 不存在 → 写入 frontmatter 模板（PDF/canvas 指回本 PDF），与 writeExcerptMd 的头格式一致。
+   */
+  async lmbOpenOrCreateExcerptMd(pdfFile) {
+    if (!pdfFile) return null;
+    const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
+    const name = pdfFile.basename + "-摘录.md";
+    const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+    let f = this.app.vault.getAbstractFileByPath(path);
+    if (!(f instanceof TFile)) {
+      const canvasName = pdfFile.basename + ".canvas";
+      const head = "---\nPDF: \"[[" + pdfFile.path + "]]\"\ncanvas: \"[[" + canvasName + "]]\"\n";
+      const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n";
+      f = await this.app.vault.create(path, content);
+      new Notice("MarginBook: 已创建摘录文档 " + name);
+    }
+    // 已打开 → 复用该标签
+    try {
+      const leaves = this.app.workspace.getLeavesOfType("markdown");
+      for (const l of leaves) {
+        const v = l && l.view;
+        if (v && v.file && v.file.path === f.path) {
+          this.app.workspace.setActiveLeaf(l, { focus: true });
+          return f;
+        }
+      }
+    } catch (_) { /* 复用失败就走正常打开 */ }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.openFile(f);
+    return f;
+  },
+
+  /**
+   * 打开（必要时创建）PDF 专属画布：<PDF名>.canvas（与 PDF 同目录）。
+   * 复用约定与 lmbFocusCanvasNode 一致：已打开的画布直接激活，绝不重开第二视图
+   * （同一文件两个视图会让 canvasPositions 等按视图对象为键的状态全部失效）。
+   */
+  async lmbOpenOrCreatePdfCanvas(pdfFile) {
+    if (!pdfFile) return null;
+    const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
+    const name = pdfFile.basename + ".canvas";
+    const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+    let f = this.app.vault.getAbstractFileByPath(path);
+    if (!(f instanceof TFile)) {
+      f = await this.app.vault.create(path, JSON.stringify({ nodes: [], edges: [] }));
+      new Notice("MarginBook: 已创建专属画布 " + name);
+      // 新画布顺手登记进 canvas 索引（空画布无摘录卡，索引一次成本极低，保持一致性）
+      this.lmbIndexCanvasFile(f).catch(() => {});
+    }
+    const leaves = this.app.workspace.getLeavesOfType("canvas");
+    for (const l of leaves) {
+      const v = l && l.view;
+      if (v && v.file && v.file.path === f.path) {
+        this.app.workspace.setActiveLeaf(l, { focus: true });
+        return f;
+      }
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.openFile(f);
+    return f;
   },
 
   /* ==================== P1：摘录索引层 ====================
@@ -2794,10 +5242,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 两道闸门避免无谓读盘：① 不链 pdf 且不在索引中 → 直接跳过
    *                    ② mtime 未变化 → 直接跳过
    */
-  async reindexFile(f) {
+  async reindexFile(f, force) {
     try {
       if (!f || f.extension !== "md") return;
-      if (!this.lmbFileLinksPdf(f) && !this.indexMtime.has(f.path)) return;
+      // v0.16.4 P3-5：force=true 跳过 resolvedLinks 闸门（新建摘录 md 的瞬间
+      //   metadataCache 往往还没解析出 pdf 链接，旧闸门会把首次索引跳掉）
+      if (!force && !this.lmbFileLinksPdf(f) && !this.indexMtime.has(f.path)) return;
       const prev = this.indexMtime.get(f.path);
       if (prev != null && f.stat && f.stat.mtime <= prev) return;
 
@@ -2815,7 +5265,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (!this.excerptIndex.has(key)) this.excerptIndex.set(key, []);
         this.excerptIndex.get(key).push(e);
       }
-      this.indexMtime.set(f.path, f.stat ? f.stat.mtime : Date.now());
+      // v0.16.5 修复 R3：旧版在 f.stat 缺失时写入 Date.now()，该值 ≥ 之后任何真实
+      //   mtime → 上面的「mtime 未变则跳过」闸门会从此永久拦住这个文件（索引冻结）。
+      //   现在拿不到 mtime 就不记，等 stat 可用后自然补上（宁可多扫一次，也不能不扫）。
+      if (f.stat && f.stat.mtime != null) this.indexMtime.set(f.path, f.stat.mtime);
       // P2：索引变了 → 防抖重画（modify 会在每次敲键触发，所以必须防抖）
       this.lmbScheduleMarksRefresh(300);
     } catch (err) {
@@ -2918,6 +5371,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 修法：落地 900ms 后（等 processCanvas 的写入和视图重载都结束），
    *   对这张画布跑一次 v0.6.0 的重叠规范化 —— 幂等、只动 ^ex 卡、
    *   没有重叠时是空操作（分组条件就是"两卡相交 ≥ 较小卡 20%"）。
+   *
+   * v0.16.5 修复 R1：自愈改走 healOnly 模式 —— 只重排「已有父子关系 + 当前仍重叠」
+   *   的组，**不新建任何边**。旧版每次反向跳转都会对新重叠的卡再建一条父边：
+   *   ① 绕过 v0.11.0 的「首连锁定（一卡一线）」→ 一卡双父；
+   *   ② 新建边不进 sidecar 却因 e<base36> 命名被当自动边 → 账本矛盾（残留孤儿边）；
+   *   ③ 整组重排会挪动用户摆好的卡。
    */
   lmbScheduleOverlapHeal(cf) {
     try {
@@ -2925,7 +5384,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       this._ppdHealTimer = setTimeout(() => {
         this._ppdHealTimer = null;
         try {
-          this.normalizeOverlappingExcerpts(cf).catch(() => {});
+          this.normalizeOverlappingExcerpts(cf, { healOnly: true }).catch(() => {});
         } catch (_) { /* noop */ }
       }, 900);
     } catch (_) { /* noop */ }
@@ -2944,6 +5403,266 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       excerpts: excerpts,
       files: this.indexMtime ? this.indexMtime.size : 0
     };
+  },
+
+  /* ==================== v0.15.0：删除级联 ====================
+   * 用户确认方案：**实时检测 + 默认关闭**（settings.autoCleanOnDelete，需用户主动开启）。
+   *
+   * 触发点：processCanvas（vault modify + 400ms 防抖）里比对「本次节点 id 集」与
+   *   元数据档案，差集 = 消失的节点 → 走清理。
+   *
+   * 为什么另存元数据档案：canvasPositions 只存位置不存 text，而节点删除后 data.nodes
+   *   里就没了，拿不到 text 就不知道它引用了哪个附件 / 哪条摘录。元数据只存
+   *   { 附件名, exId }（不存全文），内存开销极小。
+   *
+   * 清理三目标：
+   *   ① canvas 档案（autoSize / sidecar 自动边）—— 顺带清，无害
+   *   ② webp 截图附件 —— **格式白名单** + **全 vault 引用计数**，不误删
+   *   ③ md 摘录文档条目 —— 按 ^ex-xxx 锚点定位块，只删该块
+   *
+   * 安全网（缺一不可）：
+   *   默认关闭开关 / 删除前写 .lmb-trash-log.md 备份 / 格式白名单 /
+   *   引用计数（>1 不删）/ Notice 汇总 / 全程 try-catch 不中断
+   */
+
+  /**
+   * 更新节点元数据档案（每次 processCanvas 调用），**顺带返回本次消失的节点**。
+   *
+   * 为什么合并：档案更新和"谁消失了"都需要遍历当前 nodes，一次遍历同时得到两个结果，
+   *   不需要额外的二次确认 —— nodes 本身就是刚从画布文件解析出来的当前状态，
+   *   「档案里有、nodes 里没有」即已确认该节点不在了。
+   *
+   * @returns {Array<{id:string, meta:object}>} 本次检测到消失的节点（含元数据）
+   */
+  _lmbUpdateNodeMeta(cf, nodes) {
+    const gone = [];
+    try {
+      if (!this.nodeMeta) this.nodeMeta = new Map();
+      let metaMap = this.nodeMeta.get(cf.path);
+      if (!metaMap) { metaMap = new Map(); this.nodeMeta.set(cf.path, metaMap); }
+      const alive = new Set();
+      for (const n of nodes || []) {
+        if (!n || !n.id) continue;
+        alive.add(n.id);
+        if (n.type !== "text" || typeof n.text !== "string") continue;
+        const attachM = n.text.match(/!\[\[([^\]|]+?\.(?:webp|png|jpe?g))(?:\|[^\]]*)?\]\]/i);
+        const exM = n.text.match(EX_ID_RE);
+        metaMap.set(n.id, {
+          attach: attachM ? attachM[1] : null,
+          exId: exM ? exM[0].slice(1) : null,
+          pdf: (n.text.match(/\[\[([^\]#|]+\.pdf)/i) || [])[1] || null
+        });
+      }
+      // 档案里有、但本次不在了 → 判定为删除
+      for (const id of Array.from(metaMap.keys())) {
+        if (alive.has(id)) continue;
+        const meta = metaMap.get(id);
+        // 只上报「有附件或有 exId」的（普通卡片删了没东西可清，直接清档案即可）
+        if (meta && (meta.attach || meta.exId)) gone.push({ id, meta });
+        metaMap.delete(id);
+      }
+    } catch (_) { /* noop：元数据更新失败不影响主流程 */ }
+    return gone;
+  },
+
+  /**
+   * 执行级联清理。
+   * @param {TFile} cf 画布文件
+   * @param {Array<{id:string, meta:object}>} gone 被删除的节点（含元数据）
+   */
+  async _lmbCleanupDeletedNodes(cf, gone) {
+    /* v0.16.6 P0-1：批量删除安全闸。
+     *   一次消失 >3 张摘录卡，几乎不可能是用户手动连删的结果 —— 更可能是画布重载、
+     *   脏数据、Sync 冲突或 nodes 短暂为空（见 32:_lmbMemCanvasData 的同批修复）。
+     *   级联清理会删 webp + 删 md 条目，属于**不可逆**操作，所以宁可漏清一次：
+     *   超阈值时只写日志 + Notice，不执行任何删除。用户确认后可分小批重删。 */
+    if (gone.length > 3) {
+      try {
+        new Notice(
+          `MarginBook：检测到 ${gone.length} 张摘录卡同时消失（超过 3 张阈值），已跳过自动清理以防误删。` +
+          `如确认要清理，请分批删除卡片（每次 ≤3 张）。`,
+          8000
+        );
+      } catch (_) {}
+      console.warn("[lmb] 批量删除超过阈值，已跳过级联清理:", gone.length, gone.map((g) => g.id.slice(0, 8)));
+      // 日志内联写入（与函数末尾的备份日志同源；本文件没有可复用的独立写入入口）
+      try {
+        const logPath = ".lmb-trash-log.md";
+        const stamp0 = new Date().toISOString();
+        const lines0 = [`\n## ${stamp0} · 批量跳过（${gone.length} 张，超阈值未清理）`, `- canvas: [[${cf.basename}]]`];
+        for (const g of gone) {
+          const m0 = g.meta || {};
+          lines0.push(`- ${String(g.id).slice(0, 8)}｜exId: ${m0.exId ? "^" + m0.exId : "-"}｜附件: ${m0.attach || "-"}`);
+        }
+        let prev0 = "";
+        try { prev0 = await this.app.vault.adapter.read(logPath); } catch (_) { prev0 = ""; }
+        if (!prev0) prev0 = "# MarginBook 删除日志\n\n> 删除级联（settings.autoCleanOnDelete）开启期间的操作记录，可供追溯恢复。\n";
+        await this.app.vault.adapter.write(logPath, prev0 + lines0.join("\n") + "\n");
+      } catch (_) {}
+      return;
+    }
+    let removedAttach = 0, removedMd = 0, skipped = 0;
+    const logLines = [];
+    const stamp = new Date().toISOString();
+    for (const g of gone) {
+      const meta = g.meta || {};
+      try {
+        logLines.push(`\n## ${stamp} · 卡片 ${String(g.id).slice(0, 8)}`);
+        logLines.push(`- canvas: [[${cf.basename}]]`);
+        if (meta.pdf) logLines.push(`- PDF: ${meta.pdf}`);
+        if (meta.exId) logLines.push(`- exId: ^${meta.exId}`);
+        if (meta.attach) logLines.push(`- 附件: ${meta.attach}`);
+
+        // ① 清 canvas 档案（autoSize / sidecar 自动边）—— 顺带，无害
+        try {
+          const store = this.autoSize && this.autoSize.get(cf.path);
+          if (store) store.delete(g.id);
+        } catch (_) {}
+
+        // v0.16.4 修复 P1-2：先删 md 条目（③ 提前），再对附件做引用计数（②）。
+        //   旧顺序里摘录 md 自身还含 ![[xxx.webp]] embed 行，引用计数必然 ≥1
+        //   → 附件永远「还有 1 处其它引用」→ 清理功能整体死锁（静默失效）。
+        // ③ 清 md 摘录文档里的对应条目
+        if (meta.exId && meta.pdf) {
+          const ok = await this._lmbRemoveExcerptFromMd(cf, meta);
+          if (ok) { removedMd++; logLines.push(`- ✅ 摘录 md 条目已移除`); }
+          else { skipped++; logLines.push(`- md 条目未找到，跳过（无妨）`); }
+        }
+
+        // ② 清 webp 附件（格式白名单 + 引用计数；md 条目已移除，不再自数）
+        if (meta.attach) {
+          const name = meta.attach;
+          // 格式白名单：只删插件自己命名的 <PDF名>-P<页>-<戳>.webp
+          const isPluginNamed = /^.+?-P\d+-[a-z0-9]+\.webp$/i.test(name);
+          if (!isPluginNamed) {
+            logLines.push(`- 附件跳过：文件名不符合插件命名格式（可能是用户自己的图）`);
+            skipped++;
+          } else {
+            const f = this.app.vault.getAbstractFileByPath(name)
+              || this._lmbFindAttachmentByName(name);
+            if (!f) {
+              logLines.push(`- 附件已不存在，跳过`);
+              skipped++;
+            } else {
+              // v0.16.6 P1-5：传 cf 让统计排除源画布（旧版把源画布自己数进去 → 永远 ≥1 → 清理失效）
+              const refs = await this._lmbCountAttachmentRefs(name, cf);
+              if (refs > 0) {
+                logLines.push(`- 附件跳过：vault 内还有 ${refs} 处其它引用（删了会导致 broken image）`);
+                skipped++;
+              } else {
+                await this.app.vault.delete(f);
+                removedAttach++;
+                logLines.push(`- ✅ 附件已删除`);
+              }
+            }
+          }
+        }
+
+        // （v0.16.4：原 ③ md 条目清理已提前到 ② 附件清理之前，见上——修 P1-2 顺序死锁）
+      } catch (err) {
+        skipped++;
+        logLines.push(`- ⚠ 清理异常：${err && err.message ? err.message : err}`);
+        console.warn("[lmb] cleanup item failed:", err);
+      }
+    }
+
+    // 写备份日志（可追溯恢复）
+    if (logLines.length) {
+      try {
+        const logPath = ".lmb-trash-log.md";
+        let prev = "";
+        try { prev = await this.app.vault.adapter.read(logPath); } catch (_) { prev = ""; }
+        if (!prev) prev = "# MarginBook 删除日志\n\n> 删除级联（settings.autoCleanOnDelete）开启期间的操作记录，可供追溯恢复。\n";
+        await this.app.vault.adapter.write(logPath, prev + logLines.join("\n") + "\n");
+      } catch (_) { /* 日志写失败不影响清理结果 */ }
+      // Notice 汇总：让用户看得见清理了什么
+      try {
+        new Notice(`已清理 ${gone.length} 张已删除卡片：附件 ${removedAttach} 个 · md 条目 ${removedMd} 条${skipped ? ` · 跳过 ${skipped} 项` : ""}（详见 .lmb-trash-log.md）`, 4000);
+      } catch (_) {}
+    }
+    return { removedAttach, removedMd, skipped };
+  },
+
+  /** 按文件名在 vault 里找附件（兼容只有文件名的场景） */
+  _lmbFindAttachmentByName(name) {
+    try {
+      const files = this.app.vault.getFiles ? this.app.vault.getFiles() : [];
+      const base = name.split("/").pop();
+      return files.find((f) => f.name === base) || null;
+    } catch (_) { return null; }
+  },
+
+  /** 统计 vault 内除目标画布外，还有多少处引用了这个附件
+   *  @param {string} name 附件路径
+   *  @param {TFile} [cf] 源画布文件 —— v0.16.6 P1-5：必须传入并在统计时排除。
+   *    旧版注释写着「除目标画布外」但代码没排除（函数签名里连 cf 都没有），于是
+   *    刚从卡片删除、Obsidian 尚未落盘时，源画布的磁盘缓存里仍含该 embed →
+   *    refs ≥ 1 → 走「跳过」分支 → 清理静默失效（卡片删了，截图永远留着）。 */
+  async _lmbCountAttachmentRefs(name, cf) {
+    let count = 0;
+    try {
+      const base = name.split("/").pop().replace(/\.(webp|png|jpe?g)$/i, "");
+      const srcPath = cf && cf.path ? cf.path : null;
+      const mdFiles = (this.app.vault.getFiles ? this.app.vault.getFiles() : [])
+        .filter((f) => f.extension === "md" || f.extension === "canvas");
+      for (const f of mdFiles) {
+        if (srcPath && f.path === srcPath) continue;
+        if (f.path === ".lmb-trash-log.md") continue;   // 日志里的提及不算引用
+        let txt = "";
+        try { txt = await this.app.vault.cachedRead(f); } catch (_) { continue; }
+        if (txt && txt.indexOf(base) >= 0) count++;
+      }
+    } catch (_) { /* 统计失败按 0 处理（= 可删） */ }
+    return count;
+  },
+
+  /**
+   * 从 md 摘录文档移除某个 ^ex-xxx 条目块。
+   * 策略：按空行切块，找到含锚点行的块删掉；找不到锚点就不动（保守，防误删手写内容）。
+   * @returns {Promise<boolean>} 是否真的删了
+   */
+  async _lmbRemoveExcerptFromMd(cf, meta) {
+    try {
+      const pdfBase = (meta.pdf || "").split("/").pop().replace(/\.pdf$/i, "");
+      if (!pdfBase) return false;
+      const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
+      const mdPath = normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      let raw = null;
+      try { raw = await this.app.vault.adapter.read(mdPath); } catch (_) { return false; }
+      if (!raw) return false;
+
+      // 按「锚点属于哪个条目」定位：以空行分块，找含 ^exId 的块
+      const anchor = "^" + meta.exId;
+      const lines = raw.split("\n");
+      // 找锚点行下标
+      // v0.16.4 修复 P2-3：嵌套子条目的锚点行是 "> > ^ex-xxx"，旧实现只剥一层 "> "
+      //   永远匹配不上 → 子摘录删除后 md 条目残留。现剥掉所有层级的 "> " 前缀再比对。
+      const normLine = (s) => s.trim().replace(/(?:^>\s*)+/g, "");
+      let aIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (normLine(lines[i]) === anchor) { aIdx = i; break; }
+      }
+      if (aIdx < 0) return false;
+
+      // 向上找到该块起点（上一个空行之后）
+      let start = aIdx;
+      while (start > 0 && lines[start - 1].trim() !== "") start--;
+      // 向下找到该块终点（下一个空行；含后续「相关：」行）
+      let end = aIdx;
+      while (end + 1 < lines.length && lines[end + 1].trim() !== "") end++;
+      // 连一个空行一起删（保持块间分隔）
+      if (end + 1 < lines.length && lines[end + 1].trim() === "") end++;
+
+      const removed = lines.slice(start, end + 1);
+      if (!removed.length) return false;
+      const next = lines.slice(0, start).concat(lines.slice(end + 1)).join("\n");
+      // 原子写（v0.9.1 起的标准做法）
+      await this.app.vault.adapter.write(mdPath, next);
+      return true;
+    } catch (err) {
+      console.warn("[lmb] removeExcerptFromMd failed:", err);
+      return false;
+    }
   },
 
 });
@@ -3126,11 +5845,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       const file = view.file;
       if (!file) return;
+      // v0.12.0 根因修复：「有时显示/不显示/延迟显示」的根子在这里——
+      //   旧版把 lmbSetupObserver 放在函数最末，而「页面还没渲染」（pages.length===0）
+      //   会提前 return → Observer 从未挂上 → 之后 pdf.js 渲染出页面也没人触发重画，
+      //   只能等下一次 layout-change / 切标签碰运气补画。
+      //   现在只要有文件就先挂 Observer（幂等），页面渲染/虚拟化的瞬间都会自动重画。
+      this.lmbSetupObserver(view);
       const entries = this.getExcerptsForPdf(file.path);
       if (!entries || !entries.length) { this.lmbDisconnectObserver(view); return; }
 
       const pages = container.querySelectorAll("div.page");
-      if (!pages.length) return;   // 还没渲染（僵尸 leaf / 刚打开）→ 等 observer 触发
+      if (!pages.length) return;   // 还没渲染（僵尸 leaf / 刚打开）→ Observer 已挂，渲染瞬间自动重画
 
       const guard = entries.length > 200;   // 性能守卫
 
@@ -3138,13 +5863,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const pageEl = pages[i];
         const num = parseInt(pageEl.getAttribute("data-page-number") || "", 10);
         if (!num) continue;
-        // 虚拟化的页没有文本层，等它进入视口后 observer 会重画
-        if (!pageEl.querySelector(".textLayer")) continue;
         if (guard && !this.lmbPageNearViewport(pageEl)) continue;
         const list = entries.filter((e) => e.page === num);
-        for (const e of list) this.lmbDrawEntryMark(pageEl, e);
+        if (!list.length) continue;
+        // v0.16.5 修复 R2：旧版在循环开头无条件要求 .textLayer，把**不依赖文本层**
+        //   的截图摘录（rect 条目）一起挡掉了 —— 与 lmbDrawEntryMark「rect 是页面
+        //   百分比，虚拟化（未渲染文本层）的页也能画」的实现承诺自相矛盾。
+        //   现在按条目类型分流：rect 条目只要 .page 在就画；selection 条目才要求文本层
+        //   （虚拟化页没有文本层时跳过，等它进入视口、observer 触发后自然重画）。
+        const hasLayer = !!pageEl.querySelector(".textLayer");
+        for (const e of list) {
+          const rectOnly = !!(e.rect && e.rect.length === 4 && e.rect[2] > 0 && e.rect[3] > 0);
+          if (!hasLayer && !rectOnly) continue;
+          this.lmbDrawEntryMark(pageEl, e);
+        }
       }
-      this.lmbSetupObserver(view);
+      // v0.12.0：Observer 已在函数开头挂过（幂等），这里不再重复
     } catch (err) {
       console.warn("[lmb] lmbDrawMarksForView error:", err);
     }
@@ -3161,7 +5895,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const target = view.containerEl.querySelector(".pdfViewer") || view.containerEl;
       if (!target) return;
       const isOwn = (n) => n && n.nodeType === 1 && n.classList && n.classList.contains("lmb-mark");
-      let timer = null;
+      /* v0.16.6 P1-6：防抖 timer 必须挂在 view 上，**不能**用闭包局部变量。
+       *   lmbDisconnectObserver 清的是 view._ppdMarkTimer —— 若 timer 只是闭包变量，
+       *   那段清理就是永远够不到的死代码：disconnect 之后 pending 的回调照样落地，
+       *   调 lmbDrawMarksForView → 184 行又把 observer 挂回来（自我复活）；
+       *   插件已卸载时同样会复活一个没人能回收的 observer。 */
+      view._ppdMarkTimer = null;
       const ob = new MutationObserver((records) => {
         let relevant = false;
         for (const rec of records) {
@@ -3176,9 +5915,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           if (scan(rec.addedNodes) || scan(rec.removedNodes)) { relevant = true; break; }
         }
         if (!relevant) return;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          timer = null;
+        if (view._ppdMarkTimer) clearTimeout(view._ppdMarkTimer);
+        view._ppdMarkTimer = setTimeout(() => {
+          view._ppdMarkTimer = null;
+          // v0.16.6：已被 disconnect（无摘录的 PDF / 插件卸载）→ 不再自我复活
+          if (!view._ppdMarkObserver) return;
           try {
             if (view && view.containerEl && view.containerEl.isConnected) {
               this.lmbDrawMarksForView(view);
@@ -3408,9 +6149,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!linktext || typeof linktext !== "string") return null;
       const bar = linktext.indexOf("|");
       if (bar >= 0) linktext = linktext.slice(0, bar);   // 保险：剥掉别名
-      const hash = linktext.indexOf("#");
+      // v0.16.6 P1-7：必须取**最后一个** `#`，不能用第一个 —— PDF 文件名本身可能含 `#`
+      //   （例如 `[[报告#2.pdf#page=3&selection=...]]`）。旧版 indexOf 取第一个 #
+      //   → path 被截断成 "报告" → /\.pdf$/ 不匹配 → 返回 null → 调用方静默放行
+      //   → 用户点了链接**什么都没发生、也没有任何提示**。
+      const hash = linktext.lastIndexOf("#");
       if (hash < 0) return null;
-      const path = linktext.slice(0, hash).trim();
+      const rawPath = linktext.slice(0, hash).trim();
+      // v0.16.5 修复 R5：调用方优先取的是 a.href，Obsidian 对空格等字符做 %20 编码 ——
+      //   不解码的话「路径含空格的 PDF」会因路径比对失败而报「找不到 PDF」。
+      //   解码失败（非法 % 序列）保留原样，行为退回旧版，不会更差。
+      let path = rawPath;
+      try { path = decodeURIComponent(rawPath); } catch (_) { path = rawPath; }
       const sub = linktext.slice(hash + 1);
       if (!/\.pdf$/i.test(path)) return null;
       if (!/(^|&)page=/.test(sub)) return null;          // 必须有 page=
@@ -3449,7 +6199,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           if (!a) return;
           const href = a.getAttribute("href") || a.getAttribute("data-href") || "";
           const hit = this.lmbParsePdfLink(href);
-          if (!hit) return;                                  // 非 pdf#page= 链接不碰
+          if (!hit) {
+            /* v0.16.6 P1-7：看起来是 pdf 链接却解析不出 page= → 不再静默。
+             *   旧版直接 return，事件原样冒泡给 Obsidian，Obsidian 把 `#page=3&...`
+             *   当标题锚点解析 → 用户点了没反应、控制台也没错，只能认为插件坏了。
+             *   限定「含 # 且含 .pdf」才提示，避免对普通 `[[x.pdf]]` 文件链接刷屏。 */
+            if (/#/.test(href) && /\.pdf/i.test(href)) {
+              try {
+                new Notice("MarginBook：这个 PDF 链接缺少 page= 参数或不完整，无法跳转\n" + String(href).slice(0, 80), 5000);
+              } catch (_) {}
+            }
+            return;                                        // 非 pdf#page= 链接不碰
+          }
           ev.preventDefault();
           ev.stopPropagation();
           ev.stopImmediatePropagation();                     // Obsidian / 其他插件都别想碰
@@ -3551,7 +6312,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (v && v.file && v.file.path === filePath) { leaf = l; break; }
       }
       if (!leaf) {
-        const f = this.app.vault.getAbstractFileByPath(filePath);
+        // v0.16.5 R5：路径解析兜底 —— 直接路径取不到（相对名 / 编码残留）时走
+        //   metadataCache 的链接解析，与摘录索引层（reindexFile）用的是同一套规则
+        let f = this.app.vault.getAbstractFileByPath(filePath);
+        if (!f) {
+          try { f = this.app.metadataCache.getFirstLinkpathDest(filePath, ""); } catch (_) { f = null; }
+        }
         if (!f) { new Notice("MarginBook: 找不到 PDF " + filePath); return; }
         leaf = this.app.workspace.getLeaf("tab");        // 新标签页，不打乱现有布局
         await leaf.openFile(f);
@@ -3755,6 +6521,1160 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
 });
 
+/* 37-plugin-canvasbar —— canvas 卡片悬浮操作栏（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js）
+ * ----------------------------------------------------------------------------
+ * v0.13.0：选中 canvas 里的一张摘录卡时，在卡片正上方浮出一条操作栏，含最多三个按钮：
+ *   评论（message-square）/ 跳回 PDF（book-open）/ 切换文字·图片视图（image）
+ *
+ * 修改注意：
+ *   1. 这三个功能**早就有了**（v0.11.0 评论 / v0.9.1 跳转 / v0.11.3 切换），本文件只负责
+ *      「把入口从卡内搬到悬浮栏」，**任何业务逻辑都不要在这里重写**。对应的现有入口：
+ *        this.editCommentForNode(file, nodeId)        33-plugin-note-comment.js
+ *        this.lmbParsePdfLink(href) → lmbJumpToSelection(...)   36-plugin-jump.js
+ *        this.toggleCardView(callout)                 33-plugin-note-comment.js
+ *   2. 挂载点必须是 canvas.wrapperEl（.canvas-wrapper），**不能**是卡片或 .canvas：
+ *      canvas 的 transform:scale() 加在 .canvas 上，wrapperEl 是其父级、不参与缩放。
+ *      挂在 wrapper 上按钮尺寸恒定，挂在里面会跟着画布一起缩小到看不清。
+ *   3. 浮层的 left/top 由 26-pure-canvasbar.js 的 lmbCalcBarPos() 算，本文件只负责取值与写入。
+ *   4. canvas 的**一切**内部 API（canvas / selection / wrapperEl / nodes）都要能力检测 +
+ *      try/catch。Obsidian 版本一变这些就可能没了，宁可静默降级也不能让插件崩。
+ *   5. 本文件是 Object.assign 混入，**方法之间用逗号分隔**（30-plugin-core.js 才是 class 体
+ *      不加逗号，别搞混）。
+ * ========================================================================== */
+
+Object.assign(LuciasMarginBookPlugin.prototype, {
+
+  /* ==================== v0.13.0：canvas 卡片悬浮操作栏 ==================== */
+
+  /**
+   * 取（或创建）悬浮栏容器 —— 幂等，轮询每轮都会调。
+   * @param {HTMLElement} wrapperEl  canvas.wrapperEl（或其退化 .canvas-wrapper）
+   * @returns {HTMLElement|null}
+   */
+  lmbEnsureCanvasBarEl(wrapperEl) {
+    try {
+      if (!wrapperEl || !wrapperEl.querySelector) return null;
+
+      // 幂等：已存在直接复用（轮询 120ms 一次，不复用会疯狂建 DOM）
+      // v0.13.8：**先看版本**。重载插件时 canvas leaf 的 DOM 不重建，旧版本造的浮层会
+      //   被一直复用，而它的按钮绑的是**旧版 click 回调**（比如 v0.13.4 的 fit 按钮是
+      //   `if (!c) return` 静默版）→ 代码改了、插件重载了，行为还是老样子。
+      //   版本不匹配就移除重建，保证用户手上的永远是"当前代码造的"浮层。
+      const exist = wrapperEl.querySelector(LMB_BAR_SEL);
+      if (exist) {
+        if (exist.dataset && exist.dataset.lmbBarVer === LMB_BAR_VERSION) return exist;
+        if (exist.parentNode) exist.remove();
+      }
+
+      // 容器必须可定位，否则浮层的 absolute 会相对更外层的祖先定位而整体错位。
+      // 只在我们能确认它是 static 时才改成 relative，不无脑覆盖用户/主题的样式。
+      try {
+        const cs = getComputedStyle(wrapperEl);
+        if (!cs || cs.position === "static") wrapperEl.style.position = "relative";
+      } catch (_) { /* getComputedStyle 不可用就算了，CSS 侧 .canvas-wrapper 本身就是 relative */ }
+
+      const bar = wrapperEl.createDiv
+        ? wrapperEl.createDiv({ cls: "lmb-canvas-bar" })
+        : document.createElement("div");
+      if (!bar.classList || !bar.classList.contains("lmb-canvas-bar")) {
+        bar.className = "lmb-canvas-bar";
+      }
+      // v0.13.8：打版本标记（配合 lmbEnsureCanvasBarEl 顶部的版本检查，见那里的说明）
+      try { bar.dataset.lmbBarVer = LMB_BAR_VERSION; } catch (_) {}
+
+      // 四个按钮：只建一次，显隐与行为都在别处控制。withText 可选：传了就追加文字节点（fit 按钮专用，
+      //   让用户一眼看到"高度"二字，不再把 move-vertical 误认成 view 切换）
+      const mk = (cls, icon, label, withText) => {
+        const b = document.createElement("div");
+        b.className = cls;
+        b.setAttribute("aria-label", label);
+        try { setIcon(b, icon); } catch (_) { /* 图标失败也要能用 */ }
+        if (withText) {
+          const t = document.createElement("span");
+          t.className = "lmb-bar-text";
+          t.textContent = withText;
+          b.appendChild(t);
+        }
+        // 注意：这里**不**把 nodeId / acts 闭包进回调 —— 浮层是复用的，选中卡片会变，
+        // 闭包快照会 stale（点了 A 卡却操作 B 卡）。统一走 lmbCanvasBarAction 读最新上下文。
+        b.addEventListener("click", (ev) => {
+          try {
+            ev.preventDefault();
+            ev.stopPropagation();
+            ev.stopImmediatePropagation();   // 别让 canvas 把它当成框选/拖拽
+            this.lmbCanvasBarAction(cls === "lmb-bar-comment" ? "comment"
+              : cls === "lmb-bar-jump" ? "jump"
+              : cls === "lmb-bar-view" ? "view"
+              : cls === "lmb-bar-disconnect" ? "disconnect" : "fit");
+          } catch (_) { /* noop */ }
+        });
+        return b;
+      };
+      // v0.14.8：4 个按钮统一加两个字文字（"评论"/"跳转"/"视图"/"高度"）—— 用户反馈
+      //   纯图标按钮看不清用途，统一"图标 + 两字文字"既好认又对齐。label 保留完整 aria-label。
+      bar.appendChild(mk("lmb-bar-comment", "message-square", "添加或编辑评论", "评论"));
+      bar.appendChild(mk("lmb-bar-jump", "book-open", "跳回 PDF 原位置", "跳转"));
+      bar.appendChild(mk("lmb-bar-view", "image", "切换文字或图片视图", "视图"));
+      bar.appendChild(mk("lmb-bar-fit", "move-vertical", "根据内容自动调整卡片高度", "高度"));
+      bar.appendChild(mk("lmb-bar-disconnect", "unlink", "断开卡片连线", "断开"));
+
+      wrapperEl.appendChild(bar);
+      return bar;
+    } catch (_) { return null; }
+  },
+
+  /**
+   * 派发悬浮栏按钮动作。
+   *   上下文统一从 this._barCtx 读（每轮 tick 更新），**不用**创建按钮时的闭包快照 ——
+   *   浮层是复用的，选中卡片会变，闭包捕获的旧 nodeId 会操作到错误的卡片上。
+   * @param {"comment"|"jump"|"view"} kind
+   */
+  lmbCanvasBarAction(kind) {
+    try {
+      let c = this._barCtx;
+      if (!c) {
+        // v0.13.7：**不要静默 return**。轮询每 120ms 跑，canvas 选中会间歇性返回空
+        //   （焦点切换 / Modal 开关 / canvas 内部 state 刷新），那一刻 _lmbHideBar 清掉
+        //   _barCtx；等下次 tick 重建前用户点按钮 → 拿到 null → 旧版直接 return，
+        //   用户视角就是"点了没反应、连 Notice 都不弹"（v0.13.6 用户反馈）。
+        //   这里不依赖轮询，直接从当前选中即时重建一次。
+        c = this._lmbRebuildBarCtx();
+      }
+      if (!c) {
+        // 真的没选中卡片 —— 也要告诉用户，绝不静默失败
+        try { new Notice("没找到选中的卡片，请重新点选一张卡", 2500); } catch (_) {}
+        return;
+      }
+
+      if (kind === "comment") {
+        // v0.13.2：评论编辑 Modal 关闭后 canvas 选中可能丢失 → 浮层暂时消失。
+        //   不等 120ms 自然 tick，Modal 关闭后立刻刷一次，确保浮层尽快回来。
+        //   这是 v0.13.1 守卫之外的**第二道保险** —— 守卫保住按下时选中，但 Modal 关闭
+        //   这种纯逻辑事件守卫拦不到，只能靠这里主动 tick。
+        const p = this.editCommentForNode(c.file, c.nodeId);
+        if (p && typeof p.then === "function") {
+          p.then(() => { try { this.lmbCanvasBarTick(); } catch (_) {} });
+        }
+        return;
+      }
+      if (kind === "jump") {
+        // v0.13.2：jump 后当前 canvas leaf 可能失焦（切到 PDF leaf），立即 tick 让浮层/选中状态对齐
+        // acts.jump 是剥掉 [[]] 与 |别名 的链接正文，参数解析交给现有的 lmbParsePdfLink
+        const hit = this.lmbParsePdfLink(c.acts && c.acts.jump);
+        if (hit) this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect);
+        try { this.lmbCanvasBarTick(); } catch (_) {}
+        return;
+      }
+      if (kind === "view") {
+        // v0.16.0：**不再靠 lmb-view callout 反查 host**（新卡不写那行了，查了也是 null
+        //   → 按钮静默失效，v0.13.1 同款坑）。直接取渲染容器 host 传给 toggleCardViewByHost。
+        //   host 优先级：.canvas-node-content（canvas 文本节点的内容容器）→ 节点元素本身兜底。
+        //   切完 host class（lmb-view-img）→ 卡片高度变化 → 浮层位置要重算
+        //   v0.13.2：切完立刻 tick（不等 120ms），否则用户看到浮层停在旧位置上像没响应
+        const el = c.nodeEl;
+        const host = (el && el.querySelector)
+          ? (el.querySelector(".canvas-node-content") || el.querySelector(".markdown-rendered") || el)
+          : null;
+        if (host) {
+          this.toggleCardViewByHost(host);
+        } else {
+          // 真的拿不到容器 —— 也要告诉用户，绝不静默失败（v0.13.7 定下的规矩）
+          try { new Notice("找不到卡片内容容器，视图未能切换", 2500); } catch (_) {}
+        }
+        setTimeout(() => { try { this.lmbCanvasBarTick(); } catch (_) {} }, 0);
+      }
+      if (kind === "fit") {
+        // v0.14.3：入口探针「开始调整卡片高度…」使命完成（v0.13.9 加它定位链路，
+        //   v0.14.1 实锤断点后已确认全链路通），正常路径只保留最终结果一个 Notice，
+        //   避免每次点击连弹三条。失败路径的编号探针（fit[0]-[4]、Promise 异常）
+        //   全部保留 —— 异常时依然每一步都说话。
+        // v0.14.1：调用本身也要有探针 —— 上一版只有入口探针，`lmbFitNodeById` 内部
+        //   的无声 early return 让流程断在中间而用户毫无感知。现在：
+        //   调用抛异常 / 返回非 Promise / Promise 内部 early return（fit[1]-[4] 编号
+        //   Notice）每一步都可见，不再有任何静默出口。
+        try {
+          const p = this.lmbFitNodeById(c.file, c.nodeId, c.node);
+          if (p && typeof p.then === "function") {
+            p.then(() => { try { this.lmbCanvasBarTick(); } catch (_) {} })
+             .catch((err) => {
+               console.warn("[lmb] fit error:", err);
+               try { new Notice("fit Promise 异常：" + (err && err.message ? err.message : err), 3200); } catch (_) {}
+             });
+          } else {
+            try { new Notice("fit[0] lmbFitNodeById 未返回 Promise（typeof=" + typeof p + "）", 3200); } catch (_) {}
+          }
+        } catch (err) {
+          console.warn("[lmb] fit call error:", err);
+          try { new Notice("fit 调用异常：" + (err && err.message ? err.message : err), 3200); } catch (_) {}
+        }
+      }
+      if (kind === "disconnect") {
+        const p = this.lmbDisconnectCard(c);
+        if (p && typeof p.then === "function") {
+          p.then(() => { try { this.lmbCanvasBarTick(); } catch (_) {} })
+            .catch((err) => {
+              console.warn("[lmb] disconnect error:", err);
+              try { new Notice("断开连线失败：" + (err && err.message ? err.message : err), 3200); } catch (_) {}
+            });
+        }
+      }
+    } catch (_) { /* noop：按钮回调绝不能抛错破坏 canvas */ }
+  },
+
+  /** 取得运行时 edge 对应的可点击 SVG/DOM；不同 Obsidian 版本字段名不同，逐项兼容。 */
+  _lmbDisconnectEdgeTargets(canvas, edgeId) {
+    const out = [];
+    const add = (el) => {
+      if (!el || typeof el.addEventListener !== "function" || out.includes(el)) return;
+      out.push(el);
+    };
+    try {
+      let runtime = null;
+      if (canvas && canvas.edges) {
+        runtime = typeof canvas.edges.get === "function" ? canvas.edges.get(edgeId) : canvas.edges[edgeId];
+        if (!runtime) {
+          const vals = typeof canvas.edges.values === "function"
+            ? Array.from(canvas.edges.values()) : Object.values(canvas.edges);
+          runtime = vals.find((e) => e && (e.id === edgeId || (e.edge && e.edge.id === edgeId)
+            || (e.data && e.data.id === edgeId)));
+        }
+      }
+      if (runtime) {
+        for (const k of ["lineGroupEl", "interactionEl", "pathEl", "path", "el", "svgEl"]) add(runtime[k]);
+        if (runtime.line) {
+          for (const k of ["interactionEl", "pathEl", "path", "el"]) add(runtime.line[k]);
+        }
+      }
+      const root = canvas && canvas.wrapperEl;
+      if (root && typeof root.querySelectorAll === "function") {
+        const safe = String(edgeId).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+        for (const el of Array.from(root.querySelectorAll(
+          `[data-edge-id="${safe}"], [data-id="${safe}"]`
+        ))) add(el);
+      }
+    } catch (_) {}
+    return out;
+  },
+
+  _lmbExitDisconnectMode(silent) {
+    const mode = this._lmbDisconnectMode;
+    if (!mode) return false;
+    try {
+      for (const item of mode.bindings || []) {
+        try { item.el.removeEventListener("pointerdown", item.down, true); } catch (_) {}
+        try { item.el.removeEventListener("click", item.click, true); } catch (_) {}
+        try { item.el.classList.remove("lmb-disconnect-candidate"); } catch (_) {}
+      }
+      if (mode.keydown) document.removeEventListener("keydown", mode.keydown, true);
+    } catch (_) {}
+    this._lmbDisconnectMode = null;
+    if (!silent) { try { new Notice("已退出连线选择", 1200); } catch (_) {} }
+    return true;
+  },
+
+  _lmbDisconnectChoiceLabel(edge, nodeId, nodes) {
+    try {
+      const otherId = edge.fromNode === nodeId ? edge.toNode : edge.fromNode;
+      const other = (Array.isArray(nodes) ? nodes : []).find((n) => n && n.id === otherId);
+      let text = other && typeof other.text === "string" ? other.text : otherId;
+      text = String(text || "未知卡片").split(/\r?\n/)[0]
+        .replace(/^[#>*\-+\s]+/, "").replace(/\[\[|\]\]/g, "").trim();
+      if (text.length > 32) text = text.slice(0, 32) + "…";
+      return `断开与「${text || "未命名卡片"}」的连线`;
+    } catch (_) { return "断开这条连线"; }
+  },
+
+  _lmbEnterDisconnectMode(file, canvas, nodeId, candidates, data) {
+    this._lmbExitDisconnectMode(true);
+    const bindings = [];
+    let allResolved = true;
+    for (const edge of candidates) {
+      const targets = this._lmbDisconnectEdgeTargets(canvas, edge.id);
+      if (!targets.length) { allResolved = false; break; }
+      const label = this._lmbDisconnectChoiceLabel(edge, nodeId, data.nodes);
+      for (const el of targets) {
+        const down = (ev) => {
+          try { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation(); } catch (_) {}
+        };
+        const click = (ev) => {
+          try { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation(); } catch (_) {}
+          this._lmbExitDisconnectMode(true);
+          this._lmbDeleteCanvasEdge(file, canvas, edge.id).catch(() => {});
+        };
+        try {
+          el.classList.add("lmb-disconnect-candidate");
+          el.setAttribute("aria-label", label);
+          el.addEventListener("pointerdown", down, true);
+          el.addEventListener("click", click, true);
+          bindings.push({ el, down, click });
+        } catch (_) {}
+      }
+    }
+    if (!allResolved || !bindings.length) {
+      for (const item of bindings) {
+        try { item.el.removeEventListener("pointerdown", item.down, true); } catch (_) {}
+        try { item.el.removeEventListener("click", item.click, true); } catch (_) {}
+        try { item.el.classList.remove("lmb-disconnect-candidate"); } catch (_) {}
+      }
+      const items = candidates.map((edge) => ({
+        edgeId: edge.id,
+        label: this._lmbDisconnectChoiceLabel(edge, nodeId, data.nodes)
+      }));
+      try {
+        new LMBNodeSuggester(this.app, items,
+          (it) => { this._lmbDeleteCanvasEdge(file, canvas, it.edgeId).catch(() => {}); }).open();
+      } catch (_) { new Notice("无法定位连线，请先直接点选要删除的线", 2600); }
+      return;
+    }
+    const keydown = (ev) => {
+      if (ev && ev.key === "Escape") {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+        this._lmbExitDisconnectMode(false);
+      }
+    };
+    document.addEventListener("keydown", keydown, true);
+    this._lmbDisconnectMode = { bindings, keydown, filePath: file.path, nodeId };
+    new Notice("请选择要断开的高亮连线；Esc 或再次点“断开”可取消", 4200);
+  },
+
+  async lmbDisconnectCard(barCtx) {
+    if (this._lmbDisconnectMode) {
+      this._lmbExitDisconnectMode(false);
+      return false;
+    }
+    const ctx = this.activeCanvasContext();
+    const view = ctx && ctx.leaf && ctx.leaf.view;
+    const canvas = view && view.canvas;
+    const file = (barCtx && barCtx.file) || (ctx && ctx.file);
+    const nodeId = barCtx && barCtx.nodeId;
+    if (!canvas || !file || !nodeId || typeof canvas.getData !== "function") {
+      new Notice("无法读取当前画布或选中卡片", 2400);
+      return false;
+    }
+    const data = canvas.getData();
+    const sidecar = (this.autoEdges && this.autoEdges.get(file.path)) || new Set();
+    const plan = lmbPlanDisconnect(nodeId, data && data.edges, sidecar);
+    if (plan.kind === "none") {
+      new Notice("这张卡片没有连线", 1600);
+      return false;
+    }
+    if (plan.kind === "direct") return this._lmbDeleteCanvasEdge(file, canvas, plan.edgeId);
+    this._lmbEnterDisconnectMode(file, canvas, nodeId, plan.candidates, data);
+    return true;
+  },
+
+  async _lmbDeleteCanvasEdge(file, canvas, edgeId) {
+    if (!canvas || typeof canvas.getData !== "function" || typeof canvas.setData !== "function") {
+      new Notice("当前 Obsidian 版本不支持直接修改连线", 2200);
+      return false;
+    }
+    const latest = canvas.getData();
+    const edges = latest && Array.isArray(latest.edges) ? latest.edges : [];
+    const edge = edges.find((e) => e && e.id === edgeId);
+    if (!edge) { new Notice("这条连线已经不存在", 1600); return false; }
+    const next = Object.assign({}, latest, {
+      nodes: Array.isArray(latest.nodes) ? latest.nodes.map((n) => Object.assign({}, n)) : [],
+      edges: edges.filter((e) => e && e.id !== edgeId).map((e) => Object.assign({}, e))
+    });
+    const sidecar = (this.autoEdges && this.autoEdges.get(file.path)) || new Set();
+    const wasAuto = sidecar.has(edgeId);
+    this._instantSkip = Date.now() + 1200;
+    canvas.setData(next);
+    // setData 成功后再改账本；若 Canvas 拒绝写入，不能留下“线还在、登记已删”的半状态。
+    sidecar.delete(edgeId);
+    if (this.autoEdges) this.autoEdges.set(file.path, sidecar);
+    if (typeof canvas.requestFrame === "function") canvas.requestFrame();
+    if (typeof canvas.requestSave === "function") canvas.requestSave();
+    if (this.persistAutoSizeSoon) this.persistAutoSizeSoon();
+    this._barSig = null;
+    this._lmbLastDisconnected = {
+      filePath: file.path, canvas, edge: Object.assign({}, edge), wasAuto, at: Date.now()
+    };
+    const notice = new Notice("已断开连线", 6500);
+    try {
+      const host = notice && notice.noticeEl;
+      if (host && host.createEl) {
+        host.createEl("button", { text: "撤销" }).addEventListener("click", () => {
+          this._lmbUndoDisconnectedEdge().catch(() => {});
+          try { notice.hide(); } catch (_) {}
+        });
+      }
+    } catch (_) {}
+    return true;
+  },
+
+  async _lmbUndoDisconnectedEdge() {
+    const rec = this._lmbLastDisconnected;
+    if (!rec || Date.now() - rec.at > 30000) {
+      new Notice("没有可撤销的断线操作", 1600);
+      return false;
+    }
+    const canvas = rec.canvas;
+    const latest = canvas && typeof canvas.getData === "function" ? canvas.getData() : null;
+    if (!latest || !Array.isArray(latest.edges)) return false;
+    if (!latest.edges.some((e) => e && e.id === rec.edge.id)) {
+      const next = Object.assign({}, latest, {
+        nodes: Array.isArray(latest.nodes) ? latest.nodes.map((n) => Object.assign({}, n)) : [],
+        edges: latest.edges.map((e) => Object.assign({}, e)).concat([Object.assign({}, rec.edge)])
+      });
+      canvas.setData(next);
+      if (typeof canvas.requestFrame === "function") canvas.requestFrame();
+      if (typeof canvas.requestSave === "function") canvas.requestSave();
+    }
+    if (rec.wasAuto && this.autoEdges) {
+      const sidecar = this.autoEdges.get(rec.filePath) || new Set();
+      sidecar.add(rec.edge.id);
+      this.autoEdges.set(rec.filePath, sidecar);
+    }
+    if (this.persistAutoSizeSoon) this.persistAutoSizeSoon();
+    this._lmbLastDisconnected = null;
+    this._barSig = null;
+    new Notice("已恢复连线", 1600);
+    return true;
+  },
+
+  /**
+   * v0.16.1：给画布上的**双重摘录卡**打标（nodeEl 加 lmb-dual class）。
+   *
+   * 为什么要这个（Bug5 的完整因果）：
+   *   v0.11.3~v0.15.0 靠卡里那行 `> [!lmb-view]` callout 当 CSS 判据
+   *   （`:has(.callout[data-callout="lmb-view"]) img{display:none}`）→ 有效。
+   *   v0.16.0 卡片精简后新卡不写这行了，把 CSS 判据换成
+   *   `:has(a[href*=".pdf#page="]):has(img)` —— **实测不命中**，双重卡在文字视图下
+   *   图文并存（用户反馈 Bug5）。根因：canvas 卡片里指向 .pdf 的 internal-link，
+   *   Obsidian 渲染时对**非 md 文件**很可能丢弃 #page= 子路径（href/data-href 只剩
+   *   "xxx.pdf"），属性选择器匹配不上 → 猜 DOM 结构不如不让 CSS 猜。
+   *
+   *   修法（本函数）：判定权收回 JS —— 用 lmbPickBarActions().view（markdown 层，
+   *   同时含 pdf 引用行 + 截图 embed）判双重卡，把结果**打在 nodeEl** 上
+   *   （class `lmb-dual`）；CSS 改用 `.lmb-dual … img{display:none}`。
+   *   这样 CSS 与 JS 判定 **100% 同源**：JS 给「视图」按钮的判据 = CSS 藏图的判据，
+   *   不会出现「图片被 CSS 藏了却没有按钮切回来」的死角。
+   *
+   * 为什么打在 nodeEl 而不是 contentEl：markdown **重渲染会重建** contentEl
+   *   （class 随之丢失、缓存却以为没变 → 永不重打 → 标记静默失效）；nodeEl 的
+   *   生命周期 = 节点生命周期，稳定。
+   *
+   * 性能：120ms 一次，遍历全部节点。用 simpleHash(text) 缓存，文本没变的卡
+   *   直接跳过（正则不再跑）；nodeEl 未就绪的卡**不写缓存**，下轮重试。
+   *
+   * 副作用清理：onunload 不特意摘 class —— class 是无害标记，插件重载后本函数
+   *   会重新对齐（变非双重卡的卡会被 toggle 掉）。
+   */
+  lmbMarkDualCards(canvas) {
+    try {
+      if (!this._lmbDualCache) this._lmbDualCache = new Map();
+      const cache = this._lmbDualCache;
+      const nodes = canvas && canvas.nodes;
+      if (!nodes) return;
+      const entries = (typeof nodes.entries === "function") ? nodes.entries() : Object.entries(nodes);
+      for (const [id, node] of entries) {
+        if (!node || typeof node.text !== "string" || !node.text) continue;
+        const hash = this.simpleHash(node.text);
+        const c = cache.get(id);
+        if (c && c.hash === hash) continue;              // 文本没变 → 标记已在 DOM 上
+        const isDual = !!lmbPickBarActions(node.text).view;
+        const el = node.nodeEl || node.contentEl;
+        // host 只用来确认内容容器已渲染；class 本身打 nodeEl（抗 markdown 重渲染）
+        const host = el && el.querySelector
+          ? (el.querySelector(".canvas-node-content") || el.querySelector(".markdown-rendered"))
+          : null;
+        if (!host) continue;                             // 未就绪 → 不写缓存，下轮重试
+        if (el.classList) el.classList.toggle("lmb-dual", isDual);
+        cache.set(id, { hash: hash, dual: isDual });
+      }
+      // 缓存里已删除节点的条目顺手清掉（防长期使用内存缓慢增长）
+      const has = (typeof nodes.has === "function") ? (k) => nodes.has(k) : (k) => (k in nodes);
+      for (const id of Array.from(cache.keys())) {
+        if (!has(id)) cache.delete(id);
+      }
+    } catch (_) { /* noop：打标失败只影响显隐，绝不能打断轮询 */ }
+  },
+
+  /**
+   * v0.13.7：即时从**当前** canvas 选中重建 _barCtx（不依赖轮询缓存）。
+   *
+   * 为什么需要：轮询每 120ms 跑一次，而 canvas.getSelection() 会**间歇性**返回空
+   *   （焦点切换 / Modal 开关 / canvas 内部 state 刷新的瞬间）。那一刻 tick 走
+   *   _lmbHideBar() 把 _barCtx 清成 null；等下次 tick 重建（最多 120ms 后）之前，
+   *   用户点按钮就会拿到 null —— 旧版直接 `if (!c) return` 静默退出，
+   *   用户视角"点了没反应、连 Notice 都不弹"。
+   *
+   * 这里绕开轮询缓存，直接重新解析一次当前选中；拿不到才让调用方提示用户。
+   * 只处理「恰好 1 个 text 节点」，与 tick 的判定保持一致（多选/没选中/group 不算）。
+   */
+  _lmbRebuildBarCtx() {
+    try {
+      const ctx = this.activeCanvasContext();
+      if (!ctx) return null;
+      const view = ctx.leaf && ctx.leaf.view;
+      const canvas = view ? view.canvas : null;
+      if (!canvas || !canvas.nodes) return null;
+      let arr = [];
+      try {
+        const sel = typeof canvas.getSelection === "function"
+          ? canvas.getSelection() : canvas.selection;
+        arr = sel ? Array.from(sel) : [];
+      } catch (_) { arr = []; }
+      const nodes = arr.filter((n) => n && typeof n.text === "string" && n.type !== "group");
+      if (nodes.length !== 1) return null;
+      const node = nodes[0];
+      const nodeEl = node.nodeEl || node.contentEl;
+      if (!nodeEl) return null;
+      const acts = lmbPickBarActions(node.text);
+      try {
+        const data = typeof canvas.getData === "function" ? canvas.getData() : null;
+        const sidecar = (this.autoEdges && this.autoEdges.get(ctx.file.path)) || new Set();
+        acts.disconnect = lmbPlanDisconnect(node.id, data && data.edges, sidecar).kind !== "none";
+      } catch (_) { acts.disconnect = false; }
+      this._barCtx = { file: ctx.file, nodeId: node.id, node, acts, nodeEl };
+      return this._barCtx;
+    } catch (_) { return null; }
+  },
+
+  /**
+   * v0.13.3：按 file+nodeId 找到 canvas 节点，实际测量 DOM 高度并写回 canvas json。
+   *   返回 Promise（让 caller 可以 then 里 tick；fire-and-forget 也行）。
+   *   复用 32-plugin-canvas.js 的 lmbFitNodeActual（DOM 是真相，最准）。
+   *   写文件模式与 processCanvas 一致：selfWritten 防自写循环、缩进与原文件保持一致。
+   */
+  /** 为手动高度提交创建全新的数据/节点引用，避免原地修改实时节点导致 Canvas 跳过重绘。 */
+  _lmbCloneCanvasForHeight(data, nodeId, height) {
+    if (!data || !Array.isArray(data.nodes)) return null;
+    const cloned = Object.assign({}, data, {
+      nodes: data.nodes.map((n) => Object.assign({}, n)),
+      edges: Array.isArray(data.edges) ? data.edges.map((e) => Object.assign({}, e)) : []
+    });
+    const node = cloned.nodes.find((n) => n.id === nodeId);
+    if (!node) return null;
+    node.height = height;
+    return { data: cloned, node };
+  },
+
+  lmbFitNodeById(file, nodeId, nodeHint) {
+    return (async () => {
+      try {
+        // v0.14.1：每个 early return 都带编号探针。上一版只探了分支入口（「开始调整…」
+        //   弹了），但函数内部的 4 个无声 early return 仍然在静默退出 —— 用户看到的
+        //   还是"只有探针没下文"。编号探针弹哪个，断点就在哪，一步定位不用再猜。
+        if (!file || !nodeId) {
+          try { new Notice("fit[1] 缺少 file 或 nodeId", 2600); } catch (_) {}
+          return null;
+        }
+        const ctx = this.activeCanvasContext();
+        if (!ctx) {
+          try { new Notice("fit[2] 拿不到画布上下文（activeCanvasContext 为空）", 2600); } catch (_) {}
+          return null;
+        }
+        const view = ctx.leaf && ctx.leaf.view;
+        const canvas = view ? view.canvas : null;
+        if (!canvas || !canvas.nodes) {
+          try { new Notice("fit[3] 拿不到 canvas 对象或 nodes 集合", 2600); } catch (_) {}
+          return null;
+        }
+        // v0.13.6：优先 canvas 内部 API（getData / setData / requestSave）。
+        //   旧版走「读文件 → 改 → 写文件」—— 磁盘往返慢是次要的，**致命的是改了 live
+        //   node 却没调 requestSave，canvas 内部 state 不刷新 → 视觉上什么都没变**。
+        //   instantAttach（v0.5.0 起）早就证明 setData + requestSave 是毫秒级生效的正路。
+        const canInternal = typeof canvas.getData === "function"
+          && typeof canvas.setData === "function"
+          && typeof canvas.requestSave === "function";
+        // v0.14.2：**节点对象由调用方直接传入（nodeHint），不再依赖 canvas.nodes.get 反查**。
+        //   v0.14.1 探针实锤：get(nodeId) 返回的对象 type=undefined（该环境节点对象
+        //   结构与预期不符），导致 fit[4] 静默退出。而 _barCtx 里的 node 是 tick 从
+        //   selection 拿的、经过 `typeof n.text === "string"` 验证的对象 —— 直接用它。
+        //   同时 type 检查放宽为 text 检查：能 fit 的判据是"有文本可量"，不是某个
+        //   特定字段的字面值。
+        let node = (nodeHint && typeof nodeHint.text === "string") ? nodeHint : null;
+        if (!node) {
+          node = typeof canvas.nodes.get === "function" ? canvas.nodes.get(nodeId) : canvas.nodes[nodeId];
+        }
+        if (!node || typeof node.text !== "string") {
+          try {
+            const keys = node ? Object.keys(node).slice(0, 8).join(",") : "无";
+            new Notice("fit[4] 节点不可用（"
+              + (node
+                ? "keys=[" + keys + "]"
+                : "未找到，id=" + String(nodeId == null ? "null" : nodeId).slice(0, 8)) + "）", 3600);
+          } catch (_) {}
+          return null;
+        }
+        // v0.14.3：fit[5] 中间探针已移除（链路验证完成；测量段自身有兜底 ——
+        //   naturalH=0 时会弹「未能测量内容高度」，不会静默）。
+        // v0.13.5：等 nodeEl 就绪（最多 500ms）。canvas reactive 渲染是异步的，
+        //   点 fit 按钮时 markdown 可能还在 layout —— 直接测 scrollHeight 会得 0。
+        await this._lmbWaitForNodeEl(node, 500);
+
+        // v0.16.12：测量离屏自然展开副本，避免当前卡片的固定高度、滚动条宽度和
+        // overflow 状态污染结果。同一内容/同一外框宽度应得到稳定的同一高度。
+        let naturalH = 0;
+        let measuredWholeCard = false;
+        try {
+          const wrapperEl = node.nodeEl || node.contentEl;
+          const contentEl = wrapperEl && wrapperEl.querySelector
+            ? (wrapperEl.querySelector(".canvas-node-content")
+              || wrapperEl.querySelector(".markdown-rendered") || wrapperEl)
+            : null;
+          // v0.16.2【Bug4 残留根因】：等卡内**图片加载完**（最多 2s）再实测。
+          //   _lmbWaitForNodeEl 等的是 nodeEl 存在，不是内容 layout 完成 —— img 未加载时
+          //   高度是 0/占位，实测必然偏小 → 「一次 fit 不到位，再点一次才对」（用户长文
+          //   自建卡带图时症状完全吻合：第一次裁、第二次图加载完了就对了）。
+          //   complete = 加载完成或失败（失败也占位，等它没有意义）；循环 120ms 一查。
+          try {
+            const imgs = contentEl && contentEl.querySelectorAll
+              ? Array.from(contentEl.querySelectorAll("img")) : [];
+            const tImg = Date.now();
+            while (Date.now() - tImg < 2000) {
+              if (!imgs.some((im) => !im.complete)) break;
+              await new Promise((r) => setTimeout(r, 120));
+            }
+          } catch (_) {}
+          if (contentEl && contentEl.children && contentEl.children.length > 0) {
+            // 等字体就绪；用短超时避免第三方字体异常让按钮一直没有响应。
+            try {
+              const fontsReady = contentEl.ownerDocument && contentEl.ownerDocument.fonts
+                ? contentEl.ownerDocument.fonts.ready : null;
+              if (fontsReady && typeof fontsReady.then === "function") {
+                await Promise.race([fontsReady, new Promise((r) => setTimeout(r, 600))]);
+              }
+            } catch (_) {}
+            let scale = 1;
+            try {
+              const s = canvas && canvas.scale;
+              if (s && isFinite(s) && s > 0) scale = s;
+            } catch (_) { scale = 1; }
+            // 至少等待三次一致（而不是旧版两次），并取稳定样本；每次都是全新的自然布局副本。
+            let previous = 0, best = 0, stable = 0;
+            for (let sample = 0; sample < 6; sample++) {
+              const measured = lmbMeasureNaturalCard(wrapperEl, contentEl, scale);
+              if (measured > 0) {
+                best = Math.max(best, measured);
+                if (previous > 0 && Math.abs(measured - previous) < 1) stable++;
+                else stable = 0;
+                previous = measured;
+              }
+              if (stable >= 2) break;
+              if (sample < 5) await new Promise((r) => setTimeout(r, 50));
+            }
+            naturalH = stable >= 2 ? previous : best;
+            measuredWholeCard = naturalH > 0;
+          }
+        } catch (_) {}
+        // 兜底：子元素未就绪（markdown 未渲染完 / children 为空）→ 估算
+        let usedEstimate = false;
+        if (naturalH <= 0) {
+          try {
+            const size = this.estimateSizeFor(node.text);
+            naturalH = Math.round(size.h);
+            usedEstimate = naturalH > 0;
+            try { new Notice("内容未就绪，使用估算高度", 1600); } catch (_) {}
+          } catch (_) {}
+        }
+        // v0.14.6：合理性校验 —— 实测值若明显小于估算（< 60%）则采用估算值。
+        //   目的：防止测量异常时把卡片压得**比内容还矮**（内容会被裁剪，比"留白"
+        //   糟糕得多）。估算走 v0.13.3 修过 lmbRenderedText 的 estimateSizeFor。
+        try {
+          const est = this.estimateSizeFor(node.text);
+          const estH = Math.round((est && est.h) || 0);
+          if (estH > 0 && naturalH > 0 && naturalH < estH * 0.6) {
+            const measuredH = Math.round(naturalH);
+            naturalH = estH;
+            try {
+              new Notice(`实测 ${measuredH}px 明显小于估算 ${estH}px，已采用估算值（防止内容被裁）`, 3000);
+            } catch (_) {}
+          }
+        } catch (_) {}
+        const origH = node.height;
+        let beforeDomH = null;
+        try {
+          const beforeEl = node.nodeEl || node.contentEl;
+          const beforeRect = beforeEl && beforeEl.getBoundingClientRect ? beforeEl.getBoundingClientRect() : null;
+          const beforeScale = canvas && isFinite(canvas.scale) && canvas.scale > 0 ? canvas.scale : 1;
+          if (beforeRect && beforeRect.height > 0) beforeDomH = beforeRect.height / beforeScale;
+        } catch (_) {}
+        // v0.14.8：评论余量。评论块（含折叠/展开 callout）的底部内边距比普通行大，
+        //   固定 24px buffer 在带评论的卡片上会被裁掉底行（用户反馈「到了肯定是劳动力」
+        //   末尾被截）。检测文本里有没有评论 callout → 有则额外 +16 buffer（call 块底部
+        //   padding + 边框）。不引入精确测量（callout 内容高度由内容决定），16 是经验值。
+        const hasComment = (function () {
+          try {
+            const t = node && node.text;
+            if (typeof t !== "string" || !LMB_COMMENT_CALLOUT_RE) return false;
+            return t.split(/\r?\n/).some((line) => LMB_COMMENT_CALLOUT_RE.test(line));
+          } catch (_) { return false; }
+        })();
+        // v0.16.2【Bug1 残留根因】：节点自身 chrome（padding + border）从「固定 buffer
+        //   经验值」改为**精确测量**。naturalH 是从 contentEl 顶部算到内容底部，但
+        //   node.height 指整个卡片 —— contentEl 之外的节点 padding（实测上下各 ~10-12px，
+        //   v0.13.3 注释）此前全靠 buffer 24 兜底；有评论时 buffer 40 = 24 + 16，而评论
+        //   callout 自身的 padding + border 又吃掉 ~15-25px，两下相抵经常差一点 → 边缘裁剪。
+        //   现在：chromePad = nodeEl 实测的 paddingTop/borderTop + paddingBottom/borderBottom
+        //   （基线是 contentEl.top，所以 padding-top 也必须补回来；contentEl 自己的
+        //   paddingBottom 已在 naturalH 里单独加过，不重复计）。buffer 降为纯内容余量：
+        //   有评论 28（末尾 callout 的 padding+border+安全余量）、无评论 8。
+        let chromePad = 0;
+        try {
+          const pel = node.nodeEl || node.contentEl;
+          const ncs = pel ? getComputedStyle(pel) : null;
+          if (ncs) {
+            chromePad = (parseFloat(ncs.paddingTop) || 0) + (parseFloat(ncs.borderTopWidth) || 0)
+              + (parseFloat(ncs.paddingBottom) || 0) + (parseFloat(ncs.borderBottomWidth) || 0);
+          }
+          /* v0.16.6 P1-3：**删掉** contentEl 的 paddingTop/borderTop 补偿 —— 它是重复计入。
+           *   旧注释（v0.16.3）称「cRect.top 在 contentEl 的 padding-top **内侧**」，这句是错的：
+           *   getBoundingClientRect().top 返回的是 **border-box 顶边**，位于 padding-top
+           *   **外侧**。所以上面 walk 里 `r.bottom - cRect.top` 的差值**已经包含**
+           *   contentEl 的 borderTop + paddingTop，这里再补一次就是双倍。
+           *   后果：每次 fit 系统性多算 contentEl 的 paddingTop+borderTop（canvas 卡片
+           *   通常 10~40px）→ 「点一次涨一截、留白越来越多」。
+           *   pel（nodeEl）自身那一份 paddingTop/borderTop 是**另一段距离**（nodeEl 顶边
+           *   → contentEl 顶边），必须保留，上面的 ncs 计算不受影响。 */
+        } catch (_) { chromePad = 0; }
+        // v0.16.1【Bug4 根因之一】：上限 1200 → 4000。实测（walk 叶节点）是 DOM 真相，
+        //   用户手写的长文自建卡内容远超 1200px，旧钳制把它压回去 → 内容被裁、
+        //   「怎么点高度都不对」。摘录卡文本短，4000 的天花板不构成行为变化。
+        //   （估算路径的 900 钳制也同步放宽到 2000 —— 见 32-plugin-canvas.js。）
+        // estimateSizeFor 返回的已经是整张卡片高度；只有 DOM 实测值才需要补 chrome/buffer。
+        let finalH = naturalH > 0
+          ? lmbFinalizeCardHeight(naturalH, chromePad, hasComment,
+            usedEstimate || measuredWholeCard)
+          : (origH || 200);
+        // 不要在 setData 前直接修改 nodeHint：它通常就是 Canvas 的实时节点对象。
+        // ---- v0.14.9：写入改用「内存数据」而非「文件数据」+ 必要时主动重载画布 ----
+        // v0.14.5 起只走文件写（当时判定 setData 无效），带来两个副作用，正是用户这次
+        //   反馈的现象：
+        //   ① 文件里的内容可能**落后于内存**（用户刚拖动卡片、Obsidian 还没落盘）→
+        //      我把旧内容写回 = **覆盖了用户的拖动**（症状「卡片跳回拖拽前的位置」）
+        //   ② 写完依赖 Obsidian vault 监听触发 canvas 重载，但该监听不总是触发 →
+        //      数据改了画面没刷（症状「点高度没反应，拉伸一下才展开」「要点两下」）
+        // 修法：以 canvas.getData() 的**内存最新数据**为准（含用户未落盘的改动），改完
+        //   height 后 ① setData 更新内存 ② 用同一份数据写文件（不丢任何改动）
+        //   ③ 等 250ms 看渲染跟上没，没跟上就**主动 view.loadFile() 强制重载画布**。
+        let memData = null;
+        try { memData = canInternal ? canvas.getData() : null; } catch (_) { memData = null; }
+        let memOk = false;
+        if (memData && Array.isArray(memData.nodes)) {
+          const cloned = this._lmbCloneCanvasForHeight(memData, nodeId, finalH);
+          if (cloned) {
+            memData = cloned.data;
+            const changedNode = cloned.node;
+            // v0.16.4 修复 P2-7：手动 fit 改高度后仍做一次组内重居中——locked 只锁
+            //   「尺寸不被自动 fit 覆盖」，不锁「对齐」；否则撑高后中心偏出父卡轴线且永不回正。
+            try {
+              lmbRecenterNode(changedNode, memData.nodes,
+                Array.isArray(memData.edges) ? memData.edges : (memData.edges = []),
+                (this.autoEdges && this.autoEdges.get(file.path)) || new Set());
+            } catch (_) {}
+            try {
+              canvas.setData(memData);
+              if (typeof canvas.requestFrame === "function") canvas.requestFrame();
+              canvas.requestSave();
+              memOk = true;
+            } catch (_) {}
+          }
+        }
+        // 写文件：优先用内存数据（含用户拖动），拿不到才回退「读文件→改→写」
+        // 内部通道成功时由 requestSave 单独落盘，避免与 adapter.write 双写竞争。
+        let writeOk = memOk;
+        if (!writeOk) {
+          try {
+            const raw = await this.app.vault.read(file);
+            let d; try { d = JSON.parse(raw); } catch (_) { d = null; }
+            const arr = d && d.nodes;
+            if (Array.isArray(arr)) {
+              const idx = arr.findIndex((n) => n.id === nodeId);
+              if (idx >= 0) {
+                arr[idx].height = finalH;
+                // v0.16.4 P2-7：文件写路径同样补组内重居中
+                try {
+                  lmbRecenterNode(arr[idx], arr,
+                    Array.isArray(d.edges) ? d.edges : (d.edges = []),
+                    (this.autoEdges && this.autoEdges.get(file.path)) || new Set());
+                } catch (_) {}
+                const indent = /\n\t"/.test(raw) ? "\t" : "  ";
+                if (this.selfWritten) this.selfWritten.set(file.path, Date.now()); // v0.16.4 P2-4 时间戳
+                await this.app.vault.adapter.write(file.path, JSON.stringify(d, null, indent));
+                writeOk = true;
+              }
+            }
+          } catch (_) {}
+        }
+        // 等 vault watcher → canvas 重载
+        await new Promise((r) => setTimeout(r, 250));
+        // v0.16.13：闭环验证真正的滚动宿主。离屏高度只是预测；最终正确性的判据必须是
+        // scrollHeight <= clientHeight。若主题/flex/选中边框造成映射偏差，按实际溢出量
+        // 补高后重绘，最多三轮；每轮从最新内存只合并高度，不覆盖用户刚拖动的位置。
+        let overflowCorrected = 0;
+        if (canInternal) {
+          for (let pass = 0; pass < 3; pass++) {
+            let overflow = 0;
+            try {
+              const liveNow = typeof canvas.nodes.get === "function"
+                ? canvas.nodes.get(nodeId) : canvas.nodes[nodeId];
+              const liveWrapper = liveNow && (liveNow.nodeEl || liveNow.contentEl);
+              const liveContent = liveWrapper && liveWrapper.querySelector
+                ? (liveWrapper.querySelector(".canvas-node-content")
+                  || liveWrapper.querySelector(".markdown-rendered") || liveWrapper)
+                : liveWrapper;
+              overflow = lmbVerticalOverflow(liveContent);
+            } catch (_) { overflow = 0; }
+            if (overflow <= 0) break;
+
+            const correctedH = lmbHeightAfterOverflow(finalH, overflow);
+            if (correctedH <= finalH) break;
+            overflowCorrected += correctedH - finalH;
+            finalH = correctedH;
+            try {
+              const latest = canvas.getData();
+              const corrected = this._lmbCloneCanvasForHeight(latest, nodeId, finalH);
+              if (!corrected) break;
+              memData = corrected.data;
+              try {
+                lmbRecenterNode(corrected.node, memData.nodes,
+                  Array.isArray(memData.edges) ? memData.edges : (memData.edges = []),
+                  (this.autoEdges && this.autoEdges.get(file.path)) || new Set());
+              } catch (_) {}
+              canvas.setData(memData);
+              if (typeof canvas.requestFrame === "function") canvas.requestFrame();
+              canvas.requestSave();
+              writeOk = true;
+            } catch (_) { break; }
+            await new Promise((r) => setTimeout(r, 180));
+          }
+        }
+        // 回读校验：文件 + canvas 内存
+        let readBack = null, canvasReadBack = null;
+        try {
+          const d2 = JSON.parse(await this.app.vault.read(file));
+          const n2 = d2 && d2.nodes && d2.nodes.find((nn) => nn.id === nodeId);
+          readBack = n2 ? n2.height : null;
+        } catch (_) {}
+        if (canInternal) {
+          try {
+            const data3 = canvas.getData();
+            const n3 = data3 && data3.nodes && data3.nodes.find((nn) => nn.id === nodeId);
+            canvasReadBack = n3 ? n3.height : null;
+          } catch (_) {}
+        }
+        let renderStale = false;
+        try {
+          const liveNow = canvas && canvas.nodes
+            ? (typeof canvas.nodes.get === "function" ? canvas.nodes.get(nodeId) : canvas.nodes[nodeId]) : null;
+          const afterEl = liveNow && (liveNow.nodeEl || liveNow.contentEl);
+          const afterRect = afterEl && afterEl.getBoundingClientRect ? afterEl.getBoundingClientRect() : null;
+          const afterScale = canvas && isFinite(canvas.scale) && canvas.scale > 0 ? canvas.scale : 1;
+          const afterDomH = afterRect && afterRect.height > 0 ? afterRect.height / afterScale : null;
+          renderStale = beforeDomH !== null && afterDomH !== null
+            && Math.abs(finalH - origH) >= 2 && Math.abs(afterDomH - beforeDomH) < 1;
+        } catch (_) { renderStale = false; }
+        // 渲染没跟上（canvas 内存高度 ≠ 设定值）→ **主动重载画布**。
+        //   这是「点了没反应、拉伸一下才展开」的直接解药：不再干等 Obsidian 的监听，
+        //   自己调 view.loadFile(file) 强制重读文件 + 重建节点（选中会保留在同一 view）。
+        let reloaded = false;
+        if ((canvasReadBack !== null && canvasReadBack !== finalH) || renderStale) {
+          try {
+            // requestSave 尚未落盘时先用刚才的完整新快照兜底，再重载视图。
+            if (readBack !== finalH && memData) {
+              const raw5 = await this.app.vault.read(file);
+              const indent5 = /\n\t"/.test(raw5) ? "\t" : "  ";
+              if (this.selfWritten) this.selfWritten.set(file.path, Date.now());
+              await this.app.vault.adapter.write(file.path, JSON.stringify(memData, null, indent5));
+              readBack = finalH;
+            }
+            if (ctx.leaf && ctx.leaf.view && typeof ctx.leaf.view.loadFile === "function") {
+              await ctx.leaf.view.loadFile(file);
+              await new Promise((r) => setTimeout(r, 220));
+              reloaded = true;
+              try {
+                const d4 = JSON.parse(await this.app.vault.read(file));
+                const n4 = d4 && d4.nodes && d4.nodes.find((nn) => nn.id === nodeId);
+                readBack = n4 ? n4.height : readBack;
+              } catch (_) {}
+            }
+          } catch (_) {}
+        }
+        if (this.persistAutoSizeSoon) this.persistAutoSizeSoon();
+        let store = this.autoSize ? this.autoSize.get(file.path) : null;
+        if (!store) { store = new Map(); if (this.autoSize) this.autoSize.set(file.path, store); }
+        store.set(nodeId, { hash: this.simpleHash(node.text), w: node.width, h: finalH, locked: true });
+        // 操作反馈：测量值 + 文件回读 + canvas 内存回读（双保险：哪条通道生效都显示）
+        try {
+          const tag = usedEstimate ? "（估算：子元素未就绪）" : "";
+          const overflowTag = overflowCorrected > 0 ? `（溢出校正 +${overflowCorrected}px）` : "";
+          const tail = reloaded ? "（已强制重载画布）" : "";
+          new Notice(`卡片高度：${node.width}×${finalH}（内容 ${naturalH}px${tag}${overflowTag}）｜回读：${readBack == null ? "读不到" : readBack}${tail}`, 3600);
+        } catch (_) {}
+      } catch (err) {
+        // v0.13.7：**异常绝不能静默吞掉**。旧版是 `catch (_) {}` —— 里面任何一步抛错
+        //   （getData 不存在、autoSize 未初始化、vault 读取失败…）都被吞，用户视角
+        //   就是"点了没反应、Notice 也不弹"。现在既弹 Notice 也打 console。
+        console.warn("[lmb] lmbFitNodeById failed:", err);
+        try {
+          new Notice("调整高度失败：" + (err && err.message ? err.message : "未知错误"), 3500);
+        } catch (_) {}
+      }
+    })();
+  },
+
+  /**
+   * v0.13.9：命令面板入口「调整选中卡片高度」—— **完全不依赖悬浮栏**。
+   *   背景：悬浮栏按钮排查了 5 版用户仍反馈没反应，无法区分是按钮 DOM 问题还是
+   *   fit 逻辑问题。命令面板是 Obsidian 最稳的入口，用它做二分：
+   *     命令能用 → 问题锁定在悬浮栏链路（按钮 DOM / 事件绑定）
+   *     命令也坏 → fit 逻辑本身有问题，换方向修
+   *   选卡复用现成的 pickCanvasNode（33-plugin-note-comment.js）：
+   *   已选中一张 → 直接用；没选中/多选 → 弹模糊搜索列表让用户挑。
+   */
+  lmbFitSelectedCard() {
+    return (async () => {
+      try {
+        const ctx = this.activeCanvasContext();
+        if (!ctx) {
+          try { new Notice("请先打开一个画布（canvas）再执行", 2500); } catch (_) {}
+          return null;
+        }
+        const pick = await this.pickCanvasNode(ctx);
+        if (!pick || !pick.node) return null;   // 用户取消选卡
+        return await this.lmbFitNodeById(ctx.file, pick.node.id, pick.node);
+      } catch (err) {
+        console.warn("[lmb] fitSelectedCard failed:", err);
+        try { new Notice("调整高度失败：" + (err && err.message ? err.message : "未知错误"), 3500); } catch (_) {}
+        return null;
+      }
+    })();
+  },
+
+  /**
+   * v0.13.5：等 node.nodeEl 就绪（最多 maxMs）。Obsidian canvas 异步渲染节点时，
+   *   nodeEl 可能为 null → 直接 fit 拿不到 DOM。
+   *   30ms 一次检查，避免空转。
+   */
+  _lmbWaitForNodeEl(node, maxMs) {
+    return new Promise((resolve) => {
+      if (!node) return resolve();
+      if (node.nodeEl) return resolve();
+      let elapsed = 0;
+      const step = 30;
+      const tick = () => {
+        if (node.nodeEl) return resolve();
+        if (elapsed >= maxMs) return resolve();
+        elapsed += step;
+        setTimeout(tick, step);
+      };
+      tick();
+    });
+  },
+
+  /**
+   * 按卡片内容决定三个按钮谁该出现。
+   *   不是每张卡三个都适用：没有 PDF 引用行的卡点了「跳转」没反应，非双重卡点了
+   *   「切换」也没反应 —— 宁可不显示，也不放点了没用的死按钮。
+   */
+  _lmbApplyBarActions(bar, acts) {
+    try {
+      const map = {
+        comment: ".lmb-bar-comment", jump: ".lmb-bar-jump", view: ".lmb-bar-view",
+        fit: ".lmb-bar-fit", disconnect: ".lmb-bar-disconnect"
+      };
+      for (const k of Object.keys(map)) {
+        const b = bar.querySelector(map[k]);
+        if (!b) continue;
+        // jump 的可用性看 acts.jump 是否为字符串，其余看布尔位
+        const ok = k === "jump" ? !!(acts && acts.jump) : !!(acts && acts[k]);
+        lmbSetToolbarVisibility(b, ok ? "show" : "hideRemove");
+      }
+    } catch (_) { /* noop */ }
+  },
+
+  /** 隐藏（而非移除）所有悬浮栏 —— 切出 canvas / 没选中卡片时走这里 */
+  _lmbHideBar() {
+    try {
+      this._barCtx = null;
+      document.querySelectorAll(LMB_BAR_SEL).forEach((b) => lmbSetToolbarVisibility(b, "hideRemove"));
+    } catch (_) { /* noop */ }
+  },
+
+  /**
+   * 单次轮询。
+   *   canvas 没有原生的「选中变化」事件（advanced-canvas 那个 selection-changed 是它自己
+   *   monkey-patch 出来的，要引 monkey-around 依赖，不值得），所以只能轮询。
+   *   一次轮询同时解决两件事：选中变化 → 重建按钮；视口平移缩放 → 重算位置。
+   *
+   *   性能上的分工（很重要）：
+   *     - 位置**每轮都重算**：拖动卡片、平移画布时它都会变，而 getBoundingClientRect()
+   *       只读两个元素，120ms 一次完全可以忽略。
+   *     - 按钮**只在指纹变化时才重建**：那是要动 DOM 的（清 class、setIcon 已建好不再动，
+   *       但要重设显隐与上下文），每帧做纯属浪费。
+   *
+   *   本函数是 setInterval 回调，**整体绝不能抛异常**，否则会每 120ms 刷一次错误。
+   */
+  lmbCanvasBarTick() {
+    try {
+      const ctx = this.activeCanvasContext();
+      if (!ctx) { this._lmbHideBar(); return; }
+
+      const view = ctx.leaf && ctx.leaf.view;
+      const canvas = view ? view.canvas : null;
+      if (!canvas) { this._lmbHideBar(); return; }
+
+      // v0.16.1：双重摘录卡打标（Bug5 修复）。刻意放在「选中判定」**之前** ——
+      //   打标服务的是**所有**卡的显隐（没选中也要打），不依赖 wrapperEl / 选中集合。
+      //   失败被内部 try/catch 吞掉，绝不影响后面的浮层逻辑。
+      this.lmbMarkDualCards(canvas);
+
+      // 挂载点：优先官方的 wrapperEl（不参与缩放），退化为 DOM 查询
+      const wrapperEl = canvas.wrapperEl
+        || (ctx.leaf.containerEl && ctx.leaf.containerEl.querySelector(".canvas-wrapper"));
+      if (!wrapperEl) { this._lmbHideBar(); return; }
+
+      // 选中集合：getSelection() 优先，退化 .selection 属性
+      let arr = [];
+      try {
+        const sel = typeof canvas.getSelection === "function"
+          ? canvas.getSelection() : canvas.selection;
+        arr = sel ? Array.from(sel) : [];
+      } catch (_) { arr = []; }
+
+      // 只服务「恰好选中 1 个文本节点」：
+      //   没选中 / 多选 / 选中的是 file·link·group 节点 → 一律不显示。
+      //   多选取第一个容易误操作（用户以为操作的是整组），不如干脆不显示。
+      const nodes = arr.filter((n) => n && typeof n.text === "string" && n.type !== "group");
+      if (nodes.length !== 1) { this._lmbHideBar(); return; }
+      const node = nodes[0];
+
+      const nodeEl = node.nodeEl || node.contentEl;
+      if (!nodeEl || typeof nodeEl.getBoundingClientRect !== "function") { this._lmbHideBar(); return; }
+
+      const bar = this.lmbEnsureCanvasBarEl(wrapperEl);
+      if (!bar) return;
+
+      // ① 位置（每轮重算）
+      const p = lmbCalcBarPos(
+        nodeEl.getBoundingClientRect(),
+        wrapperEl.getBoundingClientRect(),
+        { width: bar.offsetWidth, height: bar.offsetHeight }
+      );
+      bar.style.left = p.left + "px";
+      bar.style.top = p.top + "px";
+
+      // ② 按钮可用性（指纹变了 **或上下文丢了** 才重算）
+      //    ⚠ 必须带 `|| !this._barCtx`：_lmbHideBar() 会清掉 _barCtx 但**不**重置 _barSig。
+      //      若只看指纹，选中恢复后 sig 与上次完全相同 → 永远不再重建 _barCtx →
+      //      浮层照样显示，但按钮点了没反应（正是「点过一次就失效」的根因）。
+      //      触发路径：点击浮层按钮时 canvas 选中被瞬间清空 → tick 走 _lmbHideBar 清 ctx
+      //      → 选中恢复 → sig 未变 → ctx 不再重建。
+      let barData = null, edgeSig = "";
+      try {
+        barData = typeof canvas.getData === "function" ? canvas.getData() : null;
+        edgeSig = ((barData && Array.isArray(barData.edges)) ? barData.edges : [])
+          .filter((e) => e && (e.fromNode === node.id || e.toNode === node.id))
+          .map((e) => e.id).sort().join(",");
+      } catch (_) {}
+      const sig = lmbBarSignature([node.id], { x: canvas.x, y: canvas.y, zoom: canvas.zoom })
+        + "|edges:" + edgeSig;
+      if (sig !== this._barSig || !this._barCtx) {
+        this._barSig = sig;
+        const acts = lmbPickBarActions(node.text);
+        try {
+          const sidecar = (this.autoEdges && this.autoEdges.get(ctx.file.path)) || new Set();
+          acts.disconnect = lmbPlanDisconnect(node.id, barData && barData.edges, sidecar).kind !== "none";
+        } catch (_) { acts.disconnect = false; }
+        this._barCtx = { file: ctx.file, nodeId: node.id, node, acts, nodeEl };
+        this._lmbApplyBarActions(bar, acts);
+      }
+
+      lmbSetToolbarVisibility(bar, "show");
+    } catch (_) { /* noop：轮询回调绝不抛异常 */ }
+  },
+
+  /**
+   * v0.13.1：注册浮层的「指针守卫」（全局一次，document 捕获阶段）。
+   *
+   * 为什么需要它：canvas 的选中逻辑多半监听 pointerdown / mousedown。浮层虽然是
+   *   .canvas 的兄弟节点（事件不冒泡过去），但 canvas 常把监听挂在更外层，按下的
+   *   一瞬间就会把选中清空 —— 于是 120ms 后轮询发现「没选中」→ 浮层消失、
+   *   _barCtx 被清，表现为「点了一下按钮，之后就再也点不动」。
+   *
+   * 为什么放在 document 的**捕获**阶段：事件是先从 document 往下捕获、再冒泡回来的。
+   *   挂在按钮自己的捕获监听上拦不住 —— document 的捕获比它更早执行。
+   *
+   * 为什么只拦 pointerdown / mousedown 而不拦 click：click 是独立事件对象，拦前面
+   *   两个不影响按钮自己的 click 回调；反过来若把 click 也拦了，按钮就真点不动了。
+   *   且这里只用 stopPropagation，不用 preventDefault —— 后者会连 hover / focus
+   *   之类的原生反馈一起干掉。
+   */
+  _lmbInstallBarGuard() {
+    try {
+      if (this._barGuard) return;                 // 幂等
+      const guard = (ev) => {
+        try {
+          const t = ev.target;
+          if (!t || !t.closest) return;
+          if (!t.closest(LMB_BAR_SEL)) return;    // 不是点在浮层上 → 一律不管
+          ev.stopPropagation();
+          ev.stopImmediatePropagation();
+        } catch (_) { /* noop */ }
+      };
+      document.addEventListener("pointerdown", guard, true);
+      document.addEventListener("mousedown", guard, true);
+      this._barGuard = guard;
+    } catch (_) { /* noop */ }
+  },
+
+  /** 拆除指针守卫（onunload 走；幂等） */
+  _lmbUninstallBarGuard() {
+    try {
+      if (!this._barGuard) return;
+      document.removeEventListener("pointerdown", this._barGuard, true);
+      document.removeEventListener("mousedown", this._barGuard, true);
+      this._barGuard = null;
+    } catch (_) { this._barGuard = null; }
+  },
+
+  /** 启动悬浮栏轮询（onLayoutReady 调用；幂等） */
+  lmbStartCanvasBarWatch() {
+    try {
+      if (this._barTimer) return;             // 防重入：重复启动会叠加 interval
+      this._lmbInstallBarGuard();             // v0.13.1：先装守卫，再开始轮询
+      // v0.13.8：启动时先全局清掉所有**版本不匹配**的旧浮层。
+      //   canvas leaf 的 DOM 不随插件重载而重建，旧浮层会一直挂在 DOM 里，
+      //   光靠 lmbEnsureCanvasBarEl 只能修好「当前这个 wrapperEl」的那一颗，
+      //   其他 canvas leaf 上残留的旧浮层（旧版回调）还得靠这里兜底。
+      this._lmbPurgeStaleBars();
+      this._barTimer = setInterval(() => this.lmbCanvasBarTick(), LMB_BAR_POLL_MS);
+      this.lmbCanvasBarTick();                // 先跑一次，避免刚进 canvas 要等 120ms 才出现
+    } catch (_) { /* noop */ }
+  },
+
+  /**
+   * v0.13.8：全局移除版本不匹配的旧悬浮栏。
+   *   判定：`dataset.lmbBarVer !== LMB_BAR_VERSION`（旧版浮层压根没有这个字段）。
+   */
+  _lmbPurgeStaleBars() {
+    try {
+      document.querySelectorAll(LMB_BAR_SEL).forEach((b) => {
+        if (!b.dataset || b.dataset.lmbBarVer !== LMB_BAR_VERSION) {
+          if (b.parentNode) b.remove();
+        }
+      });
+    } catch (_) { /* noop */ }
+  },
+
+  /** 停止轮询并移除浮层（onunload 调用；幂等） */
+  lmbStopCanvasBarWatch() {
+    try {
+      this._lmbExitDisconnectMode(true);
+      if (this._barTimer) { clearInterval(this._barTimer); this._barTimer = null; }
+      this._lmbUninstallBarGuard();           // v0.13.1：守卫是 document 级的，不拆会一直拦事件
+      this._barSig = null;
+      this._barCtx = null;
+      // 这里必须 remove 而不是隐藏：插件都卸载了，不该在 DOM 里留残留节点
+      document.querySelectorAll(LMB_BAR_SEL).forEach((b) => { if (b.parentNode) b.remove(); });
+    } catch (_) { /* noop */ }
+  },
+
+});
+
 /* 40-modals —— 评论/补充描述输入弹窗 + 卡片模糊选择器 */
 
 /* ==================== v0.8.0：补充描述输入弹窗 ==================== */
@@ -3867,6 +7787,38 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(!!this.plugin.settings.recallDefault)
         .onChange(async (v) => { this.plugin.settings.recallDefault = v; await this.plugin.saveSettings(); }));
 
+    /* ---- v0.14.8 / v0.15.0：摘录附件与删除清理 ---- */
+    containerEl.createEl("h2", { text: "摘录附件与删除清理（v0.14.8 / v0.15.0）" });
+
+    new Setting(containerEl)
+      .setName("新摘录自动附截图")
+      .setDesc("拖出摘录时一并截取选中区域存成 webp 附件（卡片可在「文字 / 图片」视图间切换）。"
+        + "关闭后新摘录只有文字，卡片更紧凑、也不占 vault 空间。"
+        + "注意：关闭不影响已有的双重摘录卡。")
+      .addToggle((t) => t
+        .setValue(this.plugin.settings.autoAttachScreenshot !== false)
+        .onChange(async (v) => { this.plugin.settings.autoAttachScreenshot = v; await this.plugin.saveSettings(); }));
+
+    const cleanIntro = containerEl.createEl("p", {
+      text: "删除画布上的摘录卡时，一并清理它留下的残留（截图附件 + md 摘录文档里的对应条目）。"
+        + "⚠ 这是数据级操作，默认关闭 —— 请确认理解风险后再开启。"
+    });
+    cleanIntro.style.cssText = "font-size:12px;color:var(--text-muted);line-height:1.6;margin:0 0 4px;";
+
+    new Setting(containerEl)
+      .setName("删除卡片时级联清理")
+      .setDesc("开启后：删除画布摘录卡 → 自动删除它引用的截图附件 + 从 md 摘录文档移除该条目。"
+        + "安全策略：① 只删插件自己命名的附件（xxx-P<页>-<戳>.webp），你的图片不碰；"
+        + "② 全 vault 扫描，其他笔记还在引用就不删（避免 broken image）；"
+        + "③ 每次清理先写 .lmb-trash-log.md 备份，可追溯恢复；"
+        + "④ 底部弹提示告知清理了几项。")
+      .addToggle((t) => t
+        .setValue(this.plugin.settings.autoCleanOnDelete === true)
+        .onChange(async (v) => {
+          this.plugin.settings.autoCleanOnDelete = v;
+          await this.plugin.saveSettings();
+        }));
+
     /* ---- v0.8.0：卡片补充描述 ---- */
     containerEl.createEl("h2", { text: "卡片补充描述（v0.8.0）" });
     const noteIntro = containerEl.createEl("p", {
@@ -3910,26 +7862,29 @@ class LMBSettingTab extends PluginSettingTab {
         .onChange(async (v) => { this.plugin.settings.noteIntoSync = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("新摘录卡自动挂空描述框")
-      .setDesc("开启（默认）：新拖出的摘录卡下方自动带一个空的补充描述框，点开即可写。"
-        + "插件首次扫描某画布时会给已有摘录卡也补上（不覆盖已写过的内容）。"
-        + "嫌占位或不想改造存量卡就关掉。")
+      .setDesc("关闭（v0.12.0 起默认）：新拖出的摘录卡不再自动带空描述框（v0.12.0 卡片精简迁移）。"
+        + "开启：新拖出的摘录卡下方自动带一个空的补充描述框，点开即可写。"
+        + "插件首次扫描某画布时会给已有摘录卡也补上（不覆盖已写过的内容）。")
       .addToggle((t) => t
         .setValue(this.plugin.settings.noteAutoBoxOnNew !== false)
         .onChange(async (v) => { this.plugin.settings.noteAutoBoxOnNew = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("新摘录卡自动挂评论栏")
-      .setDesc("开启（默认）：新拖出的摘录卡底部自动带一条「添加评论」栏（仿 PDF Flow 批注样式），"
-        + "点评论栏直接弹编辑框；插件首次扫描某画布时也会给存量卡补上（不覆盖已写内容）。"
-        + "与「补充描述」是两套独立数据，嫌重复可只留其一。")
+      .setDesc("关闭（v0.16.0 起默认）：新拖出的摘录卡**不再**自动带「💬 添加评论」底栏，卡里只留摘录内容。"
+        + "评论功能照常可用 —— 入口是选中卡片后左侧悬浮栏的「评论」按钮、命令面板"
+        + "（给卡片添加/编辑评论）、以及侧边栏 ribbon。"
+        + "开启：恢复旧行为，新卡底部自动带评论栏，点它直接弹编辑框（仿 PDF Flow 批注样式）。"
+        + "存量卡与已写过的评论不受此开关影响。")
       .addToggle((t) => t
-        .setValue(this.plugin.settings.commentAutoBoxOnNew !== false)
+        .setValue(this.plugin.settings.commentAutoBoxOnNew === true)
         .onChange(async (v) => { this.plugin.settings.commentAutoBoxOnNew = v; await this.plugin.saveSettings(); }));
   }
 }
 
 module.exports = LuciasMarginBookPlugin;
 module.exports.__test = {
-  lmbShouldReshowSelection, EX_ID_RE,
+  lmbShouldReshowSelection, lmbMeasureRenderedContent, lmbMeasureNaturalCard,
+  lmbVerticalOverflow, lmbHeightAfterOverflow, lmbFinalizeCardHeight, EX_ID_RE,
   lmbRectsOverlapRatio, lmbPickDropParent, lmbSnapChildPosition, lmbBuildTree,
   lmbDiffCanvasNodes, lmbSideOf, lmbSideEnds, lmbLayoutGroup, lmbGroupBySide,
   lmbAutoEdgeAlive, lmbAutoParentEdgeOf,
@@ -3938,8 +7893,34 @@ module.exports.__test = {
   LMB_NOTE_START, LMB_NOTE_END,
   // P1：摘录索引层
   lmbParseExcerptDoc, LMB_LINK_RE, LMB_SEL_RE,
+  // v0.12.0：引用行 📖 化
+  lmbBookLink, lmbRestoreRefDisplayName,
   // v0.11.0：首连锁定 / 改挂侧 / 尺寸重居中 + 独立评论
   lmbPlanAutoLink, lmbApplyReside, lmbRecenterNode,
-  lmbSplitComment, lmbJoinComment, LMB_COMMENT_TYPE, LMB_COMMENT_CALLOUT_RE
+  lmbSplitComment, lmbJoinComment, LMB_COMMENT_TYPE, LMB_COMMENT_CALLOUT_RE,
+  // v0.12.1：工具栏宿主解析层（借鉴 editing-toolbar v4.1.1：规格表同源 + 兜底 + 缓存 + 显隐分级）
+  LMB_VIEW_SPECS, lmbResolveToolbarAnchor, LmbDomCache, lmbSetToolbarVisibility,
+  // v0.12.1：样式表（从 injectStyles 抽出，per-view-type 适配集中在 CSS 侧）
+  LMB_STYLES,
+  // v0.13.0：canvas 卡片悬浮操作栏（坐标换算 + 按钮可用性判定 + 轮询指纹）
+  LMB_BAR_POLL_MS, LMB_BAR_GAP, LMB_BAR_MARGIN, LMB_BAR_SEL,
+  lmbCalcBarPos, lmbPickBarActions, lmbBarSignature,
+  lmbPlanDisconnect,
+  // v0.13.8：悬浮栏结构版本（改按钮组成 / 事件绑定方式时必须 +1，触发旧浮层重建）
+  LMB_BAR_VERSION
 }; // 测试钩子（node 冒烟脚本用）
 // 注：lmbParsePdfLink 是类方法（不依赖 this），测试走 PluginClass.prototype.lmbParsePdfLink
+
+// v0.12.1：11-styles.js / 25-pure-toolbar.js 在拼接顺序上早于本文件，它们挂在
+//   module.exports 上的 __lmbStyles / __lmbToolbar 会被第一行的
+//   `module.exports = LuciasMarginBookPlugin` 覆盖掉，这里重新挂回去（供外部单测直取）。
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.__lmbStyles = { LMB_STYLES };
+  module.exports.__lmbToolbar = {
+    LMB_VIEW_SPECS, lmbResolveToolbarAnchor, LmbDomCache, lmbSetToolbarVisibility,
+  };
+  module.exports.__lmbCanvasBar = {
+    LMB_BAR_POLL_MS, LMB_BAR_GAP, LMB_BAR_MARGIN, LMB_BAR_SEL, LMB_BAR_VERSION,
+    lmbCalcBarPos, lmbPickBarActions, lmbBarSignature,
+  };
+}

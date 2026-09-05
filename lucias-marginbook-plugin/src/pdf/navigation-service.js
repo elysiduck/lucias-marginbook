@@ -30,9 +30,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!linktext || typeof linktext !== "string") return null;
       const bar = linktext.indexOf("|");
       if (bar >= 0) linktext = linktext.slice(0, bar);   // 保险：剥掉别名
-      const hash = linktext.indexOf("#");
+      // v0.16.6 P1-7：必须取**最后一个** `#`，不能用第一个 —— PDF 文件名本身可能含 `#`
+      //   （例如 `[[报告#2.pdf#page=3&selection=...]]`）。旧版 indexOf 取第一个 #
+      //   → path 被截断成 "报告" → /\.pdf$/ 不匹配 → 返回 null → 调用方静默放行
+      //   → 用户点了链接**什么都没发生、也没有任何提示**。
+      const hash = linktext.lastIndexOf("#");
       if (hash < 0) return null;
-      const path = linktext.slice(0, hash).trim();
+      const rawPath = linktext.slice(0, hash).trim();
+      // v0.16.5 修复 R5：调用方优先取的是 a.href，Obsidian 对空格等字符做 %20 编码 ——
+      //   不解码的话「路径含空格的 PDF」会因路径比对失败而报「找不到 PDF」。
+      //   解码失败（非法 % 序列）保留原样，行为退回旧版，不会更差。
+      let path = rawPath;
+      try { path = decodeURIComponent(rawPath); } catch (_) { path = rawPath; }
       const sub = linktext.slice(hash + 1);
       if (!/\.pdf$/i.test(path)) return null;
       if (!/(^|&)page=/.test(sub)) return null;          // 必须有 page=
@@ -71,7 +80,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           if (!a) return;
           const href = a.getAttribute("href") || a.getAttribute("data-href") || "";
           const hit = this.lmbParsePdfLink(href);
-          if (!hit) return;                                  // 非 pdf#page= 链接不碰
+          if (!hit) {
+            /* v0.16.6 P1-7：看起来是 pdf 链接却解析不出 page= → 不再静默。
+             *   旧版直接 return，事件原样冒泡给 Obsidian，Obsidian 把 `#page=3&...`
+             *   当标题锚点解析 → 用户点了没反应、控制台也没错，只能认为插件坏了。
+             *   限定「含 # 且含 .pdf」才提示，避免对普通 `[[x.pdf]]` 文件链接刷屏。 */
+            if (/#/.test(href) && /\.pdf/i.test(href)) {
+              try {
+                new Notice("MarginBook：这个 PDF 链接缺少 page= 参数或不完整，无法跳转\n" + String(href).slice(0, 80), 5000);
+              } catch (_) {}
+            }
+            return;                                        // 非 pdf#page= 链接不碰
+          }
           ev.preventDefault();
           ev.stopPropagation();
           ev.stopImmediatePropagation();                     // Obsidian / 其他插件都别想碰
@@ -173,7 +193,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (v && v.file && v.file.path === filePath) { leaf = l; break; }
       }
       if (!leaf) {
-        const f = this.app.vault.getAbstractFileByPath(filePath);
+        // v0.16.5 R5：路径解析兜底 —— 直接路径取不到（相对名 / 编码残留）时走
+        //   metadataCache 的链接解析，与摘录索引层（reindexFile）用的是同一套规则
+        let f = this.app.vault.getAbstractFileByPath(filePath);
+        if (!f) {
+          try { f = this.app.metadataCache.getFirstLinkpathDest(filePath, ""); } catch (_) { f = null; }
+        }
         if (!f) { new Notice("MarginBook: 找不到 PDF " + filePath); return; }
         leaf = this.app.workspace.getLeaf("tab");        // 新标签页，不打乱现有布局
         await leaf.openFile(f);

@@ -176,11 +176,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       const file = view.file;
       if (!file) return;
+      // v0.12.0 根因修复：「有时显示/不显示/延迟显示」的根子在这里——
+      //   旧版把 lmbSetupObserver 放在函数最末，而「页面还没渲染」（pages.length===0）
+      //   会提前 return → Observer 从未挂上 → 之后 pdf.js 渲染出页面也没人触发重画，
+      //   只能等下一次 layout-change / 切标签碰运气补画。
+      //   现在只要有文件就先挂 Observer（幂等），页面渲染/虚拟化的瞬间都会自动重画。
+      this.lmbSetupObserver(view);
       const entries = this.getExcerptsForPdf(file.path);
       if (!entries || !entries.length) { this.lmbDisconnectObserver(view); return; }
 
       const pages = container.querySelectorAll("div.page");
-      if (!pages.length) return;   // 还没渲染（僵尸 leaf / 刚打开）→ 等 observer 触发
+      if (!pages.length) return;   // 还没渲染（僵尸 leaf / 刚打开）→ Observer 已挂，渲染瞬间自动重画
 
       const guard = entries.length > 200;   // 性能守卫
 
@@ -188,13 +194,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const pageEl = pages[i];
         const num = parseInt(pageEl.getAttribute("data-page-number") || "", 10);
         if (!num) continue;
-        // 虚拟化的页没有文本层，等它进入视口后 observer 会重画
-        if (!pageEl.querySelector(".textLayer")) continue;
         if (guard && !this.lmbPageNearViewport(pageEl)) continue;
         const list = entries.filter((e) => e.page === num);
-        for (const e of list) this.lmbDrawEntryMark(pageEl, e);
+        if (!list.length) continue;
+        // v0.16.5 修复 R2：旧版在循环开头无条件要求 .textLayer，把**不依赖文本层**
+        //   的截图摘录（rect 条目）一起挡掉了 —— 与 lmbDrawEntryMark「rect 是页面
+        //   百分比，虚拟化（未渲染文本层）的页也能画」的实现承诺自相矛盾。
+        //   现在按条目类型分流：rect 条目只要 .page 在就画；selection 条目才要求文本层
+        //   （虚拟化页没有文本层时跳过，等它进入视口、observer 触发后自然重画）。
+        const hasLayer = !!pageEl.querySelector(".textLayer");
+        for (const e of list) {
+          const rectOnly = !!(e.rect && e.rect.length === 4 && e.rect[2] > 0 && e.rect[3] > 0);
+          if (!hasLayer && !rectOnly) continue;
+          this.lmbDrawEntryMark(pageEl, e);
+        }
       }
-      this.lmbSetupObserver(view);
+      // v0.12.0：Observer 已在函数开头挂过（幂等），这里不再重复
     } catch (err) {
       console.warn("[lmb] lmbDrawMarksForView error:", err);
     }
@@ -211,7 +226,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const target = view.containerEl.querySelector(".pdfViewer") || view.containerEl;
       if (!target) return;
       const isOwn = (n) => n && n.nodeType === 1 && n.classList && n.classList.contains("lmb-mark");
-      let timer = null;
+      /* v0.16.6 P1-6：防抖 timer 必须挂在 view 上，**不能**用闭包局部变量。
+       *   lmbDisconnectObserver 清的是 view._ppdMarkTimer —— 若 timer 只是闭包变量，
+       *   那段清理就是永远够不到的死代码：disconnect 之后 pending 的回调照样落地，
+       *   调 lmbDrawMarksForView → 184 行又把 observer 挂回来（自我复活）；
+       *   插件已卸载时同样会复活一个没人能回收的 observer。 */
+      view._ppdMarkTimer = null;
       const ob = new MutationObserver((records) => {
         let relevant = false;
         for (const rec of records) {
@@ -226,9 +246,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           if (scan(rec.addedNodes) || scan(rec.removedNodes)) { relevant = true; break; }
         }
         if (!relevant) return;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          timer = null;
+        if (view._ppdMarkTimer) clearTimeout(view._ppdMarkTimer);
+        view._ppdMarkTimer = setTimeout(() => {
+          view._ppdMarkTimer = null;
+          // v0.16.6：已被 disconnect（无摘录的 PDF / 插件卸载）→ 不再自我复活
+          if (!view._ppdMarkObserver) return;
           try {
             if (view && view.containerEl && view.containerEl.isConnected) {
               this.lmbDrawMarksForView(view);

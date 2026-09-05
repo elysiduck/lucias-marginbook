@@ -1,0 +1,16 @@
+/*
+ * Lucia's MarginBook v0.16.14
+ * Independent PDF excerpt workflow for Obsidian.
+ *
+ * This file starts the generated CommonJS bundle. Release history lives in
+ * CHANGELOG.md and docs/historical-bootstrap.md.
+ */
+"use strict";
+
+const {
+  Plugin, Notice, TFile, PluginSettingTab, Setting, normalizePath, Modal,
+  FuzzySuggestModal, setIcon
+} = require("obsidian");
+
+// Stable excerpt identifier embedded in Markdown blocks.
+const EX_ID_RE = /\^ex-[0-9a-z]{4,8}/;

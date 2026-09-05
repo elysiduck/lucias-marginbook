@@ -6,18 +6,43 @@
  *   v0.11.0：感知独立评论块（lmb-comment）——note 块在评论块首行处截断，评论块及其后
  *   的内容原样放进 tail（join 时原样接回，不再像旧版那样把 note 之后的散行弄丢）。
  */
-function lmbSplitNote(text) {
+/* v0.16.6 P1-4：把「允许的 note 调用类型」收成一个 Set（纯函数，可单测）。
+ *   allowTypes 可传字符串或数组；不传 / 传空 → 只含历史默认类型 ppd-note。
+ *   全部转小写去空白比较（callout 类型名大小写不敏感）。 */
+function lmbNoteTypeSet(allowTypes) {
+  const s = new Set();
+  const push = (v) => {
+    if (typeof v !== "string") return;
+    const t = v.trim().toLowerCase();
+    if (t) s.add(t);
+  };
+  push(typeof LMB_NOTE_TYPE_DEFAULT === "string" ? LMB_NOTE_TYPE_DEFAULT : "ppd-note");
+  if (Array.isArray(allowTypes)) { for (const t of allowTypes) push(t); }
+  else push(allowTypes);
+  return s;
+}
+
+function lmbSplitNote(text, allowTypes) {
   if (typeof text !== "string" || !text) return { body: text || "", note: "", fold: false, hasNote: false, type: "", tail: "" };
   const lines = text.split("\n");
+  // v0.16.6 P1-4：只认插件自有的 note 类型（默认 ppd-note + 调用方传入的
+  // settings.noteCalloutType）。用户自有的 [!warning]/[!quote] 等不再被误判为补充描述。
+  const allow = lmbNoteTypeSet(allowTypes);
 
   // body 末尾：callout 块前面那部分。新格式=第一个 callout 首行；旧格式=HTML 起始行之前。
   let bodyEndIdx = lines.length;
   // callout 块范围：[blockStart, blockEnd)
   let blockStart = -1, blockEnd = lines.length;
 
-  // 新格式优先：找第一个 note callout 首行（跳过 lmb-comment——那是独立评论体系，不是 note）
+  // 新格式优先：找第一个 note callout 首行（跳过 lmb-comment——那是独立评论体系，不是 note；
+  // v0.11.3：同样跳过 lmb-view——那是双重摘录卡的视图切换按钮，也不是 note）
   for (let i = 0; i < lines.length; i++) {
     if (LMB_COMMENT_CALLOUT_RE.test(lines[i])) continue;  // 评论块不是 note
+    if (LMB_VIEW_CALLOUT_RE.test(lines[i])) continue;     // 视图切换按钮不是 note（v0.11.3）
+    // v0.16.6 P1-4：类型白名单 —— 不在白名单里的 callout 是用户自己的内容，不是 note
+    const nm0 = NOTE_CALLOUT_RE.exec(lines[i]);
+    if (!nm0) continue;
+    if (!allow.has(String(nm0[1] || "").trim().toLowerCase())) continue;
     if (NOTE_CALLOUT_RE.test(lines[i])) {
       bodyEndIdx = i;                                  // 默认 body 在 callout 行前结束
       // 关键：v0.8.3 兼容旧 v0.8.0-v0.8.2 格式——如果该 callout 上面紧跟着 HTML 起始锚点，
@@ -116,8 +141,8 @@ function lmbJoinNote(body, note, opts) {
 }
 /** 剥离整个补充描述块（callout），用于摘录 md 同步，避免污染摘录文档。
  *  v0.11.0：评论块（tail）一并剥掉——摘录文档保持「原文镜像」。 */
-function lmbStripNote(text) {
-  const r = lmbSplitNote(text);
+function lmbStripNote(text, allowTypes) {
+  const r = lmbSplitNote(text, allowTypes);
   return (r.hasNote || r.tail) ? r.body : text;
 }
 /* ==================== v0.11.0：独立评论（comment）解析/合并 ==================== */
@@ -162,11 +187,45 @@ function lmbJoinComment(body, commentText, opts) {
   return base + "\n\n" + callout.join("\n");
 }
 /**
- * v0.8.3：把 text 转成「实际会被渲染」的形态供尺寸估算用。
- *   旧版本要去掉 HTML 注释锚点（不可见）；v0.8.3 没有不可见锚点，原样返回。
- *   callout 内的占位行算高度（用户能看到，要占空间）。
+ * v0.13.3：把 text 转成「**真正**会被渲染的文本行」给尺寸估算用。
+ *
+ *   旧版本（v0.8.3 注释说"原样返回"）的实现是个隐患：折叠态的 lmb-comment 按钮
+ *   实际渲染只占 30px 左右，但被 estimateTextSize 按字符行高（25px/行）算高度，
+ *   展开态的 callout 内容行也按普通行算 —— 与实际渲染对不上，卡片底部留白。
+ *
+ *   修复：复用 lmbSplitNote + lmbSplitComment 把 ppd-note / lmb-view / lmb-comment
+ *   三种插件辅助 callout 全剥掉，让 estimateTextSize 只算**纯文本行**高度；
+ *   callout 自己的占位由 estimateSizeFor 的 addNoteChrome / addCommentChrome
+ *   单独按实测平均高度加。
+ *
+ *   这两个函数（lmbSplitNote / lmbSplitComment）在 v0.11.0 / v0.11.3 已经感知这
+ *   三种 callout 的存在与结构，直接 chain 一下就能拿到纯内容。
+ *
+ *   ⚠ v0.13.3 的**漏网之鱼**（v0.16.0 实测发现并修）：上面那句"三种全剥掉"其实没做到 ——
+ *   lmbSplitNote 对 lmb-view 是 `continue`（**跳过不算 note**），不等于**剥离**。
+ *   当卡里没有 ppd-note 时它会走 `return { body: text }` 原样返回 → lmb-view 行留在 body 里：
+ *       lmbRenderedText("引用\n> [!lmb-view] …")  →  "引用\n> [!lmb-view] …"   ← 没剥掉
+ *   后果：双重摘录卡的切换按钮行被 estimateTextSize 当普通文本行算进高度（~25-29px），
+ *   但该行在 canvas 里被 CSS `display:none` 藏着、**根本不占渲染空间**
+ *   → 双重卡底部一直多出约一行的留白（正是 v0.13.3 想修的那个问题，只修好两种）。
+ *   修法：chain 完再按行过滤一道 lmb-view（最后一道，成本可忽略，只在有 callout 时生效）。
+ *   v0.16.0 起新卡不再写 lmb-view 行，这一刀主要治**存量双重卡**的高度。
+ *
+ *   ⚠ 踩坑记录：这里**必须逐行 test**，不能拿整段文本去 `LMB_VIEW_CALLOUT_RE.test(整段)`。
+ *     该正则没有 `m` flag，`^` 只锚定**字符串开头** —— 整段以「引用」开头时匹配必然失败
+ *     （`>` 对上了汉字），会静默漏掉所有 lmb-view 行。lmbSplitNote 里能用是因为它本来就
+ *     是 `LMB_VIEW_CALLOUT_RE.test(lines[i])` 逐行调用。写这段代码时第一版就栽在这里，
+ *     加过一句 `if (!RE.test(out)) return out;` 的"快路径"，结果快路径永远判定为
+ *     "没有 lmb-view" → 修复形同虚设，测试 BC14 立刻抓出来了。
  */
-function lmbRenderedText(text) { return text; }
+function lmbRenderedText(text, allowTypes) {
+  if (typeof text !== "string" || !text) return text || "";
+  const a = lmbSplitNote(text, allowTypes);
+  const b = lmbSplitComment(a.body);
+  // v0.16.0：补最后一道 —— 剥掉 lmbSplitNote 只跳过没剥离的 lmb-view 行。
+  //   逐行 filter（判据与 lmbSplitNote 的跳过同源，不会漂）；卡片文本最多几十行，开销可忽略。
+  return b.body.split("\n").filter((l) => !LMB_VIEW_CALLOUT_RE.test(l)).join("\n");
+}
 
 /**
  * 纯决策函数（可单测）：mouseup 检测到文字选区时，是否应重建摘录 chip。
