@@ -2,6 +2,218 @@
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
 
+  /** Unified color source: every surface reads the same per-excerpt setting. */
+  lmbChooseExcerptColor(exId, anchorEl) {
+    if (!exId) return;
+    document.querySelectorAll(".lmb-color-palette").forEach((el) => el.remove());
+    const palette = document.createElement("div");
+    palette.className = "lmb-color-palette";
+    const colors = [
+      ["红", "#e85d5d"], ["橙", "#ec9338"], ["黄", "#d9b72c"], ["绿", "#65c692"],
+      ["蓝", "#5794e8"], ["靛", "#6e78d9"], ["紫", "#ae70d3"]
+    ];
+    const apply = async (hex) => {
+      this.settings.excerptColors = this.settings.excerptColors || {};
+      this.settings.excerptColors[exId] = hex;
+      await this.saveSettings(); palette.remove();
+      this.lmbRefreshAllMarks(); this.lmbSchedulePdfSidebarRefresh(0);
+      document.querySelectorAll('.lmb-excerpt-id[data-lmb-ex="' + exId + '"]').forEach((marker) => this.lmbApplyExcerptColorDom(marker.closest('.callout')));
+    };
+    for (const [name, hex] of colors) {
+      const b = document.createElement("button"); b.type = "button"; b.title = name; b.setAttribute("aria-label", name);
+      b.style.background = hex; b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); apply(hex); };
+      palette.appendChild(b);
+    }
+    document.body.appendChild(palette);
+    const r = anchorEl && anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : null;
+    const pr = palette.getBoundingClientRect();
+    const vw = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+    const vh = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+    let left = r ? r.right + 6 : (vw - pr.width) / 2;
+    // 右侧放不下时改放锚点左侧；仍放不下才钳制，避免 iPad 侧栏里的色板飞出屏幕。
+    if (left + pr.width > vw - 8 && r) left = r.left - pr.width - 6;
+    left = Math.max(8, Math.min(vw - pr.width - 8, left));
+    const top = Math.max(8, Math.min(vh - pr.height - 8, r ? r.top - 2 : (vh - pr.height) / 2));
+    palette.style.left = Math.round(left) + "px";
+    palette.style.top = Math.round(top) + "px";
+    setTimeout(() => document.addEventListener("pointerdown", function close(ev) {
+      if (!palette.contains(ev.target) && ev.target !== anchorEl) { palette.remove(); document.removeEventListener("pointerdown", close, true); }
+    }, true), 0);
+  },
+
+  lmbApplyExcerptColorDom(card) {
+    try {
+      if (!card || !card.querySelector) return;
+      const marker = card.querySelector('.lmb-excerpt-id[data-lmb-ex]');
+      const exId = marker && marker.getAttribute("data-lmb-ex");
+      const hex = exId && this.settings && this.settings.excerptColors && this.settings.excerptColors[exId];
+      if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return;
+      const n = hex.slice(1); card.style.setProperty("--callout-color", parseInt(n.slice(0,2),16) + "," + parseInt(n.slice(2,4),16) + "," + parseInt(n.slice(4,6),16));
+    } catch (_) {}
+  },
+
+  _lmbKeepCardWidth(node) {
+    return Math.max(80, Number(node && node.width)
+      || Math.max(320, Math.min(800, Number(this.settings && this.settings.excerptCardWidth) || 560)));
+  },
+
+  async _lmbAutoFitCard(file, nodeId, fallbackNode, fitOpts) {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    let live = null;
+    try {
+      const leaf = (this.app.workspace.getLeavesOfType("canvas") || [])
+        .find((l) => l && l.view && l.view.file && file && l.view.file.path === file.path);
+      const canvas = leaf && leaf.view && leaf.view.canvas;
+      live = canvas && canvas.nodes
+        ? (typeof canvas.nodes.get === "function" ? canvas.nodes.get(nodeId) : canvas.nodes[nodeId]) : null;
+    } catch (_) {}
+    const key = file && file.path ? file.path + "::" + nodeId : "";
+    const ex = String((live || fallbackNode) && (live || fallbackNode).text || "").match(EX_ID_RE);
+    const exId = ex ? ex[0].slice(1) : "";
+    const savedView = (exId && this.settings && this.settings.excerptViews
+      && this.settings.excerptViews[exId])
+      || (key && this.settings && this.settings.nodeViews ? this.settings.nodeViews[key] : null);
+    return this.lmbFitNodeById(file, nodeId, live || fallbackNode,
+      Object.assign({ quiet: true, allowViewShrink: true, view: savedView || "text" }, fitOpts || {}));
+  },
+
+  _lmbExcerptNoteState(raw, exId) {
+    const lines = String(raw || "").split(/\r?\n/);
+    const anchor = lines.findIndex((line) => line.includes("^" + exId));
+    if (anchor < 0) return null;
+    let begin = -1, end = -1;
+    for (let i = anchor - 1; i >= 0; i--) {
+      if (lines[i].includes("LMB-NOTE:END")) { end = i; continue; }
+      if (lines[i].includes("LMB-NOTE:BEGIN")) { begin = i; break; }
+      if (/\[!lmb-excerpt\]/i.test(lines[i])) break;
+    }
+    let value = "";
+    if (begin >= 0 && end > begin) {
+      value = lines.slice(begin + 1, end)
+        .filter((line) => !/\[!lmb-note\]/i.test(line))
+        .map((line) => line.replace(/^\s*(?:>\s*){2}/, "")).join("\n").trim();
+    }
+    return { lines, anchor, begin, end, value };
+  },
+
+  async lmbSaveExcerptNote(file, exId, value) {
+    if (!(file instanceof TFile) || !exId) return false;
+    let changed = false;
+    await this.app.vault.process(file, (raw) => {
+      const state = this._lmbExcerptNoteState(raw, exId);
+      if (!state) return raw;
+      const anchorLine = state.lines[state.anchor];
+      const prefix = (anchorLine.match(/^(\s*(?:>\s*)*)\^/) || ["", "> "])[1] || "> ";
+      const note = [];
+      if (String(value || "").trim()) {
+        // 摘录本身已经是一层引用块；内部的 note callout 必须再嵌套一层 `> `。
+        // 少这一层时 Obsidian 会把 `[!lmb-note]` 当普通文本显示。
+        // Callout 标题必须是区块第一行；隐藏标记放在标题之后，否则部分 Obsidian
+        // 版本会把 `[!lmb-note]` 当作普通文字。
+        note.push(prefix + "> [!lmb-note]", prefix + "> <!-- LMB-NOTE:BEGIN -->");
+        for (const line of String(value).replace(/\r\n/g, "\n").split("\n")) note.push(prefix + "> " + line);
+        note.push(prefix + "> <!-- LMB-NOTE:END -->");
+      }
+      const from = state.begin >= 0
+        ? (state.begin > 0 && /\[!lmb-note\]/i.test(state.lines[state.begin - 1]) ? state.begin - 1 : state.begin)
+        : state.anchor;
+      const to = state.end >= 0 ? state.end + 1 : state.anchor;
+      state.lines.splice(from, to - from, ...note);
+      changed = true; return state.lines.join("\n");
+    });
+    return changed;
+  },
+
+  async lmbEnhanceExcerptCallouts(el, ctx) {
+    const cards = [];
+    if (el.matches && el.matches('.callout[data-callout="lmb-excerpt"]')) cards.push(el);
+    if (el.querySelectorAll) cards.push(...el.querySelectorAll('.callout[data-callout="lmb-excerpt"]'));
+    for (const card of cards) {
+      if (card.querySelector(".lmb-excerpt-note-action")) continue;
+      const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath || "");
+      if (!(file instanceof TFile)) continue;
+      // 新卡直接带稳定 ID；存量卡则从 postprocessor 的区块信息兼容识别。
+      // getSectionInfo(card) 在部分 Live Preview 版本会返回 null，因此也检查宿主 el。
+      const marker = card.querySelector(".lmb-excerpt-id[data-lmb-ex]");
+      let exId = marker && marker.getAttribute("data-lmb-ex");
+      let raw = "";
+      if (!exId && ctx.getSectionInfo) {
+        for (const target of [card, el, card.parentElement]) {
+          if (!target) continue;
+          const info = ctx.getSectionInfo(target);
+          if (info && info.text) { raw = String(info.text); const ex = EX_ID_RE.exec(raw); if (ex) { exId = ex[0].slice(1); break; } }
+        }
+      }
+      if (!exId) continue;
+      this.lmbApplyExcerptColorDom(card);
+      if (!raw) raw = await this.app.vault.cachedRead(file);
+      const state = this._lmbExcerptNoteState(raw, exId);
+      const content = card.querySelector(":scope > .callout-content") || card;
+
+      // 不同 Obsidian 版本对嵌套自定义 Callout 的解析略有差异。若它被降级成
+      // 普通 blockquote，移除错误的 DOM，并用 MarkdownRenderer 提供稳定兜底。
+      for (const nativeNote of Array.from(content.querySelectorAll('.callout[data-callout="lmb-note"]'))) nativeNote.remove();
+      for (const quote of Array.from(content.querySelectorAll("blockquote"))) {
+        if (/^\s*\[!lmb-note\]/i.test(quote.textContent || "")) quote.remove();
+      }
+      // 隐藏 span、被移除的嵌套 callout 以及空 Markdown 行可能留下有 margin 的空 p/
+      // blockquote。它们没有可见内容，却正是卡片顶部和区块之间大段留白的来源。
+      for (const child of Array.from(content.children)) {
+        if (child.classList && child.classList.contains("lmb-excerpt-note-live")) continue;
+        const hasVisibleMedia = !!child.querySelector("img,video,audio,canvas,svg,.callout");
+        const visibleText = String(child.textContent || "").trim();
+        const markerOnly = !!child.querySelector(".lmb-excerpt-id") && !visibleText;
+        if (markerOnly || (!visibleText && !hasVisibleMedia)) child.remove();
+      }
+      if (state && state.value) {
+        const live = content.createDiv({ cls: "lmb-excerpt-note-live" });
+        const body = live.createDiv({ cls: "lmb-excerpt-note-live-body markdown-rendered" });
+        try { await MarkdownRenderer.render(this.app, state.value, body, file.path, this); }
+        catch (_) { body.setText(state.value); }
+      }
+
+      // Markdown 双重摘录：默认显示文字，可在同一卡片中切换为截图。
+      const image = Array.from(content.querySelectorAll("img"))
+        .find((img) => !img.closest(".lmb-excerpt-note-live"));
+      const textQuote = Array.from(content.querySelectorAll("blockquote"))
+        .find((quote) => !quote.closest(".lmb-excerpt-note-live"));
+      let imageView = image && (image.closest("p") || image.closest(".internal-embed") || image.parentElement);
+      const isDual = !!(imageView && textQuote);
+      if (isDual) {
+        card.addClass("lmb-md-dual-excerpt");
+        textQuote.addClass("lmb-excerpt-text-view");
+        imageView.addClass("lmb-excerpt-image-view");
+        card.toggleClass("lmb-show-image", !!(this.settings.excerptViews
+          && this.settings.excerptViews[exId] === "image"));
+      }
+      const action = card.createDiv({ cls: "lmb-excerpt-note-action" });
+      const colorBtn = action.createEl("button", { text: "● 颜色", cls: "lmb-excerpt-color-action" });
+      colorBtn.onclick = () => this.lmbChooseExcerptColor(exId, colorBtn);
+      if (isDual) {
+        const showingImage = card.hasClass("lmb-show-image");
+        const viewBtn = action.createEl("button", {
+          text: showingImage ? "¶ 显示文字" : "▧ 显示图片", cls: "lmb-excerpt-view-toggle"
+        });
+        viewBtn.onclick = () => {
+          const showImage = !card.hasClass("lmb-show-image");
+          card.toggleClass("lmb-show-image", showImage);
+          viewBtn.setText(showImage ? "¶ 显示文字" : "▧ 显示图片");
+          this.settings.excerptViews = this.settings.excerptViews || {};
+          this.settings.excerptViews[exId] = showImage ? "image" : "text";
+          this.saveSettings().catch(() => {});
+        };
+      }
+      const btn = action.createEl("button", { text: state && state.value ? "✎ 编辑备注" : "＋ 追加备注" });
+      btn.onclick = () => new LMBExcerptNoteModal(this.app, {
+        title: "PDF 摘录备注", value: state ? state.value : "", sourcePath: file.path,
+        onSubmit: async (value) => {
+          const ok = await this.lmbSaveExcerptNote(file, exId, value);
+          new Notice(ok ? "摘录笔记已保存" : "未找到对应摘录，未修改文档");
+        }
+      }).open();
+    }
+  },
+
   /* ==================== v0.8.0：卡片补充描述（note） ==================== */
 
   /**
@@ -33,7 +245,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         allowEmpty: true
       });
       const size = this.estimateSizeFor(node.text);
-      node.width = Math.round(size.w);
+      node.width = Math.round(this._lmbKeepCardWidth(node));
       node.height = Math.round(size.h);
       let store = this.autoSize.get(ctx.file.path);
       if (!store) { store = new Map(); this.autoSize.set(ctx.file.path, store); }
@@ -66,7 +278,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (lmbSplitComment(node.text).hasComment) continue;     // 已有评论 → 跳过
       node.text = lmbJoinComment(node.text, "", { allowEmpty: true });
       const size = this.estimateSizeFor(node.text);
-      node.width = Math.round(size.w);
+      node.width = Math.round(this._lmbKeepCardWidth(node));
       node.height = Math.round(size.h);
       let store = this.autoSize.get(ctx.file.path);
       if (!store) { store = new Map(); this.autoSize.set(ctx.file.path, store); }
@@ -82,6 +294,58 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== v0.11.0：独立评论（批注评论底栏） ==================== */
 
+  _lmbCanonicalEntryForExcerpt(exId) {
+    if (!exId || !this.excerptIndex) return null;
+    for (const entries of this.excerptIndex.values()) {
+      const hit = (entries || []).find((entry) => entry && entry.exId === exId && entry.sourceMd);
+      if (hit) return hit;
+    }
+    return null;
+  },
+
+  /** 把某个摘录 Markdown 中的备注镜像到已关联的 Canvas 卡片。Markdown 永远是准值。 */
+  async lmbMirrorMdNotesToCanvas(mdFile, raw, entries) {
+    if (!mdFile || !Array.isArray(entries) || !this.excerptCanvasIndex) return;
+    const grouped = new Map();
+    for (const entry of entries) {
+      if (!entry || !entry.exId || entry.sourceMd !== mdFile.path) continue;
+      const loc = this.excerptCanvasIndex.get(entry.exId);
+      if (!loc || !loc.canvasPath || !loc.nodeId) continue;
+      if (!grouped.has(loc.canvasPath)) grouped.set(loc.canvasPath, []);
+      grouped.get(loc.canvasPath).push({ nodeId: loc.nodeId, exId: entry.exId,
+        note: this._lmbFindSidebarNote(raw, entry.exId) || "" });
+    }
+    if (!grouped.size) return;
+    if (!this._lmbCanvasNoteMirrorBusy) this._lmbCanvasNoteMirrorBusy = new Set();
+    for (const [canvasPath, updates] of grouped) {
+      if (this._lmbCanvasNoteMirrorBusy.has(canvasPath)) continue;
+      const canvasFile = this.app.vault.getAbstractFileByPath(canvasPath);
+      if (!(canvasFile instanceof TFile)) continue;
+      this._lmbCanvasNoteMirrorBusy.add(canvasPath);
+      try {
+        const rd = await this._lmbReadCanvasData(canvasFile);
+        if (!rd) continue;
+        const changed = [];
+        for (const update of updates) {
+          const node = (rd.data.nodes || []).find((n) => n.id === update.nodeId && n.type === "text");
+          if (!node) continue;
+          const cur = lmbSplitComment(node.text || "");
+          if (String(cur.comment || "").trim() === String(update.note || "").trim()
+            && cur.hasComment === !!String(update.note || "").trim()) continue;
+          node.text = lmbJoinComment(cur.body, update.note, { allowEmpty: false });
+          const size = this.estimateSizeFor(node.text, { width: this._lmbKeepCardWidth(node),
+            view: (this.settings.nodeViews || {})[canvasFile.path + "::" + node.id] || "text" });
+          node.width = Math.round(this._lmbKeepCardWidth(node)); node.height = Math.round(size.h);
+          changed.push(node);
+        }
+        if (!changed.length) continue;
+        await this._lmbWriteCanvasData(canvasFile, rd.data, rd.memCanvas, rd.raw);
+        for (const node of changed) await this._lmbAutoFitCard(canvasFile, node.id, node);
+      } catch (err) { console.warn("[lmb] mirror md note to canvas failed:", canvasPath, err); }
+      finally { this._lmbCanvasNoteMirrorBusy.delete(canvasPath); }
+    }
+  },
+
   /**
    * 把评论写进指定节点。commentText 为空串 = 移除评论栏。
    * 结构：评论 callout 永远追加在卡片文本最末（补充描述之后），渲染成底栏。
@@ -96,11 +360,23 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!node) return { ok: false, msg: "找不到该卡片（可能已被删除）" };
     if (node.type !== "text") return { ok: false, msg: "只有文本卡片支持评论" };
 
+    // 摘录卡的评论就是统一“备注”。必须先写 Markdown 真相源；写入失败时拒绝
+    // 只改 Canvas，以免三端产生两个不同版本。
+    const exMatch = String(node.text || "").match(EX_ID_RE);
+    if (exMatch) {
+      const exId = exMatch[0].slice(1), entry = this._lmbCanonicalEntryForExcerpt(exId);
+      const mdFile = entry && this.app.vault.getAbstractFileByPath(entry.sourceMd);
+      if (!(mdFile instanceof TFile)) return { ok: false, msg: "找不到该摘录的 Markdown 文档，未保存备注" };
+      const saved = await this.lmbSaveExcerptNote(mdFile, exId, commentText);
+      if (!saved) return { ok: false, msg: "无法写入 Markdown 摘录备注，未修改 Canvas" };
+    }
+
     const cur = lmbSplitComment(node.text || "");
     node.text = lmbJoinComment(cur.body, commentText, { allowEmpty: false });
 
-    const size = this.estimateSizeFor(node.text);
-    node.width = Math.round(size.w);
+    const size = this.estimateSizeFor(node.text, { width: this._lmbKeepCardWidth(node),
+      view: (this.settings.nodeViews || {})[file.path + "::" + node.id] || "text" });
+    node.width = Math.round(this._lmbKeepCardWidth(node));
     node.height = Math.round(size.h);
     if (Array.isArray(data.edges) && data.edges.length) {
       lmbRecenterNode(node, data.nodes || [], data.edges, this.autoEdges.get(file.path) || new Set());
@@ -111,6 +387,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     await this._lmbWriteCanvasData(file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
+    await this._lmbAutoFitCard(file, node.id, node);
+    this.lmbSchedulePdfSidebarRefresh(100);
     return { ok: true, msg: "" };
   },
 
@@ -336,7 +614,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     // 补充描述会改变卡片高度 → 重算并同步档案
     const size = this.estimateSizeFor(node.text);
-    node.width = Math.round(size.w);
+    node.width = Math.round(this._lmbKeepCardWidth(node));
     node.height = Math.round(size.h);
     // v0.11.0：高度变了 → 组内重新居中（中心保持在父卡横/纵轴上）
     if (Array.isArray(data.edges) && data.edges.length) {

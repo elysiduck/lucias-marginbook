@@ -6,7 +6,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /**
    * 摘录文档写入（<PDF名>-摘录.md）—— v0.4.0 树形版。
-   * 已知边界（保留，不解决）：整文件重写，用户对摘录 md 的手工修改会被覆盖。
+   * v0.18：仅更新 LMB:BEGIN/END 受控区域；区域外的用户补充永不覆盖。
    * 结构：frontmatter（PDF / canvas / updated）+ 树形摘录：
    *   - canvas 连线（含自动父子 + 用户手连）导出 parentOf → 子摘录以嵌套引用块
      *   （"> > 正文"）缩进在父摘录之下，大纲/阅读视图直接呈现层级；
@@ -20,6 +20,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const pdfBase = pdfPath.split("/").pop().replace(/\.pdf$/i, "");
       const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
       const mdPath = normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      // Markdown 是备注真相源。重建受控摘录区之前先读取现有备注，稍后按 exId
+      // 原样嵌回，避免 Canvas 同步正文时把用户在 MD/PDF 侧栏写的备注覆盖掉。
+      const existing = this.app.vault.getAbstractFileByPath(mdPath);
+      let existingRaw = "";
+      if (existing instanceof TFile) {
+        try { existingRaw = await this.app.vault.read(existing); } catch (_) { existingRaw = ""; }
+      }
 
       // —— 补丁 B：P1-4 相关笔记预取（只算缓存中没有的 id；单个失败不阻断写入）——
       for (const en of entries) {
@@ -46,16 +53,38 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const rendered = new Set();
       let body = "";
       let lastKey = null;
+      const pageOrdinals = new Map();
+      const pageCounts = new Map();
+      for (const en of ordered) {
+        const key = en.page == null ? "none" : String(en.page);
+        const next = (pageCounts.get(key) || 0) + 1;
+        pageCounts.set(key, next); pageOrdinals.set(en.id, next);
+      }
       const emitEntry = (en, depth) => {
         const q = depth > 0 ? "> ".repeat(depth) : "";
+        const cardQ = q + "> ";
+        const ordinal = pageOrdinals.get(en.id) || 1;
+        const badge = ordinal <= 20
+          ? ["", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"][ordinal]
+          : "#" + ordinal;
+        const kind = /!\[\[[^\]]+\.(?:webp|png|jpe?g)/i.test(en.body) ? "图像" : "原文";
+        body += q + `> [!lmb-excerpt]+ ${badge} P.${en.page != null ? en.page : "?"} · ${kind}\n`;
+        body += cardQ + `<span class="lmb-excerpt-id" data-lmb-ex="${en.id}"></span>\n`;
         // v0.12.0：卡片引用行是 📖 收拢形态（lmbBookLink），导出到摘录 md 时
         //   还原成完整【文件名-P.N】——md 要能独立阅读、Recall 模糊也靠全名命中。
         for (const line of en.body.split("\n")) {
-          body += (q + lmbRestoreRefDisplayName(line, pdfBase, en.page)) + "\n";
+          body += (cardQ + lmbRestoreRefDisplayName(line, pdfBase, en.page)) + "\n";
         }
-        body += q + "^" + en.id + "\n";
+        const canonicalNote = existingRaw ? this._lmbFindSidebarNote(existingRaw, en.id) : "";
+        if (canonicalNote) {
+          body += cardQ + "> [!lmb-note]\n";
+          body += cardQ + "> <!-- LMB-NOTE:BEGIN -->\n";
+          for (const line of canonicalNote.replace(/\r\n/g, "\n").split("\n")) body += cardQ + "> " + line + "\n";
+          body += cardQ + "> <!-- LMB-NOTE:END -->\n";
+        }
+        body += cardQ + "^" + en.id + "\n";
         const rel = this.relatedCache ? this.relatedCache.get(en.id) : null;
-        if (rel && rel.length) body += q + "> 相关：" + rel.join(" · ") + "\n";
+        if (rel && rel.length) body += cardQ + "> 相关：" + rel.join(" · ") + "\n";
         body += "\n";
       };
       const dfs = (en, depth) => {
@@ -79,20 +108,27 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
 
       const head = "---\nPDF: \"[[" + pdfPath + "]]\"\ncanvas: \"[[" + cf.basename + "]]\"\n";
-      // 不含 updated 时间戳的基准内容（用于变化检测）
-      const bodyNoStamp = head + "---\n\n" + body;
+      const generated = "<!-- LMB:BEGIN -->\n" + body + "<!-- LMB:END -->";
 
-      const existing = this.app.vault.getAbstractFileByPath(mdPath);
       if (existing instanceof TFile) {
-        const cur = await this.app.vault.read(existing);
+        const cur = existingRaw || await this.app.vault.read(existing);
+        const oldRegion = cur.match(/<!--\s*LMB:BEGIN\s*-->[\s\S]*?<!--\s*LMB:END\s*-->/i);
+        // 首次迁移旧文档时完整保留旧正文；宁可暂时重复，也绝不吞掉用户手写内容。
+        const preserved = oldRegion
+          ? cur.slice((oldRegion.index || 0) + oldRegion[0].length).replace(/^\s+/, "")
+          : "## 我的补充\n\n<!-- LMB: 已保留迁移前文档内容，请按需整理。 -->\n\n"
+            + cur.replace(/^---[\s\S]*?---\s*/m, "").trim();
+        const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n"
+          + generated + "\n\n" + (preserved || "## 我的补充\n");
         const curNoStamp = cur.replace(/^updated: "[^"]*"\r?\n/m, "");
-        if (curNoStamp !== bodyNoStamp) {
-          const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n" + body;
+        const nextNoStamp = content.replace(/^updated: "[^"]*"\r?\n/m, "");
+        if (curNoStamp !== nextNoStamp) {
           await this.app.vault.process(existing, () => content);
           console.log("[lmb] excerpt doc updated:", mdPath);
         }
       } else {
-        const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n" + body;
+        const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n"
+          + generated + "\n\n## 我的补充\n";
         await this.app.vault.create(mdPath, content);
         new Notice("MarginBook: 已创建摘录文档 " + mdPath);
         console.log("[lmb] excerpt doc created:", mdPath);
@@ -115,7 +151,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 存在 → 直接打开；已打开的 md 视图复用（绝不重开第二个标签）。
    * 不存在 → 写入 frontmatter 模板（PDF/canvas 指回本 PDF），与 writeExcerptMd 的头格式一致。
    */
-  async lmbOpenOrCreateExcerptMd(pdfFile) {
+  /** Ensure the canonical excerpt document exists without stealing focus from a PDF. */
+  async lmbEnsureExcerptMdFile(pdfFile) {
     if (!pdfFile) return null;
     const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
     const name = pdfFile.basename + "-摘录.md";
@@ -128,6 +165,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       f = await this.app.vault.create(path, content);
       new Notice("MarginBook: 已创建摘录文档 " + name);
     }
+    return f;
+  },
+
+  async lmbOpenOrCreateExcerptMd(pdfFile) {
+    const f = await this.lmbEnsureExcerptMdFile(pdfFile);
+    if (!(f instanceof TFile)) return null;
     // 已打开 → 复用该标签
     try {
       const leaves = this.app.workspace.getLeavesOfType("markdown");
@@ -222,12 +265,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         for (const cf of canvases.slice(i, i + 10)) await this.lmbIndexCanvasFile(cf);
         if (i + 10 < canvases.length) await new Promise((r) => setTimeout(r, 10));
       }
+      // Canvas 索引此时已经完整，按 Markdown 准值做一次启动同步。
+      for (const md of cands) {
+        try {
+          const raw = await this.app.vault.cachedRead(md);
+          await this.lmbMirrorMdNotesToCanvas(md, raw, lmbParseExcerptDoc(raw, md.path));
+        } catch (_) {}
+      }
       const s = this.getIndexStats();
       if (this.settings && this.settings.debug) {
         console.log("[lmb] 摘录索引构建完成:", s, (Date.now() - t0) + "ms");
       }
       // P2：索引变了 → 重画标记
       this.lmbRefreshAllMarks();
+      // P2：索引变了 → 刷新 PDF 侧栏（若当前打开的是对应 PDF）
+      this.lmbSchedulePdfSidebarRefresh(120);
       return s;
     } catch (err) {
       console.error("[lmb] buildExcerptIndex error:", err);
@@ -248,7 +300,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       //   metadataCache 往往还没解析出 pdf 链接，旧闸门会把首次索引跳掉）
       if (!force && !this.lmbFileLinksPdf(f) && !this.indexMtime.has(f.path)) return;
       const prev = this.indexMtime.get(f.path);
-      if (prev != null && f.stat && f.stat.mtime <= prev) return;
+      if (!force && prev != null && f.stat && f.stat.mtime <= prev) return;
 
       this.dropFileFromIndex(f.path);
       const content = await this.app.vault.cachedRead(f);
@@ -270,6 +322,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (f.stat && f.stat.mtime != null) this.indexMtime.set(f.path, f.stat.mtime);
       // P2：索引变了 → 防抖重画（modify 会在每次敲键触发，所以必须防抖）
       this.lmbScheduleMarksRefresh(300);
+      this.lmbSchedulePdfSidebarRefresh(220);
+      // 用户直接在摘录 MD 中编辑备注时，立即反向镜像到关联 Canvas。
+      await this.lmbMirrorMdNotesToCanvas(f, content, entries);
     } catch (err) {
       console.warn("[lmb] reindexFile error:", f && f.path, err);
     }
@@ -283,6 +338,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (kept.length !== arr.length) this.excerptIndex.set(k, kept);
     }
     this.indexMtime.delete(mdPath);
+    this.lmbSchedulePdfSidebarRefresh(120);
   },
 
   /**
@@ -302,7 +358,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const nodes = data && Array.isArray(data.nodes) ? data.nodes : [];
       for (const n of nodes) {
         if (!n || n.type !== "text" || !n.text) continue;
-        const ids = n.text.match(/\^ex-[0-9a-z]{4,8}/g);
+        const ids = n.text.match(/\^ex-[0-9a-z]{4,16}/g);
         if (!ids) continue;
         for (const id of ids) {
           this.excerptCanvasIndex.set(id.slice(1), { canvasPath: cf.path, nodeId: n.id });
@@ -420,8 +476,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   ③ md 摘录文档条目 —— 按 ^ex-xxx 锚点定位块，只删该块
    *
    * 安全网（缺一不可）：
-   *   默认关闭开关 / 删除前写 .lmb-trash-log.md 备份 / 格式白名单 /
-   *   引用计数（>1 不删）/ Notice 汇总 / 全程 try-catch 不中断
+   *   默认关闭开关 / 删除前写入 .lmb-trash 可恢复副本 / 格式白名单 /
+   *   引用计数（检查失败即保留）/ Notice 汇总 / 全程 try-catch 不中断
    */
 
   /**
@@ -506,6 +562,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     for (const g of gone) {
       const meta = g.meta || {};
       try {
+        const trash = await this._lmbCreateTrashBundle(cf, g);
         logLines.push(`\n## ${stamp} · 卡片 ${String(g.id).slice(0, 8)}`);
         logLines.push(`- canvas: [[${cf.basename}]]`);
         if (meta.pdf) logLines.push(`- PDF: ${meta.pdf}`);
@@ -523,7 +580,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   → 附件永远「还有 1 处其它引用」→ 清理功能整体死锁（静默失效）。
         // ③ 清 md 摘录文档里的对应条目
         if (meta.exId && meta.pdf) {
-          const ok = await this._lmbRemoveExcerptFromMd(cf, meta);
+          const ok = await this._lmbRemoveExcerptFromMd(cf, meta, trash);
           if (ok) { removedMd++; logLines.push(`- ✅ 摘录 md 条目已移除`); }
           else { skipped++; logLines.push(`- md 条目未找到，跳过（无妨）`); }
         }
@@ -549,9 +606,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
                 logLines.push(`- 附件跳过：vault 内还有 ${refs} 处其它引用（删了会导致 broken image）`);
                 skipped++;
               } else {
-                await this.app.vault.delete(f);
+                const target = normalizePath(trash.dir + "/" + f.name);
+                await this.app.vault.rename(f, target);
                 removedAttach++;
-                logLines.push(`- ✅ 附件已删除`);
+                logLines.push(`- ✅ 附件已移入 [[${target}]]`);
               }
             }
           }
@@ -576,7 +634,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       } catch (_) { /* 日志写失败不影响清理结果 */ }
       // Notice 汇总：让用户看得见清理了什么
       try {
-        new Notice(`已清理 ${gone.length} 张已删除卡片：附件 ${removedAttach} 个 · md 条目 ${removedMd} 条${skipped ? ` · 跳过 ${skipped} 项` : ""}（详见 .lmb-trash-log.md）`, 4000);
+        new Notice(`已清理 ${gone.length} 张已删除卡片：附件 ${removedAttach} 个 · md 条目 ${removedMd} 条${skipped ? ` · 跳过 ${skipped} 项` : ""}（可从 .lmb-trash 恢复）`, 4000);
       } catch (_) {}
     }
     return { removedAttach, removedMd, skipped };
@@ -591,6 +649,32 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { return null; }
   },
 
+  /** 为一次卡片级联清理建立独立、不会覆盖旧备份的回收目录。 */
+  async _lmbCreateTrashBundle(cf, gone) {
+    const now = new Date();
+    const day = now.toISOString().slice(0, 10);
+    const clock = now.toISOString().slice(11, 19).replace(/:/g, "");
+    const safeId = String((gone.meta && gone.meta.exId) || gone.id || "excerpt").replace(/[^a-z0-9_-]/gi, "-");
+    const baseDir = normalizePath(`.lmb-trash/${day}/${safeId}-${clock}-${String(gone.id || "").slice(0, 8)}`);
+    const adapter = this.app.vault.adapter;
+    for (const folder of [".lmb-trash", `.lmb-trash/${day}`]) {
+      if (!(await adapter.exists(folder))) await adapter.mkdir(folder);
+    }
+    let dir = baseDir;
+    for (let suffix = 2; await adapter.exists(dir); suffix++) dir = baseDir + "-" + suffix;
+    await adapter.mkdir(dir);
+    const record = {
+      deletedAt: now.toISOString(),
+      canvasPath: cf.path,
+      canvasNodeId: gone.id,
+      excerptId: (gone.meta && gone.meta.exId) || null,
+      pdfPath: (gone.meta && gone.meta.pdf) || null,
+      attachmentPath: (gone.meta && gone.meta.attach) || null
+    };
+    await adapter.write(normalizePath(dir + "/metadata.json"), JSON.stringify(record, null, 2));
+    return { dir, record };
+  },
+
   /** 统计 vault 内除目标画布外，还有多少处引用了这个附件
    *  @param {string} name 附件路径
    *  @param {TFile} [cf] 源画布文件 —— v0.16.6 P1-5：必须传入并在统计时排除。
@@ -599,19 +683,23 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *    refs ≥ 1 → 走「跳过」分支 → 清理静默失效（卡片删了，截图永远留着）。 */
   async _lmbCountAttachmentRefs(name, cf) {
     let count = 0;
-    try {
-      const base = name.split("/").pop().replace(/\.(webp|png|jpe?g)$/i, "");
-      const srcPath = cf && cf.path ? cf.path : null;
-      const mdFiles = (this.app.vault.getFiles ? this.app.vault.getFiles() : [])
-        .filter((f) => f.extension === "md" || f.extension === "canvas");
-      for (const f of mdFiles) {
-        if (srcPath && f.path === srcPath) continue;
-        if (f.path === ".lmb-trash-log.md") continue;   // 日志里的提及不算引用
-        let txt = "";
-        try { txt = await this.app.vault.cachedRead(f); } catch (_) { continue; }
-        if (txt && txt.indexOf(base) >= 0) count++;
+    const base = name.split("/").pop().replace(/\.(webp|png|jpe?g)$/i, "");
+    const srcPath = cf && cf.path ? cf.path : null;
+    if (!this.app.vault.getFiles || !this.app.vault.cachedRead) {
+      throw new Error("附件引用检查不可用；为安全起见已保留附件");
+    }
+    const mdFiles = this.app.vault.getFiles()
+      .filter((f) => f.extension === "md" || f.extension === "canvas");
+    for (const f of mdFiles) {
+      if (srcPath && f.path === srcPath) continue;
+      if (f.path === ".lmb-trash-log.md" || f.path.startsWith(".lmb-trash/")) continue;
+      let txt;
+      try { txt = await this.app.vault.cachedRead(f); }
+      catch (err) {
+        throw new Error(`无法检查 ${f.path} 的附件引用；为安全起见已保留附件`, { cause: err });
       }
-    } catch (_) { /* 统计失败按 0 处理（= 可删） */ }
+      if (txt && txt.indexOf(base) >= 0) count++;
+    }
     return count;
   },
 
@@ -620,17 +708,20 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 策略：按空行切块，找到含锚点行的块删掉；找不到锚点就不动（保守，防误删手写内容）。
    * @returns {Promise<boolean>} 是否真的删了
    */
-  async _lmbRemoveExcerptFromMd(cf, meta) {
+  async _lmbRemoveExcerptFromMd(cf, meta, trash) {
     try {
       const pdfBase = (meta.pdf || "").split("/").pop().replace(/\.pdf$/i, "");
-      if (!pdfBase) return false;
-      const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
-      const mdPath = normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      if (!pdfBase && !meta.sourceMd) return false;
+      const folder = cf && cf.parent && cf.parent.path ? cf.parent.path : "/";
+      const mdPath = meta.sourceMd
+        ? normalizePath(meta.sourceMd)
+        : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
       let raw = null;
       try { raw = await this.app.vault.adapter.read(mdPath); } catch (_) { return false; }
       if (!raw) return false;
 
-      // 按「锚点属于哪个条目」定位：以空行分块，找含 ^exId 的块
+      // 按「锚点属于哪个条目」定位。不能再用空行分块：MANUAL-EXCERPTS
+      // 中的相邻摘录允许没有空行，按空行会把整段手动摘录一并删掉。
       const anchor = "^" + meta.exId;
       const lines = raw.split("\n");
       // 找锚点行下标
@@ -643,18 +734,40 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       if (aIdx < 0) return false;
 
-      // 向上找到该块起点（上一个空行之后）
-      let start = aIdx;
-      while (start > 0 && lines[start - 1].trim() !== "") start--;
-      // 向下找到该块终点（下一个空行；含后续「相关：」行）
-      let end = aIdx;
-      while (end + 1 < lines.length && lines[end + 1].trim() !== "") end++;
-      // 连一个空行一起删（保持块间分隔）
-      if (end + 1 < lines.length && lines[end + 1].trim() === "") end++;
+      const unwrap = (line) => String(line || "").replace(/^\s*(?:>\s*)+/, "").trim();
+      const isEntryStart = (line) => {
+        const text = unwrap(line);
+        return /^\[!lmb-excerpt\]/i.test(text) || /^\[\[[^\]]+\.pdf#page=/i.test(text);
+      };
+      const isRegionBoundary = (line) => /<!--\s*LMB:(?:BEGIN|END|MANUAL-EXCERPTS:BEGIN|MANUAL-EXCERPTS:END)\s*-->/i.test(line || "");
 
-      const removed = lines.slice(start, end + 1);
+      // 优先取外层 lmb-excerpt callout；旧格式没有外层时才回退到 PDF 链接行。
+      let start = aIdx;
+      let fallbackStart = -1;
+      for (let i = aIdx; i >= 0; i--) {
+        if (isRegionBoundary(lines[i])) break;
+        if (!isEntryStart(lines[i])) continue;
+        if (/^\[!lmb-excerpt\]/i.test(unwrap(lines[i]))) { start = i; break; }
+        if (fallbackStart < 0) fallbackStart = i;
+      }
+      if (start === aIdx && fallbackStart >= 0) start = fallbackStart;
+
+      // 下一条摘录的开头就是当前条目的硬边界；不存在则止于受控区域边界。
+      let end = lines.length;
+      for (let i = aIdx + 1; i < lines.length; i++) {
+        if (isEntryStart(lines[i]) || isRegionBoundary(lines[i])) { end = i; break; }
+      }
+      // 只顺带移除条目后的空行，绝不跨越下一条摘录或区域标记。
+      while (end > start && lines[end - 1].trim() === "") end--;
+
+      const removed = lines.slice(start, end);
       if (!removed.length) return false;
-      const next = lines.slice(0, start).concat(lines.slice(end + 1)).join("\n");
+      if (!trash || !trash.dir) throw new Error("未建立可恢复回收目录，拒绝修改摘录文档");
+      await this.app.vault.adapter.write(
+        normalizePath(trash.dir + "/excerpt.md"),
+        removed.join("\n") + "\n"
+      );
+      const next = lines.slice(0, start).concat(lines.slice(end)).join("\n");
       // 原子写（v0.9.1 起的标准做法）
       await this.app.vault.adapter.write(mdPath, next);
       return true;

@@ -11,6 +11,9 @@ class LuciasMarginBookPlugin extends Plugin {
     this._chipSig = null;            // 当前 chip 承载的选区签名（text@page），防重复重建
     this._lastNoSelNotice = 0;
     this.rectMode = false;           // 框选模式（v0.11.2 起为常驻开关：ribbon/工具栏按钮/命令共用）
+    this.inkMode = false;            // PDF 手写批注模式（非破坏式，数据保存在插件 data.json）
+    this.isMobile = LMB_IS_MOBILE;
+    this._mobileSelectionTimer = null;
     this._ribbonEl = null;
     this._toolbarBtnTimer = null;    // v0.11.2：PDF 工具栏按钮注入的重试定时器
     // v0.12.1：工具栏宿主 DOM 缓存（LmbDomCache，见 25-pure-toolbar.js）
@@ -20,6 +23,7 @@ class LuciasMarginBookPlugin extends Plugin {
     this._dragArm = null;            // 我们的 chip 拖拽进行中（drop 捕获用）
     this._instantSkip = 0;           // 即时通道成功后短暂抑制文件层自动父子（防双写）
     this._dropFlush = null;          // v0.7.2：canvas 内松手后的快速通道 {path, t, timer}
+    this._lmbPdfSidebarTimer = null; // PDF 右侧批注侧栏防抖定时器
 
     // P1：摘录索引层（反向索引：摘录 md → PDF/页/选区）
     this._isIndexing = false;        // 全量重建进行中标记（防重入）
@@ -30,9 +34,11 @@ class LuciasMarginBookPlugin extends Plugin {
     this.settingsStore = new LmbSettingsStore(this);
     const loadedSettings = await this.settingsStore.load();
     this.settings = loadedSettings.settings;
+    const inkStorageMigrated = await this.lmbInitializeInkStorage();
+    this.lmbSetupInk();
     // v0.12.0 一次性迁移：老配置里 noteAutoBoxOnNew 已被持久化成 true，
     //   只改默认值不生效。用标记保证只强制关这一次，之后用户在设置里改回 true 不再被覆盖。
-    let settingsMigrated = loadedSettings.migrated;
+    let settingsMigrated = loadedSettings.migrated || inkStorageMigrated;
     // v0.16.0 一次性迁移（与上面同一套机制）：老配置里 commentAutoBoxOnNew 已被持久化成 true，
     //   只改默认值对存量用户不生效。强制关这一次，之后用户在设置里改回 true 不再被覆盖。
     // 两项迁移合并成一次有序写入，避免并发 saveData 互相覆盖。
@@ -86,9 +92,21 @@ class LuciasMarginBookPlugin extends Plugin {
       await this.saveSettings();
     }
 
-    this.registerDomEvent(document, "mousedown", (e) => this.onDocMouseDown(e), true);
-    this.registerDomEvent(document, "mouseup", (e) => this.onDocMouseUp(e), true);
-    this.registerDomEvent(document, "scroll", () => this.hideChip(), true);
+    if (this.isMobile) {
+      this.registerDomEvent(document, "pointerdown", (e) => this.onDocPointerDown(e), true);
+      this.registerDomEvent(document, "pointerup", (e) => this.onDocPointerUp(e), true);
+      // iOS selection handles can change the selection without another pointerup.
+      this.registerDomEvent(document, "selectionchange", () => this.onMobileSelectionChange(), true);
+    } else {
+      this.registerDomEvent(document, "mousedown", (e) => this.onDocMouseDown(e), true);
+      this.registerDomEvent(document, "mouseup", (e) => this.onDocMouseUp(e), true);
+    }
+    this.registerDomEvent(document, "scroll", (e) => {
+      this.hideChip();
+      this.lmbHandlePdfSidebarScroll(e);
+    }, true);
+    // PDF 标记本身不抢占文字选择；在捕获层按坐标命中标记，实现 PDF → 边页定位。
+    this.registerDomEvent(document, "click", (e) => this.lmbHandlePdfSidebarClick(e), true);
 
     // v0.7.2 松手快速通道：canvas 内 mouseup → 武装 flush，让下一个 modify 走 80ms 极短防抖
     // （原本要干等 400ms 才重排）。capture 阶段注册，早于 Obsidian 自己的 canvas mouseup。
@@ -107,6 +125,7 @@ class LuciasMarginBookPlugin extends Plugin {
           }
         }
       } catch (_) { /* noop */ }
+      try { this.lmbCanvasBarTick(); } catch (_) { /* event-driven bar refresh */ }
     }, true);
 
     this.registerEvent(this.app.vault.on("modify", (f) => {
@@ -160,10 +179,23 @@ class LuciasMarginBookPlugin extends Plugin {
 
     // v0.11.2：PDF 原生工具栏注入「图片框选」按钮（PDF++ 式 crop 按钮，摆脱 Alt）。
     //   工具栏由 pdf.js 异步渲染，所以在布局事件后做有限次重试（lmbScheduleToolbarButtons）。
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.lmbScheduleToolbarButtons()));
-    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.lmbScheduleToolbarButtons()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      this.lmbScheduleToolbarButtons();
+      this.lmbSchedulePdfSidebarRefresh(220);
+      this.lmbScheduleInkRefresh(220);
+    }));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+      this.lmbScheduleToolbarButtons();
+      this.lmbSchedulePdfSidebarRefresh(120);
+      this.lmbScheduleInkRefresh(120);
+      this.lmbRenderActivePdfSidebar().catch(() => {});
+    }));
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
-      if (f && f.extension === "pdf") this.lmbScheduleToolbarButtons();
+      if (f && f.extension === "pdf") {
+        this.lmbScheduleToolbarButtons();
+        this.lmbSchedulePdfSidebarRefresh(180);
+        this.lmbScheduleInkRefresh(180);
+      }
     }));
 
     // v0.11.2：Esc 退出框选模式（与按钮开关对称；Alt 临时拖拽不受影响）
@@ -198,6 +230,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // 切换视图时刷新按钮可用性（灰/亮）
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
       this.updateNoteRibbonState();
+      try { this.lmbCanvasBarTick(); } catch (_) { /* noop */ }
     }));
 
     /* v0.11.0：侧边栏按钮 —— 给（画布里选中的）卡片添加/编辑评论（独立评论体系）。 */
@@ -212,31 +245,51 @@ class LuciasMarginBookPlugin extends Plugin {
 
     // v0.11.0：canvas 里点「评论栏」直接弹编辑框（capture 层，折叠箭头/非 canvas 不拦截）
     this.registerDomEvent(document, "click", (e) => this.onCanvasCalloutClick(e), true);
+    this.registerMarkdownPostProcessor((el, ctx) => {
+      this.lmbEnhanceExcerptCallouts(el, ctx).catch((err) => console.warn("[lmb] excerpt note action failed:", err));
+    });
 
     /* ---- P1：摘录索引的增量维护 ----
      * modify 会在每次敲键触发，所以 reindexFile 内有两道廉价闸门
      * （不链 pdf 且不在索引中 → 跳过；mtime 未变 → 跳过），不会读盘。
      */
     this.registerEvent(this.app.vault.on("modify", (f) => {
+      if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
       if (f && f.extension === "canvas") this.lmbScheduleCanvasIndex(f); // P3.5 canvas 索引（v0.16.5 R7 防抖）
       else this.reindexFile(f);
     }));
     this.registerEvent(this.app.vault.on("create", (f) => {
+      if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
       if (f && f.extension === "canvas") this.lmbIndexCanvasFile(f);
       else this.reindexFile(f);
     }));
     this.registerEvent(this.app.vault.on("delete", (f) => {
       if (!f) return;
+      if (f.extension === "md" && this.relatedCache) this.relatedCache.clear();
       if (f.extension === "canvas") {
         for (const [k, v] of Array.from(this.excerptCanvasIndex.entries())) {
           if (v && v.canvasPath === f.path) this.excerptCanvasIndex.delete(k);
         }
       } else this.dropFileFromIndex(f.path);
     }));
+    this.registerEvent(this.app.vault.on("rename", (f, oldPath) => {
+      if ((f && f.extension === "md") || /\.md$/i.test(oldPath || "")) {
+        if (this.relatedCache) this.relatedCache.clear();
+      }
+      if (f && f.extension === "pdf") this.lmbHandleInkPdfRename(f, oldPath).catch((err) => console.warn("[lmb] PDF ink rename failed", err));
+    }));
+    if (this.app.metadataCache && this.app.metadataCache.on) {
+      this.registerEvent(this.app.metadataCache.on("changed", (f) => {
+        if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
+      }));
+    }
     this.app.workspace.onLayoutReady(() => {
       this.buildExcerptIndex();
       // v0.11.2：启动时若 PDF 已打开（layout-change/file-open 不会补发），也要注入工具栏按钮
       this.lmbScheduleToolbarButtons();
+      this.lmbScheduleInkRefresh(250);
+      // v0.17.0：启动时即使用户在恢复的工作区里已经停留在 PDF，也要补一次侧栏渲染。
+      this.lmbSchedulePdfSidebarRefresh(250);
       // v0.13.0：启动 canvas 卡片悬浮栏轮询（每 120ms 比对选中集合与视口状态）
       if (typeof this.lmbStartCanvasBarWatch === "function") this.lmbStartCanvasBarWatch();
     });
@@ -270,6 +323,14 @@ class LuciasMarginBookPlugin extends Plugin {
           : "MarginBook: 图片框选模式已关闭", 3000);
       }
     });
+    this.addCommand({
+      id: "pdf-ink-mode",
+      name: "PDF 手写批注模式（开关）",
+      callback: () => this.lmbSetInkMode(!this.inkMode)
+    });
+    this.addCommand({ id: "pdf-ink-undo", name: "PDF 手写批注：撤销当前页上一笔", callback: () => this.lmbUndoInk() });
+    this.addCommand({ id: "pdf-ink-redo", name: "PDF 手写批注：重做当前页操作", callback: () => this.lmbRedoInk() });
+    this.addCommand({ id: "pdf-ink-clear-page", name: "PDF 手写批注：清除当前页", callback: () => this.lmbClearInk() });
 
     // 补丁 C：Recall 回忆模式开关：模糊摘录 blockquote，点击揭示（借鉴 MarginNote 4.4）
     this.addCommand({
@@ -360,6 +421,8 @@ class LuciasMarginBookPlugin extends Plugin {
         await this.normalizeOverlappingExcerpts();
       }
     });
+    this.addCommand({ id: "layout-tree-right", name: "将当前 Canvas 排为从左到右知识树", callback: () => this.lmbApplyTreeLayout("right") });
+    this.addCommand({ id: "layout-tree-down", name: "将当前 Canvas 排为自上而下知识树", callback: () => this.lmbApplyTreeLayout("down") });
 
     /* ---- v0.8.0：卡片补充描述（note）三条命令 ---- */
     this.addCommand({
@@ -444,6 +507,7 @@ class LuciasMarginBookPlugin extends Plugin {
 
     this.addSettingTab(new LMBSettingTab(this.app, this));
     this.injectStyles();
+    try { document.body.toggleClass("lmb-mobile", !!this.isMobile); } catch (_) {}
 
     // 补丁 C：Recall——阅读模式下把含「【文件名-P.数字】」回跳链接的 blockquote 模糊化。
     // 揭示策略 = 点击后展示 3 秒自动重新模糊：
@@ -473,8 +537,9 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     });
 
-    this.debugNotice("已加载 ✓（v0.16.14：卡片断线与撤销）");
-    console.log("[lmb] loaded (v0.16.14)");
+    if (this.isMobile) new Notice("MarginBook 0.24.1 已加载（手写增强版）", 5000);
+    this.debugNotice("已加载 ✓（v0.24.1）");
+    console.log("[lmb] loaded (v0.24.1)");
   }
 
   onunload() {
@@ -486,9 +551,14 @@ class LuciasMarginBookPlugin extends Plugin {
     try {
       if (this._toolbarBtnTimer) { clearTimeout(this._toolbarBtnTimer); this._toolbarBtnTimer = null; }
       // v0.16.4 修复 P2-1：此前只删 crop，md / canvas 两颗按钮残留成死按钮
-      document.querySelectorAll(".lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas")
+      document.querySelectorAll(".lmb-toolbar-group")
         .forEach((b) => { if (b.parentNode) b.remove(); });
+      document.querySelectorAll(".lmb-ink-layer,.lmb-ink-live-layer,.lmb-ink-tools").forEach((layer) => layer.remove());
+      // v0.17.0（实验）：清理 PDF 批注侧栏，防止卸载后残留
+      this._lmbClearPdfSidebars();
       document.body.removeClass("lmb-rect-mode");
+      document.body.removeClass("lmb-ink-mode");
+      document.body.removeClass("lmb-mobile");
       // v0.12.1：清掉工具栏宿主的 DOM 缓存（不清的话 Map 里会残留整棵已卸载的 leaf 引用）
       if (this._toolbarCache) this._toolbarCache.clear();
       // v0.13.0：停掉 canvas 悬浮栏轮询 + 移除浮层 DOM
@@ -678,10 +748,31 @@ class LuciasMarginBookPlugin extends Plugin {
         try { if (cache) cache.set(leaf, el); } catch (_) { /* noop */ }
       }
 
-      // v0.12.1：以下三个按钮的注入逻辑与 v0.12.0 完全一致，只把宿主从硬编码的
-      //   toolbar 换成上面解析出来（可能来自缓存）的 el。
+      // MarginBook 按钮统一收进一个靠右的紧凑组，避免被 PDF 原生 toolbar
+      // 的 justify-content 分散到整行。
+      let group = el.querySelector(".lmb-toolbar-group");
+      if (!group) {
+        group = document.createElement("div");
+        group.className = "lmb-toolbar-group";
+        el.appendChild(group);
+      }
+      for (const old of Array.from(el.querySelectorAll(":scope > .lmb-toolbar-crop, :scope > .lmb-toolbar-md, :scope > .lmb-toolbar-canvas, :scope > .lmb-toolbar-sidebar"))) {
+        group.appendChild(old);
+      }
+
+      // ⓪ 手写批注（保留原 PDF，按页存为归一化笔划）
+      if (!group.querySelector(".lmb-toolbar-ink")) {
+        const btn = document.createElement("div");
+        btn.className = "clickable-icon lmb-toolbar-ink";
+        btn.setAttribute("aria-label", "MarginBook: PDF 手写批注（开启后用触控笔或鼠标书写；Esc 退出）");
+        try { setIcon(btn, "pen-tool"); } catch (_) { btn.setText("✎"); }
+        btn.addEventListener("click", (e) => { e.stopPropagation(); this.lmbSetInkMode(!this.inkMode); });
+        group.appendChild(btn);
+        btn.toggleClass("is-active", !!this.inkMode);
+      }
+
       // ① 图片框选
-      if (!el.querySelector(".lmb-toolbar-crop")) {
+      if (!group.querySelector(".lmb-toolbar-crop")) {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-crop";
         btn.setAttribute("aria-label",
@@ -695,12 +786,12 @@ class LuciasMarginBookPlugin extends Plugin {
             ? "MarginBook: 图片框选模式已开启 —— 直接拖拽截图，Esc 或再点一次关闭"
             : "MarginBook: 图片框选模式已关闭", 2500);
         });
-        el.appendChild(btn);
+        group.appendChild(btn);
         btn.toggleClass("is-active", !!this.rectMode);
       }
 
       // ② 打开/创建摘录文档
-      if (!el.querySelector(".lmb-toolbar-md")) {
+      if (!group.querySelector(".lmb-toolbar-md")) {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-md";
         btn.setAttribute("aria-label",
@@ -724,11 +815,11 @@ class LuciasMarginBookPlugin extends Plugin {
             new Notice("MarginBook: 打开摘录文档失败，详情见控制台");
           });
         });
-        el.appendChild(btn);
+        group.appendChild(btn);
       }
 
       // ③ 打开/创建专属画布
-      if (!el.querySelector(".lmb-toolbar-canvas")) {
+      if (!group.querySelector(".lmb-toolbar-canvas")) {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-canvas";
         btn.setAttribute("aria-label",
@@ -746,7 +837,24 @@ class LuciasMarginBookPlugin extends Plugin {
             new Notice("MarginBook: 打开专属画布失败，详情见控制台");
           });
         });
-        el.appendChild(btn);
+        group.appendChild(btn);
+      }
+
+      // ④ 打开 / 关闭 PDF 批注边栏
+      if (!group.querySelector(".lmb-toolbar-sidebar")) {
+        const btn = document.createElement("div");
+        btn.className = "clickable-icon lmb-toolbar-sidebar";
+        btn.setAttribute("aria-label", "MarginBook: 打开 / 关闭 PDF 批注边栏");
+        try { setIcon(btn, "panel-right"); } catch (_) { btn.setText("▥"); }
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const leafEl = btn.closest(".workspace-leaf");
+          const currentLeaf = leafEl ? this.app.workspace.getLeavesOfType("pdf").find((l) => l.containerEl === leafEl) : leaf;
+          if (!currentLeaf) return;
+          this.lmbSetPdfSidebarVisible(currentLeaf, currentLeaf._lmbPdfSidebarOpen === false);
+        });
+        group.appendChild(btn);
+        btn.toggleClass("is-active", leaf._lmbPdfSidebarOpen !== false);
       }
     }
     return missing;
@@ -786,7 +894,7 @@ class LuciasMarginBookPlugin extends Plugin {
     try {
       // LmbDomCache 没有对外暴露遍历接口（那是别人的文件，不为遍历去改它），
       // 所以退化成全局选择器：这三个类名是本插件独占的，命中集合 == 已注入的按钮集合。
-      const sels = ".lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas";
+      const sels = ".lmb-toolbar-ink, .lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas, .lmb-toolbar-sidebar";
       document.querySelectorAll(sels).forEach((b) => lmbSetToolbarVisibility(b, mode));
     } catch (_) { /* noop：绝不让异常打断调用方的事件链 */ }
   }
@@ -852,6 +960,22 @@ class LuciasMarginBookPlugin extends Plugin {
       if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
       if (this._dropFlush && this._dropFlush.timer) clearTimeout(this._dropFlush.timer);
       this._dropFlush = null;
+      if (this._lmbPdfSidebarTimer) {
+        clearTimeout(this._lmbPdfSidebarTimer);
+        this._lmbPdfSidebarTimer = null;
+      }
+      if (this._mobileSelectionTimer) {
+        clearTimeout(this._mobileSelectionTimer);
+        this._mobileSelectionTimer = null;
+      }
+      if (this._lmbInkSaveTimer) {
+        clearTimeout(this._lmbInkSaveTimer);
+        this._lmbInkSaveTimer = null;
+      }
+      if (this._lmbInkRefreshTimer) {
+        clearTimeout(this._lmbInkRefreshTimer);
+        this._lmbInkRefreshTimer = null;
+      }
       if (this._fitRetry) {
         for (const k of Object.keys(this._fitRetry)) {
           const r = this._fitRetry[k];
@@ -860,6 +984,7 @@ class LuciasMarginBookPlugin extends Plugin {
         this._fitRetry = {};
       }
       this._fitRetryImg = {};
+      this._fitRetryActual = {};
       if (this._canvasIndexTimers) {
         this._canvasIndexTimers.forEach((t) => clearTimeout(t));
         this._canvasIndexTimers.clear();
@@ -907,13 +1032,16 @@ class LuciasMarginBookPlugin extends Plugin {
   /* ==================== 样式 ==================== */
 
   injectStyles() {
-    if (document.getElementById("lmb-styles")) return;
-    const st = document.createElement("style");
-    st.id = "lmb-styles";
+    let st = document.getElementById("lmb-styles");
+    if (!st) {
+      st = document.createElement("style");
+      st.id = "lmb-styles";
+      document.head.appendChild(st);
+    }
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    document.head.appendChild(st);
+    st.dataset.lmbVersion = "0.24.1";
   }
 
 }

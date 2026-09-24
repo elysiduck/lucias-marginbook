@@ -23,7 +23,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
   },
 
-  startRectDrag(leaf, e) {
+  /** Mobile entry point. Pointer events cover Apple Pencil and touch with one path. */
+  onDocPointerDown(e) {
+    if (!e || (e.pointerType !== "touch" && e.pointerType !== "pen")) return;
+    if (this.chipEl && !this.chipEl.contains(e.target)) this.hideChip();
+    if (!this.rectMode) return;
+    const el = e.target && e.target.nodeType === 1 ? e.target : (e.target && e.target.parentElement);
+    const leafEl = el && el.closest && el.closest(".workspace-leaf");
+    const leaf = leafEl && this.app.workspace.getLeavesOfType("pdf").find((l) => l.containerEl === leafEl);
+    if (!leaf || !leaf.view || !leaf.view.file) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.startRectDrag(leaf, e, "pointer");
+  },
+
+  startRectDrag(leaf, e, eventFamily) {
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
     const box = doc.createElement("div");
     box.className = "lmb-rect";
@@ -38,9 +52,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       box.style.width = Math.abs(ev.clientX - sx) + "px";
       box.style.height = Math.abs(ev.clientY - sy) + "px";
     };
+    const moveEvent = eventFamily === "pointer" ? "pointermove" : "mousemove";
+    const upEvent = eventFamily === "pointer" ? "pointerup" : "mouseup";
+    const cancelEvent = eventFamily === "pointer" ? "pointercancel" : null;
+    const cleanup = () => {
+      document.removeEventListener(moveEvent, mv, true);
+      document.removeEventListener(upEvent, up, true);
+      if (cancelEvent) document.removeEventListener(cancelEvent, cancel, true);
+    };
+    const cancel = () => { cleanup(); box.remove(); };
     const up = async (ev) => {
-      document.removeEventListener("mousemove", mv, true);
-      document.removeEventListener("mouseup", up, true);
+      cleanup();
       box.remove();
       const w = Math.abs(ev.clientX - sx), h = Math.abs(ev.clientY - sy);
       if (w < 8 || h < 8) return; // 误触，按钮模式保持
@@ -81,10 +103,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           this.debugNotice("✓ 框选双重摘录：文字 " + rectText.length
             + " 字 + 截图 " + ctx.attachmentName);
           this.showChip(ev.clientX, ev.clientY,
-            "📝 " + rectText.length + " 字 + 🖼 截图 · 按住拖到 md 或画布", info);
+            "📝 " + rectText.length + " 字 + 🖼 截图" + (this.isMobile ? " · 点按钮保存" : " · 按住拖到 md 或画布"), info);
         } else {
           this.debugNotice("✓ 截图已保存 " + ctx.attachmentName + "（" + ctx.imgW + "×" + ctx.imgH + "）");
-          this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图 · 按住拖到 md 或画布", ctx);
+          this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图" + (this.isMobile ? " · 点按钮保存" : " · 按住拖到 md 或画布"), ctx);
         }
       } else {
         // v0.16.4 修复 P1-1：关闭「自动附截图」（或截图失败）时框选不再整链路报废——
@@ -119,11 +141,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const info = { file, pageNum, display, link, text: rectText, isImage: false };
         this.debugNotice("✓ 框选摘录（无截图）：文字 " + rectText.length + " 字");
         this.showChip(ev.clientX, ev.clientY,
-          "📝 " + rectText.length + " 字 · 按住拖到 md 或画布", info);
+            "📝 " + rectText.length + " 字" + (this.isMobile ? " · 点按钮保存" : " · 按住拖到 md 或画布"), info);
       }
     };
-    document.addEventListener("mousemove", mv, true);
-    document.addEventListener("mouseup", up, true);
+    document.addEventListener(moveEvent, mv, true);
+    document.addEventListener(upEvent, up, true);
+    if (cancelEvent) document.addEventListener(cancelEvent, cancel, true);
   },
 
   pageAtPoint(doc, x, y) {
@@ -201,9 +224,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!pageEl) return null;
       const ctx = this.resolvePdfContext(pageEl);
       if (!ctx || !ctx.view || !ctx.view.file) return null;
-      const rect = range.getBoundingClientRect();
-      if (!rect || rect.width < 4 || rect.height < 4) return null;
-      const screenRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      // 选区建立时已经保存了相对页面坐标。拖拽开始时 PDF 可能因侧栏/缩放重排，
+      // 不能再用旧 Range 的 getBoundingClientRect（它可能膨胀到整页）。
+      const pr = pageEl.getBoundingClientRect();
+      const pct = info && info.selectionRect;
+      let screenRect = null;
+      if (pct && pct.length === 4 && pr.width > 0 && pr.height > 0) {
+        screenRect = {
+          left: pr.left + pr.width * pct[0] / 100,
+          top: pr.top + pr.height * pct[1] / 100,
+          right: pr.left + pr.width * (pct[0] + pct[2]) / 100,
+          bottom: pr.top + pr.height * (pct[1] + pct[3]) / 100
+        };
+      }
+      // 无可靠百分比矩形时宁可降级为纯文字，也不能再冒险截取整页。
+      if (!screenRect) return null;
       // v0.14.8：settings.autoAttachScreenshot 关掉时不生成 webp
       const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
       const cap = autoAttach ? await this.captureRectImage(ctx.view, pageEl, screenRect, info.pageNum || ctx.pageNum) : null;
@@ -272,6 +307,44 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       this._lastNoSelNotice = now;
       this.debugNotice("mouseup：无文字选区（图片框选 = PDF 工具栏按钮 / Alt+拖）");
     }
+  },
+
+  onDocPointerUp(e) {
+    if (!e || (e.pointerType !== "touch" && e.pointerType !== "pen") || this.rectMode) return;
+    // WebKit finalizes its native text selection after pointerup.
+    if (this._mobileSelectionTimer) clearTimeout(this._mobileSelectionTimer);
+    this._mobileSelectionTimer = setTimeout(() => {
+      this._mobileSelectionTimer = null;
+      this.showMobileSelectionChip(e.clientX, e.clientY);
+    }, 120);
+  },
+
+  onMobileSelectionChange() {
+    if (!this.isMobile || this.rectMode) return;
+    if (this._mobileSelectionTimer) clearTimeout(this._mobileSelectionTimer);
+    this._mobileSelectionTimer = setTimeout(() => {
+      this._mobileSelectionTimer = null;
+      this.showMobileSelectionChip();
+    }, 320);
+  },
+
+  showMobileSelectionChip(x, y) {
+    try {
+      const win = typeof activeWindow !== "undefined" ? activeWindow : window;
+      const sel = win.getSelection();
+      const info = sel && !sel.isCollapsed && sel.rangeCount ? this.extractSelection(sel) : null;
+      if (!info) return false;
+      const sig = info.text + "@" + info.pageNum;
+      if (this.chipEl && this._chipSig === sig) return true;
+      const range = sel.getRangeAt(0);
+      try { info._range = range.cloneRange(); } catch (_) { info._range = null; }
+      const rect = range.getBoundingClientRect();
+      const px = Number.isFinite(x) && x > 0 ? x : rect.left + Math.min(rect.width, 48);
+      const py = Number.isFinite(y) && y > 0 ? y : rect.bottom;
+      this._chipSig = sig;
+      this.showChip(px, py, "📑 " + info.text.length + " 字 · 点按钮保存", info);
+      return true;
+    } catch (_) { return false; }
   },
 
   /**
@@ -369,6 +442,25 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 图片：裁剪页面画布 → webp 附件 ==================== */
 
+  _lmbExcerptImageFolder(pdfFile) {
+    const safe = (value) => String(value || "").replace(/[\\:*?"<>|]/g, "-").replace(/[. ]+$/g, "").trim();
+    const pdfName = safe(pdfFile && pdfFile.basename) || "未命名PDF";
+    const template = String((this.settings && this.settings.excerptImageFolder) || "附件/{pdf}")
+      .replace(/\{pdf\}/gi, pdfName).replace(/\\/g, "/");
+    const parts = template.split("/").map((part) => safe(part))
+      .filter((part) => part && part !== "." && part !== "..");
+    return normalizePath(parts.join("/") || ("附件/" + pdfName));
+  },
+
+  async _lmbEnsureVaultFolder(folder) {
+    const adapter = this.app.vault.adapter;
+    let current = "";
+    for (const part of String(folder || "").split("/").filter(Boolean)) {
+      current = normalizePath(current ? current + "/" + part : part);
+      if (!(await adapter.exists(current))) await adapter.mkdir(current);
+    }
+  },
+
   /**
    * 屏幕矩形 → 裁剪页面画布 → 保存 webp 附件。
    * 零 pdfjs 内部 API：直接 drawImage 页面上已渲染的 <canvas>。
@@ -402,11 +494,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       const stamp = Date.now().toString(36).slice(-4) + Math.floor(Math.random() * 36 * 36).toString(36);
       const name = view.file.basename + "-P" + pageNum + "-" + stamp + ".webp";
-      const folder = view.file.parent && view.file.parent.path ? view.file.parent.path : "/";
-      const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+      const folder = this._lmbExcerptImageFolder(view.file);
+      await this._lmbEnsureVaultFolder(folder);
+      const path = normalizePath(folder + "/" + name);
       await this.app.vault.createBinary(path, buf);
 
-      this.imgDims.set(name, { w: out.width, h: out.height });
+      this.imgDims.set(path, { w: out.width, h: out.height });
+      this.imgDims.set(name, { w: out.width, h: out.height }); // 存量短路径兼容
       this.persistAutoSizeSoon();
 
       const display = "【" + view.file.basename + "-P." + pageNum + "】";
@@ -428,8 +522,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         + (rectParam ? "&rect=" + rectParam : "") + "|" + display + "]]";
       return {
         file: view.file, pageNum, display,
-        link, embed: "![[" + name + "]]",
-        attachmentName: name, imgW: out.width, imgH: out.height,
+        link, embed: "![[" + path + "]]",
+        attachmentName: path, imgW: out.width, imgH: out.height,
         rectParam,
         text: "（矩形图像选区）", isImage: true
       };
@@ -473,6 +567,28 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!text) return null;
       const display = "【" + file.basename + "-P." + pageNum + "】";
 
+      // 同时保存选区的页面百分比矩形：selection 索引漂移时用它精确回绘，
+      // 自动附图也复用它，避免延迟截图把整页裁进去。
+      let selectionRect = null;
+      try {
+        const range = sel.getRangeAt(0), pr = pageEl.getBoundingClientRect();
+        const rects = Array.from(range.getClientRects()).filter((r) => {
+          if (!r || r.width < .5 || r.height < .5) return false;
+          if (r.right <= pr.left || r.left >= pr.right || r.bottom <= pr.top || r.top >= pr.bottom) return false;
+          return !(r.width > pr.width * .97 && r.height > pr.height * .18);
+        });
+        if (rects.length && pr.width > 0 && pr.height > 0) {
+          const left = Math.max(pr.left, Math.min(...rects.map((r) => r.left)));
+          const top = Math.max(pr.top, Math.min(...rects.map((r) => r.top)));
+          const right = Math.min(pr.right, Math.max(...rects.map((r) => r.right)));
+          const bottom = Math.min(pr.bottom, Math.max(...rects.map((r) => r.bottom)));
+          if (right > left && bottom > top) selectionRect = [
+            100 * (left - pr.left) / pr.width, 100 * (top - pr.top) / pr.height,
+            100 * (right - left) / pr.width, 100 * (bottom - top) / pr.height
+          ].map((v) => Math.round(v * 100) / 100);
+        }
+      } catch (_) {}
+
       // 补丁 B：P1-5 颜色语义——best-effort 探测选区命中的高亮注释背景色 → 映射标签名。
       // 探测不到 / 未命中映射 / 未配置 colorMap 时恒为 null，行为与现状一致。
       let colorTag = null;
@@ -481,15 +597,33 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       let link;
       let selectionParams = null; // Bugfix: 必须随 info 返回，contentExId 才能区分「同页同文本不同位置」的选区
+      const targetText = text;
       try {
         const params = this.buildSelectionParams(sel, pageEl);
         if (!params) throw new Error("no selection params");
         selectionParams = params;
-        link = "[[" + file.path + "#page=" + pageNum + "&selection=" + params + "|" + display + "]]";
+        link = "[[" + file.path + "#page=" + pageNum + "&selection=" + params
+          + (selectionRect ? "&rect=" + selectionRect.join(",") : "")
+          + "&target=" + encodeURIComponent(targetText)
+          + "|" + display + "]]";
       } catch (_) {
-        link = "[[" + file.path + "#page=" + pageNum + "|" + display + "]]";
+        // 回退路径（极端场景：buildSelectionParams 失败），也保留目标文本，便于后续定位与审计。
+        link = "[[" + file.path + "#page=" + pageNum
+          + "&target=" + encodeURIComponent(targetText)
+          + "|" + display + "]]";
       }
-      return { file, pageNum, text, link, display, isImage: false, colorTag, selectionParams };
+      return {
+        file,
+        pageNum,
+        text,
+        link,
+        display,
+        isImage: false,
+        colorTag,
+        selectionParams,
+        selectionRect,
+        targetText
+      };
     } catch (err) {
       console.warn("[lmb] extractSelection error:", err);
       return null;
@@ -531,12 +665,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 哈希基底：
    *   - 图片选区（isImage）：attachmentName（内含时间戳+随机戳，每张截图天然唯一）
    *   - 文字选区：file.path | pageNum | selectionParams（未注入时回退 text）
-   * 复用 simpleHash（带符号 int32）：>>>0 转无符号后对 36^6 取模，保证恰好 6 位
-   * base36 小写字母数字，稳定匹配 EX_ID_RE = /\^ex-[0-9a-z]{4,8}/。
+   * 使用两个独立 32-bit hash 拼成 10 位 base36，显著降低主键碰撞概率；旧短 ID 继续兼容。
    */
   contentExId(info) {
     try {
-      const MOD36_6 = 2176782336; // 36^6
       const key = (info && info.isImage && info.attachmentName)
         ? "img|" + String(info.attachmentName)
         : [
@@ -544,9 +676,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             (info && info.pageNum != null) ? String(info.pageNum) : "?",
             String((info && (info.selectionParams || info.text)) || "")
           ].join("|");
-      const signed = parseInt(this.simpleHash(key), 10) | 0;
-      const u = (signed >>> 0) % MOD36_6;
-      return "ex-" + u.toString(36).padStart(6, "0");
+      const a = parseInt(this.simpleHash(key), 10) >>> 0;
+      const b = parseInt(this.simpleHash(key.split("").reverse().join("") + "|lmb"), 10) >>> 0;
+      return "ex-" + a.toString(36).padStart(7, "0").slice(-7)
+        + b.toString(36).padStart(7, "0").slice(-3);
     } catch (err) {
       // 优雅降级：任何异常回退随机 id（仅损失去重能力，不影响功能）
       console.warn("[lmb] contentExId 降级为随机 id:", err);
@@ -564,9 +697,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       //   导出摘录 md 时由 lmbRestoreRefDisplayName 还原【文件名-P.N】全名。
       //   旧版「> ([[..|【x-P.4】]])」外层括号一并去掉（📖 后括号纯占宽度）。
       const refLine = "> " + lmbBookLink(info.link);
-      if (info.isImage) {
-        return info.embed + "\n" + refLine + tagLine + "\n^" + exId;
-      }
+      let raw = "";
+      if (info.isImage) raw = info.embed + "\n" + refLine + tagLine + "\n^" + exId;
 // v0.11.3 双重摘录：文字选区同时截了图（info.img）→ 引用块 + 截图 embed 一起进卡。
     //   v0.16.0：**不再写 `> [!lmb-view]` 切换按钮行**（卡片精简 v2 —— 用户要求卡内不放控件）。
     //   视图切换改由悬浮栏「视图」按钮接管：判定「双重卡」= 同时含 PDF 引用行 + 截图 embed
@@ -575,22 +707,166 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     //   副作用：老版本建的双重卡（markdown 里已带 lmb-view 行）仍然能被识别与切换，零迁移。
     //   纯文字路径（无 img）输出与旧版完全一致。
     // v0.14.8：settings.autoAttachScreenshot 关掉时不挂 img.embed（防御性双保险）。
-    let s = refLine + "\n> " + info.text + tagLine;
-    const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
-    if (autoAttach && info.img && info.img.embed) {
-      s += "\n\n" + info.img.embed + "\n\n^" + exId;
-      return s;
-    }
-    return s + "\n^" + exId;
+      if (!raw) {
+        let s = refLine + "\n> " + info.text + tagLine;
+        const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+        if (autoAttach && info.img && info.img.embed) s += "\n\n" + info.img.embed;
+        raw = s + "\n^" + exId;
+      }
+      // v0.20.1：无论直接拖进 Markdown 还是 Canvas，先生成统一视觉卡；Canvas 同步时会
+      // 用 lmbUnwrapExcerptCard 还原内容，避免摘录文档出现嵌套卡片。
+      const kind = (info.isImage || (info.img && info.img.embed)) ? "图像" : "原文";
+      const title = "P." + ((info && info.pageNum != null) ? info.pageNum : "?") + " · " + kind;
+      return "> [!lmb-excerpt]+ " + title + "\n> <span class=\"lmb-excerpt-id\" data-lmb-ex=\"" + exId + "\"></span>\n" + raw.split("\n").map((line) => "> " + line).join("\n");
     } catch (err) {
       console.error("[lmb] buildDropText error:", err);
       // 降级：恢复旧版随机 id 行为
       const exId = "ex-" + Math.random().toString(36).slice(2, 8);
-      if (info.isImage) {
-        return info.embed + "\n> (" + info.link + ")\n^" + exId;
-      }
-      return "> (" + info.link + ")\n> " + info.text + "\n^" + exId;
+      const raw = info.isImage
+        ? info.embed + "\n> (" + info.link + ")\n^" + exId
+        : "> (" + info.link + ")\n> " + info.text + "\n^" + exId;
+      return "> [!lmb-excerpt]+ 摘录\n" + raw.split("\n").map((line) => "> " + line).join("\n");
     }
+  },
+
+  /**
+   * 词语备注不是普通摘录的缩写：它直接写入摘录 MD 的独立持久化区域，
+   * 不创建 Canvas 卡片、不附截图，也不会因 Canvas 同步而被重写。
+   */
+  async lmbCreateWordNote(info) {
+    try {
+      if (!info || !info.file || !String(info.text || "").trim()) return;
+      const word = String(info.text).replace(/\s+/g, " ").trim();
+      const wordInfo = Object.assign({}, info, { selectionParams: "word-note|" + String(info.selectionParams || word) });
+      const exId = this.contentExId(wordInfo);
+      const source = await this.lmbEnsureExcerptMdFile(info.file);
+      if (!(source instanceof TFile)) { new Notice("MarginBook: 无法创建词语备注文档"); return; }
+      const raw = await this.app.vault.cachedRead(source);
+      const previous = this._lmbFindSidebarNote(raw, exId) || "";
+      new LMBExcerptNoteModal(this.app, {
+        title: "词语备注 · " + word,
+        value: previous,
+        sourcePath: source.path,
+        onSubmit: async (value) => {
+          const text = String(value || "").trim();
+          if (!text && !raw.includes("^" + exId)) return;
+          await this.app.vault.process(source, (current) => {
+            if (current.includes("^" + exId)) return current;
+            const entry = "> [!lmb-excerpt]+ 词语 · P." + (info.pageNum || "?") + "\n"
+              + "> <span class=\"lmb-excerpt-id\" data-lmb-ex=\"" + exId + "\"></span>\n"
+              + "> " + info.link + "\n"
+              + "> **" + word + "**\n"
+              + "> ^" + exId + "\n";
+            const begin = /<!--\s*LMB:WORD-NOTES:BEGIN\s*-->/i;
+            const end = /<!--\s*LMB:WORD-NOTES:END\s*-->/i;
+            if (begin.test(current) && end.test(current)) return current.replace(end, entry + "<!-- LMB:WORD-NOTES:END -->");
+            return current.replace(/\s*$/, "\n\n") + "<!-- LMB:WORD-NOTES:BEGIN -->\n" + entry + "<!-- LMB:WORD-NOTES:END -->\n";
+          });
+          // 新条目先落盘，再以同一套保存逻辑写入备注，保证三端的唯一真相源仍是 MD。
+          if (text) await this.lmbSaveExcerptNote(source, exId, text);
+          await this.reindexFile(source, true);
+          this.lmbRefreshAllMarks();
+          this.lmbSchedulePdfSidebarRefresh(0);
+          new Notice("MarginBook: 已保存“" + word + "”的词语备注");
+        }
+      }).open();
+    } catch (err) {
+      console.warn("[lmb] create word note failed:", err);
+      new Notice("MarginBook: 保存词语备注失败，详情见控制台");
+    }
+  },
+
+  async _lmbCaptureDirectExcerptImage(info) {
+    if (!info || info.isImage || info.img || (this.settings && this.settings.autoAttachScreenshot === false) || !info._range) return info;
+    const fakeSelection = { rangeCount: 1, getRangeAt: () => info._range };
+    const image = await this.captureSelectionImage(fakeSelection, info);
+    if (image) info.img = image;
+    return info;
+  },
+
+  async lmbCreateDirectMdExcerpt(info) {
+    try {
+      await this._lmbCaptureDirectExcerptImage(info);
+      const source = await this.lmbEnsureExcerptMdFile(info.file);
+      if (!(source instanceof TFile)) throw new Error("excerpt document unavailable");
+      const exId = this.contentExId(info);
+      await this.app.vault.process(source, (raw) => {
+        if (raw.includes("^" + exId)) return raw;
+        const isImage = !!info.isImage;
+        let entry = "> [!lmb-excerpt]+ P." + (info.pageNum || "?") + " · " + (isImage ? "图像" : "原文") + "\n"
+          + "> <span class=\"lmb-excerpt-id\" data-lmb-ex=\"" + exId + "\"></span>\n"
+          + "> " + lmbBookLink(info.link) + "\n";
+        if (isImage && info.embed) entry += "> " + info.embed + "\n";
+        else entry += "> " + String(info.text || "") + "\n";
+        if (!isImage && info.img && info.img.embed) entry += "> " + info.img.embed + "\n";
+        entry += "> ^" + exId + "\n";
+        const end = /<!--\s*LMB:MANUAL-EXCERPTS:END\s*-->/i;
+        return end.test(raw) ? raw.replace(end, entry + "<!-- LMB:MANUAL-EXCERPTS:END -->")
+          : raw.replace(/\s*$/, "\n\n") + "<!-- LMB:MANUAL-EXCERPTS:BEGIN -->\n" + entry + "<!-- LMB:MANUAL-EXCERPTS:END -->\n";
+      });
+      await this.reindexFile(source, true); this.lmbRefreshAllMarks(); this.lmbSchedulePdfSidebarRefresh(0);
+      new Notice("MarginBook: 已创建摘录并写入摘录文档");
+    } catch (err) { console.warn("[lmb] direct md excerpt failed:", err); new Notice("MarginBook: 创建摘录失败"); }
+  },
+
+  /** Mobile-safe replacement for HTML5 drag-and-drop: append directly to the PDF canvas. */
+  async lmbCreateDirectCanvasExcerpt(info) {
+    try {
+      await this._lmbCaptureDirectExcerptImage(info);
+      const cf = await this.lmbOpenOrCreatePdfCanvas(info.file);
+      if (!(cf instanceof TFile)) throw new Error("canvas unavailable");
+      const rd = await this._lmbReadCanvasData(cf);
+      if (!rd || !rd.data) throw new Error("canvas data unavailable");
+      const data = rd.data;
+      if (!Array.isArray(data.nodes)) data.nodes = [];
+      if (!Array.isArray(data.edges)) data.edges = [];
+      const text = this.buildDropText(info);
+      const exId = this.contentExId(info);
+      const duplicate = data.nodes.find((n) => n && n.type === "text" && String(n.text || "").includes("^" + exId));
+      if (duplicate) {
+        await this.lmbFocusCanvasNode(cf, duplicate.id);
+        new Notice("MarginBook: 该摘录已在专属画布中");
+        return;
+      }
+      const width = Math.max(320, Math.min(800, Number(this.settings.excerptCardWidth) || 560));
+      const size = this.estimateSizeFor(text, { width });
+      const right = data.nodes.reduce((m, n) => Math.max(m, (Number(n.x) || 0) + (Number(n.width) || 0)), -80);
+      const top = data.nodes.length ? Math.min(...data.nodes.map((n) => Number(n.y) || 0)) : 0;
+      const node = {
+        id: "lmb" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+        type: "text", text, x: right + 80, y: top,
+        width, height: Math.max(120, Math.round(Number(size && size.h) || 220))
+      };
+      data.nodes.push(node);
+      const ok = await this._lmbWriteCanvasData(cf, data, rd.memCanvas, rd.raw);
+      if (!ok) throw new Error("canvas write failed");
+      await this.processCanvas(cf);
+      await this.lmbIndexCanvasFile(cf);
+      await this.lmbFocusCanvasNode(cf, node.id);
+      new Notice("MarginBook: 已加入 PDF 专属画布");
+    } catch (err) {
+      console.warn("[lmb] direct canvas excerpt failed:", err);
+      new Notice("MarginBook: 加入画布失败");
+    }
+  },
+
+  async lmbCreateQuickExcerpt(info) {
+    try {
+      await this._lmbCaptureDirectExcerptImage(info);
+      const path = String(info.file && info.file.path || "").replace(/\\/g, "/");
+      if (!path) throw new Error("pdf unavailable");
+      this.settings.quickExcerpts = this.settings.quickExcerpts || {};
+      const list = this.settings.quickExcerpts[path] || (this.settings.quickExcerpts[path] = []);
+      const signature = String(info.selectionParams || info.text || "");
+      if (!list.some((e) => e.signature === signature && e.page === info.pageNum)) list.push({
+        exId: "quick-" + Date.now().toString(36), signature, page: info.pageNum, selection: info.selectionParams ? info.selectionParams.split(",").map(Number) : null,
+        rect: info.selectionRect || ((info.rectParam || (info.img && info.img.rectParam)) ? String(info.rectParam || info.img.rectParam).split(",").map(Number) : null),
+        target: info.targetText || info.text || "", text: info.text || (info.isImage ? "（图片摘录）" : ""),
+        imagePath: info.attachmentName || (info.img && info.img.attachmentName) || null
+      });
+      await this.saveSettings(); this.lmbRefreshAllMarks(); this.lmbSchedulePdfSidebarRefresh(0);
+      new Notice("MarginBook: 已创建简洁摘录（仅 PDF 侧栏）");
+    } catch (err) { console.warn("[lmb] quick excerpt failed:", err); new Notice("MarginBook: 创建简洁摘录失败"); }
   },
 
   /* ==================== 拖拽手柄（纯原生 HTML5 drag） ==================== */
@@ -635,8 +911,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
     const chip = doc.createElement("div");
     chip.className = "lmb-chip";
-    chip.textContent = label;
-    chip.setAttribute("draggable", "true");
+    const chipLabel = doc.createElement("span");
+    chipLabel.className = "lmb-chip-label";
+    chipLabel.textContent = label;
+    chip.appendChild(chipLabel);
+    // 两个独立入口：完整摘录写入 MD；简洁摘录只留在 PDF 侧栏。
+    if (info && info.file && (info.isImage || String(info.text || "").trim())) {
+      const makeAction = (icon, title, action) => {
+        const btn = doc.createElement("button"); btn.className = "lmb-chip-action"; btn.type = "button"; btn.title = title; btn.setAttribute("aria-label", title);
+        try { setIcon(btn, icon); } catch (_) { btn.setText(icon === "file-plus-2" ? "▣" : "⌁"); }
+        btn.addEventListener("mousedown", (ev) => { ev.stopPropagation(); ev.preventDefault(); });
+        btn.addEventListener("click", (ev) => { ev.stopPropagation(); ev.preventDefault(); action.call(this, info).finally(() => this.hideChip()); });
+        chip.appendChild(btn);
+      };
+      makeAction("file-plus-2", "创建完整摘录到摘录文档", this.lmbCreateDirectMdExcerpt);
+      if (this.isMobile) makeAction("layout-dashboard", "加入 PDF 专属画布", this.lmbCreateDirectCanvasExcerpt);
+      makeAction("panel-right-open", "创建简洁摘录到 PDF 侧栏", this.lmbCreateQuickExcerpt);
+    }
+    chip.setAttribute("draggable", this.isMobile ? "false" : "true");
     chip.style.left = Math.min(x + 12, doc.defaultView.innerWidth - 240) + "px";
     chip.style.top = (y + 16) + "px";
     doc.body.appendChild(chip);
@@ -644,11 +936,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     /* v0.16.6 P1-1：按下 chip = 用户明确要拖 → 这一刻才启动截图（详见 onDocMouseUp 的注释）。
      *   只挂监听不干活，成本可忽略；截图失败则 info.img 保持 undefined → 降级纯文字摘录。 */
-    const armImage = () => this._armPendingImage(info);
-    chip.addEventListener("mousedown", armImage);
-    chip.addEventListener("touchstart", armImage, { passive: true });
+    // Desktop drag needs the image prepared before dragstart. Mobile actions await
+    // capture themselves, so prefetching on touchstart would create duplicate files.
+    if (!this.isMobile) {
+      const armImage = () => this._armPendingImage(info);
+      chip.addEventListener("mousedown", armImage);
+    }
 
     chip.addEventListener("dragstart", (e) => {
+      if (this.isMobile) { e.preventDefault(); return; }
       // Bugfix(严重回归)：守卫必须限定图片路径。文字选区的 info 没有 attachmentName 字段，
       // 无条件判断把所有文字拖拽在 dragstart 就 preventDefault 掐死（v0.2.0 引入图片截图时误伤，
       // 图片两条路径都是 await 截图完成后才 showChip，此守卫对图片仅剩"未完成"兜底意义）。
@@ -775,6 +1071,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         continue;
       }
       let changed = false;
+      const movedRoots = moved.map((n) => {
+        const prev = lastPos.get(n.id);
+        return { id: n.id, dx: n.x - prev.x, dy: n.y - prev.y };
+      });
       for (const nn of moved) {
         const others = nodes.filter((n) => n.id !== nn.id && n.type !== "group");
         const hit = lmbPickDropParent(nn, others);
@@ -821,6 +1121,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         changed = true;
         console.log("[lmb] 即时通道（移动）: ", parent.id.slice(0, 8), "->", nn.id.slice(0, 8),
           "(" + ends.fromSide + "→" + ends.toSide + ", 组" + group.length + ")");
+      }
+      if (this.settings && this.settings.moveDescendantsWithParent === true) {
+        // 父卡可能在上面的自动挂靠中再次被排布；按最终位置重算 delta，后代保持原相对位置。
+        for (const move of movedRoots) {
+          const root = nodes.find((n) => n && n.id === move.id);
+          const prev = lastPos.get(move.id);
+          if (root && prev) { move.dx = root.x - prev.x; move.dy = root.y - prev.y; }
+        }
+        const count = lmbMoveDescendants(nodes, data.edges, movedRoots);
+        if (count) { changed = true; console.log("[lmb] 子卡联动移动:", count, "张"); }
       }
       if (changed) {
         try {

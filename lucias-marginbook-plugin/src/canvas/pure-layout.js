@@ -208,6 +208,66 @@ function lmbLayoutGroup(parent, kids, side, gap = 30) {
     }
   }
 }
+
+/**
+ * 按有向连线（fromNode=父，toNode=子）平移一组被拖动卡片的全部后代。
+ * 多选拖动时，显式移动的卡片不再被祖先重复平移；环形连线也只访问一次。
+ * @returns {number} 实际被联动平移的卡片数
+ */
+function lmbMoveDescendants(nodes, edges, movements) {
+  const byId = new Map((nodes || []).filter((n) => n && n.id).map((n) => [n.id, n]));
+  const children = new Map();
+  for (const edge of edges || []) {
+    if (!edge || !byId.has(edge.fromNode) || !byId.has(edge.toNode) || edge.fromNode === edge.toNode) continue;
+    if (!children.has(edge.fromNode)) children.set(edge.fromNode, []);
+    children.get(edge.fromNode).push(edge.toNode);
+  }
+  const roots = (movements || []).filter((m) => m && byId.has(m.id)
+    && Number.isFinite(m.dx) && Number.isFinite(m.dy) && (m.dx !== 0 || m.dy !== 0));
+  const explicit = new Set(roots.map((m) => m.id));
+  const shifted = new Set();
+  for (const move of roots) {
+    const seen = new Set([move.id]);
+    const queue = [...(children.get(move.id) || [])];
+    while (queue.length) {
+      const id = queue.shift();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      for (const childId of children.get(id) || []) queue.push(childId);
+      if (explicit.has(id) || shifted.has(id)) continue;
+      const node = byId.get(id);
+      if (!node || node.type === "group") continue;
+      node.x = Math.round((Number(node.x) || 0) + move.dx);
+      node.y = Math.round((Number(node.y) || 0) + move.dy);
+      shifted.add(id);
+    }
+  }
+  return shifted.size;
+}
+
+/** v0.19：按父子边把一棵树排成左→右或上→下的阅读树；无环保护。 */
+function lmbLayoutTree(nodes, edges, direction = "right", gap = 60) {
+  const byId = new Map((nodes || []).filter((n) => n && n.id && n.type !== "group").map((n) => [n.id, n]));
+  const kids = new Map(), childIds = new Set();
+  for (const e of edges || []) if (byId.has(e.fromNode) && byId.has(e.toNode)) {
+    if (!kids.has(e.fromNode)) kids.set(e.fromNode, []);
+    kids.get(e.fromNode).push(e.toNode); childIds.add(e.toNode);
+  }
+  const roots = [...byId.keys()].filter((id) => !childIds.has(id));
+  let cursor = 0;
+  const walk = (id, depth, seen) => {
+    if (seen.has(id)) return 0; seen.add(id);
+    const node = byId.get(id), children = kids.get(id) || [];
+    let span = 0;
+    for (const child of children) span += walk(child, depth + 1, seen) + gap;
+    span = Math.max(span - (children.length ? gap : 0), direction === "down" ? (node.width || 200) : (node.height || 120));
+    if (direction === "down") { node.x = Math.round(cursor + (span - (node.width || 200)) / 2); node.y = Math.round(depth * ((node.height || 120) + gap)); }
+    else { node.x = Math.round(depth * ((node.width || 240) + gap)); node.y = Math.round(cursor + (span - (node.height || 120)) / 2); }
+    cursor += span + gap; return span;
+  };
+  for (const id of roots) walk(id, 0, new Set());
+  return roots.length;
+}
 /* ==================== v0.11.0：首连锁定 / 改挂侧 / 尺寸重居中 ==================== */
 
 /**

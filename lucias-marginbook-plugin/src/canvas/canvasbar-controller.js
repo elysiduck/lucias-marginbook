@@ -82,6 +82,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             this.lmbCanvasBarAction(cls === "lmb-bar-comment" ? "comment"
               : cls === "lmb-bar-jump" ? "jump"
               : cls === "lmb-bar-view" ? "view"
+              : cls === "lmb-bar-color" ? "color"
+              : cls === "lmb-bar-follow" ? "follow"
               : cls === "lmb-bar-disconnect" ? "disconnect" : "fit");
           } catch (_) { /* noop */ }
         });
@@ -92,7 +94,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       bar.appendChild(mk("lmb-bar-comment", "message-square", "添加或编辑评论", "评论"));
       bar.appendChild(mk("lmb-bar-jump", "book-open", "跳回 PDF 原位置", "跳转"));
       bar.appendChild(mk("lmb-bar-view", "image", "切换文字或图片视图", "视图"));
+      bar.appendChild(mk("lmb-bar-color", "palette", "修改摘录颜色", "颜色"));
       bar.appendChild(mk("lmb-bar-fit", "move-vertical", "根据内容自动调整卡片高度", "高度"));
+      bar.appendChild(mk("lmb-bar-follow", "git-branch", "移动父卡时带上全部子卡", "联动"));
       bar.appendChild(mk("lmb-bar-disconnect", "unlink", "断开卡片连线", "断开"));
 
       wrapperEl.appendChild(bar);
@@ -116,6 +120,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   用户视角就是"点了没反应、连 Notice 都不弹"（v0.13.6 用户反馈）。
         //   这里不依赖轮询，直接从当前选中即时重建一次。
         c = this._lmbRebuildBarCtx();
+      }
+
+      if (kind === "color") {
+        const ex = String(c.node && c.node.text || "").match(EX_ID_RE);
+        if (ex) this.lmbChooseExcerptColor(ex[0].slice(1), document.querySelector(".lmb-canvas-bar .lmb-bar-color"));
+        return;
       }
       if (!c) {
         // 真的没选中卡片 —— 也要告诉用户，绝不静默失败
@@ -153,7 +163,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           ? (el.querySelector(".canvas-node-content") || el.querySelector(".markdown-rendered") || el)
           : null;
         if (host) {
-          this.toggleCardViewByHost(host);
+          const toImg = this.toggleCardViewByHost(host);
+          if (toImg !== null) {
+            this.settings.nodeViews = this.settings.nodeViews || {};
+            this.settings.nodeViews[c.file.path + "::" + c.nodeId] = toImg ? "image" : "text";
+            const ex = String(c.node && c.node.text || "").match(EX_ID_RE);
+            if (ex) {
+              this.settings.excerptViews = this.settings.excerptViews || {};
+              this.settings.excerptViews[ex[0].slice(1)] = toImg ? "image" : "text";
+            }
+            this.saveSettings().catch(() => {});
+            setTimeout(() => {
+              this._lmbAutoFitCard(c.file, c.nodeId, c.node, { allowViewShrink: true })
+                .then(() => { try { this.lmbCanvasBarTick(); } catch (_) {} })
+                .catch((err) => console.warn("[lmb] view auto-fit failed:", err));
+            }, 0);
+          }
         } else {
           // 真的拿不到容器 —— 也要告诉用户，绝不静默失败（v0.13.7 定下的规矩）
           try { new Notice("找不到卡片内容容器，视图未能切换", 2500); } catch (_) {}
@@ -194,6 +219,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
               try { new Notice("断开连线失败：" + (err && err.message ? err.message : err), 3200); } catch (_) {}
             });
         }
+      }
+      if (kind === "follow") {
+        const enabled = !(this.settings && this.settings.moveDescendantsWithParent === true);
+        if (this.settings) this.settings.moveDescendantsWithParent = enabled;
+        const p = this.saveSettings();
+        if (p && typeof p.catch === "function") p.catch((err) => console.warn("[lmb] save follow setting failed:", err));
+        this._barSig = "";
+        try { this.lmbCanvasBarTick(); } catch (_) {}
+        try { new Notice(enabled ? "已开启：移动父卡时子卡会一起移动" : "已关闭子卡联动移动", 2200); } catch (_) {}
       }
     } catch (_) { /* noop：按钮回调绝不能抛错破坏 canvas */ }
   },
@@ -449,7 +483,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (!node || typeof node.text !== "string" || !node.text) continue;
         const hash = this.simpleHash(node.text);
         const c = cache.get(id);
-        if (c && c.hash === hash) continue;              // 文本没变 → 标记已在 DOM 上
         const isDual = !!lmbPickBarActions(node.text).view;
         const el = node.nodeEl || node.contentEl;
         // host 只用来确认内容容器已渲染；class 本身打 nodeEl（抗 markdown 重渲染）
@@ -457,8 +490,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           ? (el.querySelector(".canvas-node-content") || el.querySelector(".markdown-rendered"))
           : null;
         if (!host) continue;                             // 未就绪 → 不写缓存，下轮重试
+        // Markdown 重渲染会替换 host；即使文本 hash 没变，也必须在新 host 上恢复视图。
+        const ex = String(node.text || "").match(EX_ID_RE);
+        const exId = ex ? ex[0].slice(1) : "";
+        const saved = (exId && this.settings.excerptViews && this.settings.excerptViews[exId])
+          || (this.settings.nodeViews && this.settings.nodeViews[(canvas.view && canvas.view.file
+            ? canvas.view.file.path : "") + "::" + id]);
         if (el.classList) el.classList.toggle("lmb-dual", isDual);
-        cache.set(id, { hash: hash, dual: isDual });
+        if (isDual) host.classList.toggle("lmb-view-img", saved === "image");
+        cache.set(id, { hash: hash, dual: isDual, host: host });
       }
       // 缓存里已删除节点的条目顺手清掉（防长期使用内存缓慢增长）
       const has = (typeof nodes.has === "function") ? (k) => nodes.has(k) : (k) => (k in nodes);
@@ -489,9 +529,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!canvas || !canvas.nodes) return null;
       let arr = [];
       try {
-        const sel = typeof canvas.getSelection === "function"
-          ? canvas.getSelection() : canvas.selection;
-        arr = sel ? Array.from(sel) : [];
+        arr = LmbCanvasAdapter.selection(canvas);
       } catch (_) { arr = []; }
       const nodes = arr.filter((n) => n && typeof n.text === "string" && n.type !== "group");
       if (nodes.length !== 1) return null;
@@ -500,7 +538,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!nodeEl) return null;
       const acts = lmbPickBarActions(node.text);
       try {
-        const data = typeof canvas.getData === "function" ? canvas.getData() : null;
+        const data = LmbCanvasAdapter.data(canvas);
         const sidecar = (this.autoEdges && this.autoEdges.get(ctx.file.path)) || new Set();
         acts.disconnect = lmbPlanDisconnect(node.id, data && data.edges, sidecar).kind !== "none";
       } catch (_) { acts.disconnect = false; }
@@ -528,9 +566,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     return { data: cloned, node };
   },
 
-  lmbFitNodeById(file, nodeId, nodeHint) {
+  lmbFitNodeById(file, nodeId, nodeHint, opts) {
     return (async () => {
       try {
+        const quiet = !!(opts && opts.quiet);
         // v0.14.1：每个 early return 都带编号探针。上一版只探了分支入口（「开始调整…」
         //   弹了），但函数内部的 4 个无声 early return 仍然在静默退出 —— 用户看到的
         //   还是"只有探针没下文"。编号探针弹哪个，断点就在哪，一步定位不用再猜。
@@ -623,7 +662,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             // 至少等待三次一致（而不是旧版两次），并取稳定样本；每次都是全新的自然布局副本。
             let previous = 0, best = 0, stable = 0;
             for (let sample = 0; sample < 6; sample++) {
-              const measured = lmbMeasureNaturalCard(wrapperEl, contentEl, scale);
+              const measured = lmbMeasureNaturalCard(wrapperEl, contentEl, scale, {
+                ignoreLiveHeight: !!(opts && opts.allowViewShrink)
+              });
               if (measured > 0) {
                 best = Math.max(best, measured);
                 if (previous > 0 && Math.abs(measured - previous) < 1) stable++;
@@ -641,22 +682,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         let usedEstimate = false;
         if (naturalH <= 0) {
           try {
-            const size = this.estimateSizeFor(node.text);
+            const size = this.estimateSizeFor(node.text, { width: node.width, view: opts && opts.view });
             naturalH = Math.round(size.h);
             usedEstimate = naturalH > 0;
-            try { new Notice("内容未就绪，使用估算高度", 1600); } catch (_) {}
+            if (!quiet) { try { new Notice("内容未就绪，使用估算高度", 1600); } catch (_) {} }
           } catch (_) {}
         }
         // v0.14.6：合理性校验 —— 实测值若明显小于估算（< 60%）则采用估算值。
         //   目的：防止测量异常时把卡片压得**比内容还矮**（内容会被裁剪，比"留白"
         //   糟糕得多）。估算走 v0.13.3 修过 lmbRenderedText 的 estimateSizeFor。
         try {
-          const est = this.estimateSizeFor(node.text);
+          const est = this.estimateSizeFor(node.text, { width: node.width, view: opts && opts.view });
           const estH = Math.round((est && est.h) || 0);
-          if (estH > 0 && naturalH > 0 && naturalH < estH * 0.6) {
+          if (!(opts && opts.allowViewShrink) && estH > 0 && naturalH > 0 && naturalH < estH * 0.6) {
             const measuredH = Math.round(naturalH);
             naturalH = estH;
-            try {
+            if (!quiet) try {
               new Notice(`实测 ${measuredH}px 明显小于估算 ${estH}px，已采用估算值（防止内容被裁）`, 3000);
             } catch (_) {}
           }
@@ -875,7 +916,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (!store) { store = new Map(); if (this.autoSize) this.autoSize.set(file.path, store); }
         store.set(nodeId, { hash: this.simpleHash(node.text), w: node.width, h: finalH, locked: true });
         // 操作反馈：测量值 + 文件回读 + canvas 内存回读（双保险：哪条通道生效都显示）
-        try {
+        if (!quiet) try {
           const tag = usedEstimate ? "（估算：子元素未就绪）" : "";
           const overflowTag = overflowCorrected > 0 ? `（溢出校正 +${overflowCorrected}px）` : "";
           const tail = reloaded ? "（已强制重载画布）" : "";
@@ -951,14 +992,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       const map = {
         comment: ".lmb-bar-comment", jump: ".lmb-bar-jump", view: ".lmb-bar-view",
-        fit: ".lmb-bar-fit", disconnect: ".lmb-bar-disconnect"
+        fit: ".lmb-bar-fit", follow: ".lmb-bar-follow", disconnect: ".lmb-bar-disconnect"
       };
       for (const k of Object.keys(map)) {
         const b = bar.querySelector(map[k]);
         if (!b) continue;
         // jump 的可用性看 acts.jump 是否为字符串，其余看布尔位
-        const ok = k === "jump" ? !!(acts && acts.jump) : !!(acts && acts[k]);
+        const ok = k === "follow" ? true : (k === "jump" ? !!(acts && acts.jump) : !!(acts && acts[k]));
         lmbSetToolbarVisibility(b, ok ? "show" : "hideRemove");
+        if (k === "follow" && b.classList) b.classList.toggle("is-active",
+          !!(this.settings && this.settings.moveDescendantsWithParent));
       }
     } catch (_) { /* noop */ }
   },
@@ -987,6 +1030,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    */
   lmbCanvasBarTick() {
     try {
+      if (this._barDragging) {
+        document.querySelectorAll(LMB_BAR_SEL).forEach((b) => lmbSetToolbarVisibility(b, "hideRemove"));
+        return;
+      }
       const ctx = this.activeCanvasContext();
       if (!ctx) { this._lmbHideBar(); return; }
 
@@ -1021,20 +1068,26 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       const nodeEl = node.nodeEl || node.contentEl;
       if (!nodeEl || typeof nodeEl.getBoundingClientRect !== "function") { this._lmbHideBar(); return; }
+      // v0.18：首次遇到节点时从 data.json 恢复用户上次选择的文字/图片视图。
+      try {
+        const host = nodeEl.querySelector && (nodeEl.querySelector(".canvas-node-content") || nodeEl.querySelector(".markdown-rendered"));
+        const ex = String(node.text || "").match(EX_ID_RE);
+        const exId = ex ? ex[0].slice(1) : "";
+        const saved = (exId && this.settings && this.settings.excerptViews
+          && this.settings.excerptViews[exId])
+          || (this.settings && this.settings.nodeViews
+            && this.settings.nodeViews[ctx.file.path + "::" + node.id]);
+        if (host && saved) host.classList.toggle("lmb-view-img", saved === "image");
+      } catch (_) {}
 
       const bar = this.lmbEnsureCanvasBarEl(wrapperEl);
       if (!bar) return;
+      // _lmbHideBar() 会把复用浮栏设成 display:none；display:none 的元素宽高恒为 0。
+      // 首次恢复时先进入“参与布局但不可见”的测量态，随后完成按钮筛选与定位，最后
+      // 才 show。整个过程发生在同一帧，用户只会看到卡片外侧的最终位置。
+      lmbSetToolbarVisibility(bar, "hideKeepSpace");
 
-      // ① 位置（每轮重算）
-      const p = lmbCalcBarPos(
-        nodeEl.getBoundingClientRect(),
-        wrapperEl.getBoundingClientRect(),
-        { width: bar.offsetWidth, height: bar.offsetHeight }
-      );
-      bar.style.left = p.left + "px";
-      bar.style.top = p.top + "px";
-
-      // ② 按钮可用性（指纹变了 **或上下文丢了** 才重算）
+      // ① 按钮可用性（指纹变了 **或上下文丢了** 才重算）
       //    ⚠ 必须带 `|| !this._barCtx`：_lmbHideBar() 会清掉 _barCtx 但**不**重置 _barSig。
       //      若只看指纹，选中恢复后 sig 与上次完全相同 → 永远不再重建 _barCtx →
       //      浮层照样显示，但按钮点了没反应（正是「点过一次就失效」的根因）。
@@ -1048,7 +1101,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           .map((e) => e.id).sort().join(",");
       } catch (_) {}
       const sig = lmbBarSignature([node.id], { x: canvas.x, y: canvas.y, zoom: canvas.zoom })
-        + "|edges:" + edgeSig;
+        + "|edges:" + edgeSig + "|follow:" + !!(this.settings && this.settings.moveDescendantsWithParent);
       if (sig !== this._barSig || !this._barCtx) {
         this._barSig = sig;
         const acts = lmbPickBarActions(node.text);
@@ -1059,6 +1112,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         this._barCtx = { file: ctx.file, nodeId: node.id, node, acts, nodeEl };
         this._lmbApplyBarActions(bar, acts);
       }
+
+      // ② 按钮显隐确定后，才读取浮栏的最终尺寸并定位。新建浮栏默认 visibility:hidden，
+      //    所以用户只会看到已经放好的最终位置，不会看到“先在卡内、再跳到卡外”。
+      const barRect = bar.getBoundingClientRect ? bar.getBoundingClientRect() : null;
+      const barWidth = (barRect && barRect.width) || bar.offsetWidth;
+      const barHeight = (barRect && barRect.height) || bar.offsetHeight;
+      const p = lmbCalcBarPos(
+        nodeEl.getBoundingClientRect(),
+        wrapperEl.getBoundingClientRect(),
+        { width: barWidth, height: barHeight },
+        { mobile: !!this.isMobile }
+      );
+      bar.style.left = p.left + "px";
+      bar.style.top = p.top + "px";
+      if (bar.dataset) bar.dataset.lmbPlacement = p.placement;
 
       lmbSetToolbarVisibility(bar, "show");
     } catch (_) { /* noop：轮询回调绝不抛异常 */ }
@@ -1108,17 +1176,111 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { this._barGuard = null; }
   },
 
+  /**
+   * 拖动 Canvas 卡片时隐藏侧栏。只有指针移动超过 4px 才进入拖动态，普通单击不会
+   * 造成可见闪烁；松开后按卡片最终位置重新计算并显示。
+   */
+  _lmbInstallBarDragWatch() {
+    try {
+      if (this._barDragHandlers) return;
+      const down = (ev) => {
+        try {
+          const target = ev.target;
+          if (!target || !target.closest || target.closest(LMB_BAR_SEL)) return;
+          if (!target.closest(".canvas-wrapper")) return;
+          if (this.isMobile) {
+            if (!this._barGesturePointers) this._barGesturePointers = new Set();
+            this._barGesturePointers.add(ev.pointerId);
+            this._barDragging = true;
+            this._lmbHideBar();
+          }
+          this._barDragArm = {
+            pointerId: ev.pointerId, x: ev.clientX, y: ev.clientY,
+            viewport: !target.closest(".canvas-node")
+          };
+          if (!this.isMobile) this._barDragging = false;
+          // iPad 双指缩放/背景平移开始就隐藏工具栏，避免每次合成都带一个独立浮层。
+          if (this._barDragArm.viewport && this.isMobile) {
+            this._barDragging = true;
+            this._lmbHideBar();
+          }
+        } catch (_) {}
+      };
+      const move = (ev) => {
+        try {
+          const arm = this._barDragArm;
+          if (!arm || (arm.pointerId != null && ev.pointerId !== arm.pointerId)) return;
+          if (!this._barDragging && Math.hypot(ev.clientX - arm.x, ev.clientY - arm.y) >= 4) {
+            this._barDragging = true;
+            this._lmbHideBar();
+          }
+        } catch (_) {}
+      };
+      const end = (ev) => {
+        try {
+          if (this.isMobile) {
+            if (this._barGesturePointers) this._barGesturePointers.delete(ev.pointerId);
+            if (this._barGesturePointers && this._barGesturePointers.size) return;
+            this._barDragArm = null;
+            this._barDragging = false;
+            clearTimeout(this._barGestureEndTimer);
+            this._barGestureEndTimer = setTimeout(() => {
+              try { this.lmbCanvasBarTick(); } catch (_) {}
+            }, 160);
+            return;
+          }
+          const arm = this._barDragArm;
+          if (!arm || (arm.pointerId != null && ev.pointerId !== arm.pointerId)) return;
+          const wasDragging = this._barDragging;
+          this._barDragArm = null;
+          this._barDragging = false;
+          if (wasDragging) setTimeout(() => { try { this.lmbCanvasBarTick(); } catch (_) {} }, 0);
+        } catch (_) {
+          this._barDragArm = null;
+          this._barDragging = false;
+        }
+      };
+      document.addEventListener("pointerdown", down, true);
+      document.addEventListener("pointermove", move, true);
+      document.addEventListener("pointerup", end, true);
+      document.addEventListener("pointercancel", end, true);
+      this._barDragHandlers = { down, move, end };
+    } catch (_) {}
+  },
+
+  _lmbUninstallBarDragWatch() {
+    try {
+      const h = this._barDragHandlers;
+      if (h) {
+        document.removeEventListener("pointerdown", h.down, true);
+        document.removeEventListener("pointermove", h.move, true);
+        document.removeEventListener("pointerup", h.end, true);
+        document.removeEventListener("pointercancel", h.end, true);
+      }
+      this._barDragHandlers = null;
+      this._barDragArm = null;
+      this._barDragging = false;
+      if (this._barGesturePointers) this._barGesturePointers.clear();
+      this._barGesturePointers = null;
+      clearTimeout(this._barGestureEndTimer);
+      this._barGestureEndTimer = null;
+    } catch (_) {}
+  },
+
   /** 启动悬浮栏轮询（onLayoutReady 调用；幂等） */
   lmbStartCanvasBarWatch() {
     try {
       if (this._barTimer) return;             // 防重入：重复启动会叠加 interval
       this._lmbInstallBarGuard();             // v0.13.1：先装守卫，再开始轮询
+      this._lmbInstallBarDragWatch();
       // v0.13.8：启动时先全局清掉所有**版本不匹配**的旧浮层。
       //   canvas leaf 的 DOM 不随插件重载而重建，旧浮层会一直挂在 DOM 里，
       //   光靠 lmbEnsureCanvasBarEl 只能修好「当前这个 wrapperEl」的那一颗，
       //   其他 canvas leaf 上残留的旧浮层（旧版回调）还得靠这里兜底。
       this._lmbPurgeStaleBars();
-      this._barTimer = setInterval(() => this.lmbCanvasBarTick(), LMB_BAR_POLL_MS);
+      // iPad 完全采用 pointerup / workspace 事件驱动。持续轮询会在双指缩放期间
+      // 反复读取 Canvas 布局并扫描节点，直接参与每一轮合成，造成明显掉帧。
+      this._barTimer = this.isMobile ? null : setInterval(() => this.lmbCanvasBarTick(), LMB_BAR_POLL_MS);
       this.lmbCanvasBarTick();                // 先跑一次，避免刚进 canvas 要等 120ms 才出现
     } catch (_) { /* noop */ }
   },
@@ -1143,6 +1305,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       this._lmbExitDisconnectMode(true);
       if (this._barTimer) { clearInterval(this._barTimer); this._barTimer = null; }
       this._lmbUninstallBarGuard();           // v0.13.1：守卫是 document 级的，不拆会一直拦事件
+      this._lmbUninstallBarDragWatch();
       this._barSig = null;
       this._barCtx = null;
       // 这里必须 remove 而不是隐藏：插件都卸载了，不该在 DOM 里留残留节点

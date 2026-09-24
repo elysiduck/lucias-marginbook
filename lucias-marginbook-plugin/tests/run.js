@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, "..");
 const suites = [
   "tests/unit/build.test.js",
   "tests/unit/architecture.test.js",
+  "tests/unit/ink.test.js",
   "tests/integration/behavior.test.js"
 ];
 

@@ -35,7 +35,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 口径必须与正向一致：divs = .textLayer 的**直接子元素**。
    * 失败返回 null（由调用方走降级）。
    */
-  lmbResolveSelectionRects(pageEl, selection) {
+  lmbResolveSelectionRects(pageEl, selection, expectedText, expectedRect) {
     try {
       if (!pageEl || !selection || selection.length !== 4) return null;
       const layer = pageEl.querySelector(".textLayer");
@@ -64,9 +64,103 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const r = document.createRange();
       r.setStart(s.node, s.offset);
       r.setEnd(e.node, e.offset);
+      // textLayer 的子元素序号会随 PDF.js 版本、字体解析或文档重载发生漂移。
+      // 漂移后的 selection 仍可能构造出合法 Range，但会落在完全无关的文字上；
+      // 有 target 时必须核对内容，错误坐标交给文字搜索兜底，不能将错就错。
+      const expected = this._lmbNormalizePdfMatchText(expectedText);
+      const actual = this._lmbNormalizePdfMatchText(r.toString());
+      if (expected && actual && actual !== expected
+        && !actual.includes(expected) && !expected.includes(actual)) return null;
       const rects = Array.from(r.getClientRects()).filter((x) => x.width > 0.5 && x.height > 0.5);
+      if (rects.length && expectedRect && expectedRect.length === 4) {
+        const pr = pageEl.getBoundingClientRect();
+        const left = Math.min(...rects.map((x) => x.left));
+        const top = Math.min(...rects.map((x) => x.top));
+        const right = Math.max(...rects.map((x) => x.right));
+        const bottom = Math.max(...rects.map((x) => x.bottom));
+        const actualX = 100 * ((left + right) / 2 - pr.left) / pr.width;
+        const actualY = 100 * ((top + bottom) / 2 - pr.top) / pr.height;
+        const savedX = Number(expectedRect[0]) + Number(expectedRect[2]) / 2;
+        const savedY = Number(expectedRect[1]) + Number(expectedRect[3]) / 2;
+        // 同一短语可能在一页出现多次，仅文字一致仍不足以证明身份；
+        // 保存时的页面百分比位置相差过大，也必须判定 selection 已漂移。
+        if (pr.width && pr.height && (Math.abs(actualX - savedX) > 8 || Math.abs(actualY - savedY) > 8)) return null;
+      }
       return rects.length ? rects : null;
     } catch (_) { return null; }
+  },
+
+  _lmbNormalizePdfMatchText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+  },
+
+  /** 在 textLayer 中查找文字，并保留归一化字符到真实文本节点偏移的映射。 */
+  _lmbFindPdfTextMatch(layer, text, hintRect, pageEl) {
+    try {
+      const needle = this._lmbNormalizePdfMatchText(text);
+      if (!layer || !needle) return null;
+      const doc = layer.ownerDocument;
+      let haystack = "";
+      const positions = [];
+      const appendSpace = (node, offset) => {
+        if (haystack && haystack.charAt(haystack.length - 1) !== " ") {
+          haystack += " "; positions.push({ node, offset });
+        }
+      };
+      for (const div of Array.from(layer.children || [])) {
+        const walker = doc.createTreeWalker(div, 4); // NodeFilter.SHOW_TEXT
+        const nodes = []; let node;
+        while ((node = walker.nextNode())) nodes.push(node);
+        if (!nodes.length) continue;
+        appendSpace(nodes[0], 0);
+        for (const textNode of nodes) {
+          const raw = String(textNode.textContent || "");
+          for (let i = 0; i < raw.length; i++) {
+            if (/\s/.test(raw.charAt(i))) appendSpace(textNode, i);
+            else { haystack += raw.charAt(i).toLowerCase(); positions.push({ node: textNode, offset: i }); }
+          }
+        }
+      }
+      let index = haystack.indexOf(needle);
+      if (index < 0) return null;
+      let best = null, bestDistance = Infinity;
+      while (index >= 0) {
+        const start = positions[index], last = positions[index + needle.length - 1];
+        const candidate = start && last ? { start, end: { node: last.node, offset: last.offset + 1 } } : null;
+        if (candidate && hintRect && hintRect.length === 4 && pageEl && doc.createRange) {
+          const range = doc.createRange();
+          range.setStart(candidate.start.node, candidate.start.offset);
+          range.setEnd(candidate.end.node, candidate.end.offset);
+          const rr = range.getBoundingClientRect();
+          const pr = pageEl.getBoundingClientRect();
+          const x = pr.width ? 100 * ((rr.left + rr.right) / 2 - pr.left) / pr.width : 0;
+          const y = pr.height ? 100 * ((rr.top + rr.bottom) / 2 - pr.top) / pr.height : 0;
+          const hx = Number(hintRect[0]) + Number(hintRect[2]) / 2;
+          const hy = Number(hintRect[1]) + Number(hintRect[3]) / 2;
+          const distance = (x - hx) * (x - hx) + (y - hy) * (y - hy);
+          if (distance < bestDistance) { best = candidate; bestDistance = distance; }
+        } else if (candidate) return candidate;
+        index = haystack.indexOf(needle, index + 1);
+      }
+      return best;
+    } catch (_) { return null; }
+  },
+
+  /** 旧摘录没有 rect 或 selection 已漂移时，按摘录文字在当前文本层中兜底定位。 */
+  lmbResolveEntryTextRects(pageEl, text, hintRect) {
+    try {
+      const layer = pageEl && pageEl.querySelector(".textLayer");
+      const target = String(text || "").replace(/\s+/g, " ").trim().slice(0, 160);
+      if (!layer || target.length < 2) return null;
+      const match = this._lmbFindPdfTextMatch(layer, target, hintRect, pageEl);
+      if (!match) return null;
+      const range = pageEl.ownerDocument.createRange();
+      range.setStart(match.start.node, match.start.offset);
+      range.setEnd(match.end.node, match.end.offset);
+      const rects = Array.from(range.getClientRects()).filter((r) => r.width > .5 && r.height > .5);
+      return rects.length ? rects : null;
+    } catch (_) {}
+    return null;
   },
 
   /** #rrggbb → rgba()，失败返回 null */
@@ -86,6 +180,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    */
   lmbMarkColor(entry) {
     try {
+      const explicit = entry && entry.exId && this.settings && this.settings.excerptColors && this.settings.excerptColors[entry.exId];
+      const direct = this.lmbHexToRgba(explicit, 0.42);
+      if (direct) return direct;
       const raw = this.settings && this.settings.colorMap;
       if (raw && entry && entry.tags && entry.tags.length) {
         const map = this.parseColorMap(raw);
@@ -105,9 +202,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       let pcts = null;
       if (entry && entry.selection) {
-        const rects = this.lmbResolveSelectionRects(pageEl, entry.selection);
+        const rects = this.lmbResolveSelectionRects(pageEl, entry.selection, entry.target || "", entry.rect);
         if (rects) pcts = this.lmbRectsToPercents(rects, pageEl);
-      } else if (entry && entry.rect && entry.rect.length === 4) {
+      }
+      if (!pcts && entry && (entry.target || entry.text)) {
+        const textRects = this.lmbResolveEntryTextRects(pageEl, entry.target || entry.text, entry.rect);
+        if (textRects) pcts = this.lmbRectsToPercents(textRects, pageEl);
+      }
+      // 文字 selection 索引因 PDF 文本层版本变化失效时，优先使用摘录时保存的
+      // 页面百分比矩形，不再画到页面左上角的降级细条。
+      if (!pcts && entry && entry.rect && entry.rect.length === 4) {
         // 截图摘录：rect 就是页面百分比，直接用——不需要 textLayer，
         // 虚拟化（未渲染）的页也能画。这是"截图摘录在 PDF 里没标记"的修复。
         const [l, t, w, h] = entry.rect;
@@ -117,9 +221,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const frag = document.createDocumentFragment();
       if (pcts && pcts.length) {
         const bg = this.lmbMarkColor(entry);
-        for (const p of pcts) {
+        for (let pi = 0; pi < pcts.length; pi++) {
+          const p = pcts[pi];
           const d = document.createElement("div");
           d.className = "lmb-mark";
+          // 只有“纯图片摘录”才允许使用区域边框。文字摘录即使自动附带了截图，
+          // 仍必须按文字语义显示为荧光笔底色，不能误判成图片后画虚线框。
+          const entryText = String(entry && entry.text || "").trim();
+          const imageOnly = !!(entry && entry.imagePath
+            && (!entryText || /^（(?:矩形图像选区|图片摘录|图片)）$/.test(entryText)));
+          const imageMark = !!(imageOnly && (!this.settings || this.settings.imageExcerptMarkStyle !== "highlight"));
+          if (imageMark) d.classList.add("lmb-mark-image");
+          if (pi === 0 && entry.pageOrdinal) d.setAttribute("data-no", String(entry.pageOrdinal));
           if (entry.exId) d.setAttribute("data-ex", entry.exId);
           // 反向跳转（P3 双击）需要知道来源摘录文档
           if (entry.sourceMd) d.setAttribute("data-src", entry.sourceMd);
@@ -128,7 +241,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           d.style.top = p.top + "%";
           d.style.width = p.width + "%";
           d.style.height = p.height + "%";
-          d.style.background = bg;
+          d.style.background = imageMark ? "transparent" : bg;
+          if (imageMark) d.style.borderColor = this.lmbHexToRgba((this.settings && this.settings.excerptColors && this.settings.excerptColors[entry.exId]) || "#65c692", 0.95) || "rgba(101,198,146,.95)";
           frag.appendChild(d);
         }
       } else {
@@ -137,6 +251,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         bar.className = "lmb-mark";
         bar.setAttribute("data-fallback", "1");
         if (entry && entry.exId) bar.setAttribute("data-ex", entry.exId);
+        if (entry && entry.pageOrdinal) bar.setAttribute("data-no", String(entry.pageOrdinal));
         if (entry && entry.sourceMd) bar.setAttribute("data-src", entry.sourceMd);
         bar.style.background = "rgba(140,140,140,0.55)";
         bar.title = "此处有摘录，但无法精确定位（缺 selection 或文本层对不上）";
@@ -182,7 +297,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       //   只能等下一次 layout-change / 切标签碰运气补画。
       //   现在只要有文件就先挂 Observer（幂等），页面渲染/虚拟化的瞬间都会自动重画。
       this.lmbSetupObserver(view);
-      const entries = this.getExcerptsForPdf(file.path);
+      const entries = this._lmbGetPdfSidebarEntries ? this._lmbGetPdfSidebarEntries(file) : this.getExcerptsForPdf(file.path);
       if (!entries || !entries.length) { this.lmbDisconnectObserver(view); return; }
 
       const pages = container.querySelectorAll("div.page");
@@ -203,7 +318,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   现在按条目类型分流：rect 条目只要 .page 在就画；selection 条目才要求文本层
         //   （虚拟化页没有文本层时跳过，等它进入视口、observer 触发后自然重画）。
         const hasLayer = !!pageEl.querySelector(".textLayer");
-        for (const e of list) {
+        for (let ei = 0; ei < list.length; ei++) {
+          const e = Object.assign({}, list[ei], { pageOrdinal: ei + 1 });
           const rectOnly = !!(e.rect && e.rect.length === 4 && e.rect[2] > 0 && e.rect[3] > 0);
           if (!hasLayer && !rectOnly) continue;
           this.lmbDrawEntryMark(pageEl, e);
@@ -223,9 +339,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   lmbSetupObserver(view) {
     try {
       if (!view || !view.containerEl || view._ppdMarkObserver) return;
-      const target = view.containerEl.querySelector(".pdfViewer") || view.containerEl;
+      const target = LmbPdfAdapter.viewer(view);
       if (!target) return;
-      const isOwn = (n) => n && n.nodeType === 1 && n.classList && n.classList.contains("lmb-mark");
       /* v0.16.6 P1-6：防抖 timer 必须挂在 view 上，**不能**用闭包局部变量。
        *   lmbDisconnectObserver 清的是 view._ppdMarkTimer —— 若 timer 只是闭包变量，
        *   那段清理就是永远够不到的死代码：disconnect 之后 pending 的回调照样落地，
@@ -238,8 +353,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           const scan = (list) => {
             for (let i = 0; i < list.length; i++) {
               const n = list[i];
-              if (n.nodeType === 3) return true;                 // 文本节点（textLayer 填字）
-              if (n.nodeType === 1 && !isOwn(n)) return true;    // 非我们自己的元素
+              if (LmbPdfAdapter.isRelevantMutation(n)) return true;
             }
             return false;
           };

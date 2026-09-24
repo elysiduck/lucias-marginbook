@@ -15,4 +15,7 @@ assert(state.includes("class LmbRuntimeState"));
 assert(settings.includes("class LmbSettingsStore"));
 assert(settings.includes("autoCleanOnDelete"));
 assert(settings.includes("autoAttachScreenshot"));
+assert(plugin.includes("this.isMobile = LMB_IS_MOBILE"));
+assert(plugin.includes('"selectionchange"'));
+assert.equal(JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8")).isDesktopOnly, false);
 console.log("Architecture boundary verification passed");

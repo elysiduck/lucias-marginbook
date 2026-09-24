@@ -182,7 +182,7 @@ function lmbJoinComment(body, commentText, opts) {
     if (o.allowEmpty !== true) return base;
     return base + "\n\n> [!" + LMB_COMMENT_TYPE + "]- " + LMB_COMMENT_EMPTY_TITLE;
   }
-  const head = "> [!" + LMB_COMMENT_TYPE + "] " + LMB_COMMENT_TITLE;
+  const head = "> [!" + LMB_COMMENT_TYPE + "]";
   const callout = [head].concat(String(commentText).split("\n").map((l) => (l.trim() ? "> " + l : ">")));
   return base + "\n\n" + callout.join("\n");
 }

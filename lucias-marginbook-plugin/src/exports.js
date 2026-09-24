@@ -5,11 +5,19 @@ module.exports.__test = {
   lmbRectsOverlapRatio, lmbPickDropParent, lmbSnapChildPosition, lmbBuildTree,
   lmbDiffCanvasNodes, lmbSideOf, lmbSideEnds, lmbLayoutGroup, lmbGroupBySide,
   lmbAutoEdgeAlive, lmbAutoParentEdgeOf,
+  lmbMoveDescendants,
+  lmbLayoutTree,
+  // PDF 手写：采样、命中、套索与版本化存储文件名
+  LMB_INK_SCHEMA_VERSION, LMB_INK_HISTORY_LIMIT,
+  lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso,
+  lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
+  lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
   // v0.8.0：卡片补充描述
   lmbSplitNote, lmbJoinNote, lmbStripNote, lmbRenderedText,
   LMB_NOTE_START, LMB_NOTE_END,
   // P1：摘录索引层
   lmbParseExcerptDoc, LMB_LINK_RE, LMB_SEL_RE,
+  lmbUnwrapExcerptCard,
   // v0.12.0：引用行 📖 化
   lmbBookLink, lmbRestoreRefDisplayName,
   // v0.11.0：首连锁定 / 改挂侧 / 尺寸重居中 + 独立评论

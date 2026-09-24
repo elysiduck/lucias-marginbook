@@ -17,7 +17,7 @@
  * 三个功能（评论 / 跳转 / 切换视图）在 v0.11.0 ~ v0.11.3 都已实现，
  * 本文件只是把入口从「卡内」搬到「卡片上方的悬浮栏」，不新增业务逻辑。
  */
-const LMB_BAR_POLL_MS = 120;      // 悬浮栏轮询间隔（ms）
+const LMB_BAR_POLL_MS = 800;      // 事件驱动后的低频兜底轮询（ms）
 const LMB_BAR_GAP = 8;            // 悬浮栏与卡片边缘的间距（px）
 const LMB_BAR_MARGIN = 4;         // 贴边时的安全留白（px）
 const LMB_BAR_SEL = ".lmb-canvas-bar";  // 悬浮栏容器 class
@@ -29,15 +29,14 @@ const LMB_BAR_SEL = ".lmb-canvas-bar";  // 悬浮栏容器 class
 //   （例如 v0.13.4 的 fit 按钮绑的是 `if (!c) return` 静默版）。
 //   表现极其迷惑：代码明明改了、也重载了，行为却是老样子。
 //   加版本号后，版本不匹配的浮层会被移除重建，保证用户手上的永远是"当前代码造的"浮层。
-const LMB_BAR_VERSION = "v0.16.14";
+const LMB_BAR_VERSION = "v0.24.1";
 
-/* LMB_BAR_POLL_MS 为什么是 120ms：
+/* LMB_BAR_POLL_MS 为什么是 800ms：
  *   - canvas **没有原生「选中变化」事件**。advanced-canvas 插件那个 `selection-changed`
  *     不是 Obsidian 原生 API，是它自己 monkey-patch canvas 内部方法造出来的；
  *     我们不依赖 advanced-canvas，所以只能轮询。
- *   - 120ms 是「跟手」和「不烧 CPU」的折中：人眼对 >150ms 的延迟才有明显迟滞感，
- *     120ms 内刷新基本感觉不到；同时每秒 ~8 次，每次只做一次 rect 读取 + 几次比较，
- *     开销可以忽略。
+ *   - pointerup、active-leaf-change 已负责立即刷新；800ms 只兜底宿主未暴露的选中、平移与缩放变动，
+ *     将常驻检查从每秒约 8 次降到约 1 次。
  *   - **一次轮询同时解决两件事**，这是选轮询而非监听的额外收益：
  *       ① 选中变化 → 要**重建按钮**（不同卡片能点的按钮不一样，见 lmbPickBarActions）
  *       ② 视口平移/缩放 → 要**重算位置**（卡片在屏幕上的位置变了，浮层要跟着走）
@@ -100,8 +99,8 @@ function lmbBarFix2(v) {
  * @param {{left:number, top:number, width:number, height:number}} wrapperRect  挂载容器（canvas.wrapperEl 或 .canvas-wrapper）的视口 rect
  * @param {{width:number, height:number}} barSize  悬浮栏自身尺寸
  * @param {{gap?:number, margin?:number}} [opts]   可选；不传用 LMB_BAR_GAP / LMB_BAR_MARGIN
- * @returns {{left:number, top:number, placement:"left"|"inside"}} placement：
- *   "left" = 卡片左边缘外侧（默认）、"inside" = 卡片内侧左侧（贴边时的退路）
+ * @returns {{left:number, top:number, placement:"left"|"right"}} placement：
+ *   "left" = 卡片左边缘外侧（默认）、"right" = 左边不足时放到右边缘外侧
  */
 function lmbCalcBarPos(nodeRect, wrapperRect, barSize, opts) {
   try {
@@ -130,17 +129,32 @@ function lmbCalcBarPos(nodeRect, wrapperRect, barSize, opts) {
     const relLeft = nodeLeft - wrapLeft;
     const relTop = nodeTop - wrapTop;
 
+    // iPad 使用横向工具栏，放在卡片下方；桌面继续使用左侧竖排。
+    if (opts && opts.mobile) {
+      let mobileLeft = relLeft + (nodeW - barW) / 2;
+      let mobileTop = relTop + nodeH + gap;
+      let mobilePlacement = "bottom";
+      if (mobileTop + barH > wrapH - margin) {
+        mobileTop = relTop - barH - gap;
+        mobilePlacement = "top";
+      }
+      const mobileMaxLeft = wrapW - barW - margin;
+      mobileLeft = mobileMaxLeft < margin ? margin : Math.max(margin, Math.min(mobileMaxLeft, mobileLeft));
+      mobileTop = Math.max(margin, Math.min(Math.max(margin, wrapH - barH - margin), mobileTop));
+      return { left: Math.round(mobileLeft), top: Math.round(mobileTop), placement: mobilePlacement };
+    }
+
     // 2. v0.13.2：默认贴在卡片**左侧**（竖排，顶端对齐卡片顶端）
     //    上一版是「卡片上边缘外侧」，用户反馈贴左更顺手、视觉上更像"卡片的"工具栏。
     let left = relLeft - barW - gap;
     let top = relTop;
     let placement = "left";
 
-    // 3. 左侧放不下 → 退到卡片**内侧**左侧（左对齐 + 顶端对齐，会遮挡卡片左侧一点点）
-    //    刻意不翻到右侧 —— 那是别人的领域，且不叫"左侧"了。
+    // 3. 左侧放不下 → 翻到卡片**右侧外边**。绝不先塞进卡片内部，避免首次
+    //    测量与下一帧测量之间出现“栏从卡片里跳出去”的闪动。
     if (left < margin) {
-      left = relLeft + gap;
-      placement = "inside";
+      left = relLeft + nodeW + gap;
+      placement = "right";
     }
 
     // 4. 左右钳制（含「浮层比容器还宽」的颠倒区间边界）
@@ -256,9 +270,9 @@ function lmbPickBarActions(nodeText) {
     const view = hasEmbed && (jump !== null);
     // v0.13.3：fit = 自适应高度。文本节点都能调（lmbFitNodeById 内部判断 node.type）
     const fit = hasText;
-    return { comment: comment, jump: jump, view: view, fit: fit, disconnect: false };
+    return { comment: comment, jump: jump, view: view, fit: fit, color: hasText && EX_ID_RE.test(nodeText), disconnect: false };
   } catch (e) {
-    return { comment: false, jump: null, view: false, fit: false, disconnect: false };
+    return { comment: false, jump: null, view: false, fit: false, color: false, disconnect: false };
   }
 }
 
@@ -318,10 +332,9 @@ function lmbBarSignature(nodeIds, viewport) {
       .sort();
 
     // 视口段：非数字一律按 0 处理（viewport 传 null 不该让指纹机制整个废掉）
-    const vp = viewport || {};
-    const v = lmbBarFix2(vp.x) + "," + lmbBarFix2(vp.y) + "," + lmbBarFix2(vp.zoom);
-
-    return sorted.join(",") + "|" + v;
+    // 工具栏动作只由选中节点决定；平移/缩放只影响位置，不能触发按钮状态重建。
+    // 保留 viewport 参数以兼容旧调用方，但故意不再写进指纹。
+    return sorted.join(",");
   } catch (e) {
     return "";
   }

@@ -22,9 +22,39 @@
  * 注意：^ex- 是块尾锚点——遇到它就给当前条目定稿。没有 ^ex- 的悬空条目也会保留
  *       （exId 为 null），遵循全插件「宁可画得不准也不丢数据」的原则。
  */
+function lmbUnwrapExcerptCard(content) {
+  if (typeof content !== "string" || !/\[!lmb-excerpt\]/i.test(content)) return content || "";
+  return content.split(/\r?\n/).filter((line) => !/\[!lmb-excerpt\]/i.test(line) && !/class=["']lmb-excerpt-id["']/i.test(line))
+    .map((line) => line.replace(/^(\s*)>\s?/, "$1")).join("\n");
+}
+
+function lmbParsePdfLinkTarget(linkText) {
+  try {
+    const bar = String(linkText || "").indexOf("|");
+    const href = bar >= 0 ? String(linkText).slice(0, bar) : String(linkText || "");
+    const hash = href.lastIndexOf("#");
+    if (hash < 0) return null;
+    const query = href.slice(hash + 1);
+    const tm = new URLSearchParams(query);
+    return tm.get("target") || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function lmbParseExcerptDoc(content, sourcePath) {
   const entries = [];
   if (!content || typeof content !== "string") return entries;
+  // v0.18：只把插件受控生成区编入索引，用户补充区里的 PDF 链接不会制造幽灵摘录。
+  const generated = content.match(/<!--\s*LMB:BEGIN\s*-->([\s\S]*?)<!--\s*LMB:END\s*-->/i);
+  // 词语备注是用户主动建立的独立条目，不能随 Canvas 同步重写的受控区一起被覆盖。
+  // 因此它单独保存在文档尾部；索引时把两个区域合并读取。
+  const wordNotes = content.match(/<!--\s*LMB:WORD-NOTES:BEGIN\s*-->([\s\S]*?)<!--\s*LMB:WORD-NOTES:END\s*-->/i);
+  const manual = content.match(/<!--\s*LMB:MANUAL-EXCERPTS:BEGIN\s*-->([\s\S]*?)<!--\s*LMB:MANUAL-EXCERPTS:END\s*-->/i);
+  if (generated) content = generated[1] + (manual ? "\n" + manual[1] : "") + (wordNotes ? "\n" + wordNotes[1] : "");
+  // v0.20：摘录卡使用外层 lmb-excerpt callout。解析前只剥掉这一层视觉包装，
+  // 内部原文、图片、评论和 ^ex 锚点仍按旧格式解析，存量文档完全兼容。
+  content = lmbUnwrapExcerptCard(content);
   const lines = content.split(/\r?\n/);
   let pending = null;
   const flush = () => { if (pending) { entries.push(pending); pending = null; } };
@@ -34,22 +64,33 @@ function lmbParseExcerptDoc(content, sourcePath) {
    *   「原文 我的批注」），「> #误当标签」被收成假标签，note 里若含 [[y.pdf#page=3]]
    *   还会凭空开出一条幽灵摘录。
    *   状态位：遇 `[!` 首行置 true，遇非 `>` 行（空行 / 新块）复位。 */
-  let inCallout = false;
+  let inCalloutDepth = 0;
+  let inLooseMirrorComment = false;
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] || "";
-    if (!/^\s*>/.test(raw)) inCallout = false;   // 块结束（空行/新块）→ 复位
+    // 兼容已被旧同步逻辑污染的文档：外层摘录 Callout 解包后，原本与外层
+    // 同级的 lmb-comment 会失去 `>`，变成普通 `[!lmb-comment]` 文本。
+    if (/^\s*\[!lmb-comment\]/i.test(raw)) { inLooseMirrorComment = true; continue; }
+    if (inLooseMirrorComment) {
+      if (!/^\s*>/.test(raw)) continue;
+      inLooseMirrorComment = false;
+    }
+    const quoteDepth = ((raw.match(/^\s*((?:>\s*)*)/) || ["", ""])[1].match(/>/g) || []).length;
+    // 嵌套备注比摘录正文深一层；回到较浅的 ^ex 锚点时退出备注块。
+    if (!/^\s*>/.test(raw) || (inCalloutDepth && quoteDepth < inCalloutDepth)) inCalloutDepth = 0;
 
     // Callout 必须先于链接解析处理，否则其正文中的 PDF 链接会生成幽灵摘录。
-    if (/^\s*(?:>\s*)+\[!/.test(raw)) { inCallout = true; continue; }
-    if (inCallout) continue;
+    if (/^\s*(?:>\s*)+\[!/.test(raw)) { inCalloutDepth = quoteDepth || 1; continue; }
+    if (inCalloutDepth && EX_ID_RE.test(raw) && quoteDepth <= inCalloutDepth) inCalloutDepth = 0;
+    if (inCalloutDepth && quoteDepth >= inCalloutDepth) continue;
 
     // 1) 回跳链接行 → 开新条目
     LMB_LINK_RE.lastIndex = 0;
     const lm = LMB_LINK_RE.exec(raw);
     if (lm) {
       flush();
-      inCallout = false;
+      inCalloutDepth = 0;
       const sm = LMB_SEL_RE.exec((lm[3] || "").trim());
       const rm = LMB_RECT_RE.exec((lm[4] || "").trim());
       pending = {
@@ -57,15 +98,21 @@ function lmbParseExcerptDoc(content, sourcePath) {
         page: parseInt(lm[2], 10),
         selection: sm ? [+sm[1], +sm[2], +sm[3], +sm[4]] : null,
         rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null,
+        target: lmbParsePdfLinkTarget(raw),
         exId: null,
         tags: [],
         text: "",
+        imagePath: null,
         sourceMd: sourcePath || null,
         line: i
       };
       continue;
     }
     if (!pending) continue;
+
+    // 图片是摘录的媒体内容，不应作为 `![[附件.webp]]` 原样混进侧栏正文。
+    const image = raw.match(/!\[\[([^\]|]+\.(?:webp|png|jpe?g))(?:\|[^\]]*)?\]\]/i);
+    if (image) { pending.imagePath = image[1]; continue; }
 
     // 2) ^ex- 锚点 → 定稿
     const ex = EX_ID_RE.exec(raw);

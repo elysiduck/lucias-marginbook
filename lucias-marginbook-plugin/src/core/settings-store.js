@@ -9,12 +9,32 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   noteIntoSync: false,
   noteAutoBoxOnNew: false,
   commentAutoBoxOnNew: false,
+  excerptCardWidth: 560,
   autoAttachScreenshot: true,
-  autoCleanOnDelete: false,
+  excerptImageFolder: "附件/{pdf}",
+  imageExcerptMarkStyle: "dashed",
+  autoCleanOnDelete: true,
+  moveDescendantsWithParent: false,
+  nodeViews: {},
+  excerptViews: {},
+  quickExcerpts: {},
+  excerptColors: {},
   notePlaceholderOffMigrated: false,
   commentBoxOffMigrated: false,
   naturalHeightV2Migrated: false,
-  overflowHeightVerifiedMigrated: false
+  overflowHeightVerifiedMigrated: false,
+  managedExcerptAssetsV1Migrated: false,
+  inkSidecarV2Migrated: false,
+  inkInputMode: "pen-mouse",
+  inkPressureMode: "natural",
+  inkLastTool: "pen",
+  inkPenColor: "#e05252",
+  inkPenWidth: 3,
+  inkHighlighterColor: "#ffd84d",
+  inkHighlighterWidth: 12,
+  inkEraserSize: 18,
+  inkToolbarCollapsed: false,
+  inkAnnotations: {}
 });
 
 class LmbSettingsStore {
@@ -35,6 +55,12 @@ class LmbSettingsStore {
       settings.commentBoxOffMigrated = true;
       migrated = true;
     }
+    if (!settings.managedExcerptAssetsV1Migrated) {
+      settings.excerptImageFolder = settings.excerptImageFolder || "附件/{pdf}";
+      settings.autoCleanOnDelete = true;
+      settings.managedExcerptAssetsV1Migrated = true;
+      migrated = true;
+    }
     return { settings, migrated };
   }
 
@@ -49,12 +75,34 @@ class LmbSettingsStore {
       noteIntoSync: !!settings.noteIntoSync,
       noteAutoBoxOnNew: settings.noteAutoBoxOnNew !== false,
       commentAutoBoxOnNew: settings.commentAutoBoxOnNew === true,
+      excerptCardWidth: Math.max(320, Math.min(800, Number(settings.excerptCardWidth) || 560)),
       autoAttachScreenshot: settings.autoAttachScreenshot !== false,
+      excerptImageFolder: String(settings.excerptImageFolder || "附件/{pdf}"),
+      imageExcerptMarkStyle: settings.imageExcerptMarkStyle === "highlight" ? "highlight" : "dashed",
       autoCleanOnDelete: settings.autoCleanOnDelete === true,
+      moveDescendantsWithParent: settings.moveDescendantsWithParent === true,
+      nodeViews: settings.nodeViews && typeof settings.nodeViews === "object" ? settings.nodeViews : {},
+      excerptViews: settings.excerptViews && typeof settings.excerptViews === "object" ? settings.excerptViews : {},
+      quickExcerpts: settings.quickExcerpts && typeof settings.quickExcerpts === "object" ? settings.quickExcerpts : {},
+      excerptColors: settings.excerptColors && typeof settings.excerptColors === "object" ? settings.excerptColors : {},
       notePlaceholderOffMigrated: !!settings.notePlaceholderOffMigrated,
       commentBoxOffMigrated: !!settings.commentBoxOffMigrated,
       naturalHeightV2Migrated: !!settings.naturalHeightV2Migrated,
-      overflowHeightVerifiedMigrated: !!settings.overflowHeightVerifiedMigrated
+      overflowHeightVerifiedMigrated: !!settings.overflowHeightVerifiedMigrated,
+      managedExcerptAssetsV1Migrated: !!settings.managedExcerptAssetsV1Migrated,
+      inkSidecarV2Migrated: !!settings.inkSidecarV2Migrated,
+      inkInputMode: settings.inkInputMode === "pen-only" ? "pen-only" : "pen-mouse",
+      inkPressureMode: ["fixed", "natural", "fountain"].includes(settings.inkPressureMode) ? settings.inkPressureMode : "natural",
+      inkLastTool: typeof settings.inkLastTool === "string" ? settings.inkLastTool : "pen",
+      inkPenColor: String(settings.inkPenColor || "#e05252"),
+      inkPenWidth: Math.max(1, Math.min(14, Number(settings.inkPenWidth) || 3)),
+      inkHighlighterColor: String(settings.inkHighlighterColor || "#ffd84d"),
+      inkHighlighterWidth: Math.max(4, Math.min(30, Number(settings.inkHighlighterWidth) || 12)),
+      inkEraserSize: Math.max(8, Math.min(48, Number(settings.inkEraserSize) || 18)),
+      inkToolbarCollapsed: !!settings.inkToolbarCollapsed,
+      inkAnnotations: this.plugin._lmbInkSidecarReady ? {} :
+        (this.plugin._lmbInkDocs && typeof this.plugin._lmbInkDocs === "object" ? this.plugin._lmbInkDocs :
+          (settings.inkAnnotations && typeof settings.inkAnnotations === "object" ? settings.inkAnnotations : {}))
     };
     if (state.autoSize.size) {
       obj.autoSizes = Object.fromEntries(Array.from(state.autoSize, ([path, store]) => [path, Array.from(store)]));

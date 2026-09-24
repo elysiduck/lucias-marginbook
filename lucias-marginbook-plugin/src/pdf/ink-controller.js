@@ -1,0 +1,780 @@
+/* PDF ink controller: pen-first input, cached rendering, history and sidecar persistence. */
+const LMB_INK_TOOLS = ["hand", "select", "pen", "highlighter", "eraser", "text", "line", "rect"];
+
+LuciasMarginBookPlugin.prototype.lmbInkStore = function () {
+  if (!this._lmbInkDocs || typeof this._lmbInkDocs !== "object") {
+    this._lmbInkDocs = this.settings.inkAnnotations && typeof this.settings.inkAnnotations === "object"
+      ? this.settings.inkAnnotations : {};
+  }
+  return this._lmbInkDocs;
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkStorageDir = function () {
+  const id = this.manifest && this.manifest.id || "lucias-marginbook";
+  return normalizePath(`.obsidian/plugins/${id}/ink-data`);
+};
+
+LuciasMarginBookPlugin.prototype.lmbInitializeInkStorage = async function () {
+  const migrationWasComplete = this.settings.inkSidecarV2Migrated === true;
+  const legacy = this.settings.inkAnnotations && typeof this.settings.inkAnnotations === "object"
+    ? this.settings.inkAnnotations : {};
+  this._lmbInkDocs = {};
+  this._lmbInkDirtyPaths = new Set();
+  this._lmbInkDirtyRevisions = new Map();
+  this._lmbInkLoadedPaths = new Set();
+  this._lmbInkLoadPromises = new Map();
+  this._lmbInkLoadErrors = new Set();
+  this._lmbInkRetryCount = 0;
+  this._lmbInkSaveState = "saved";
+  try {
+    const adapter = this.app.vault.adapter, dir = this.lmbInkStorageDir();
+    if (!adapter || typeof adapter.read !== "function" || typeof adapter.write !== "function") throw new Error("adapter unavailable");
+    if (!(await adapter.exists(dir))) await adapter.mkdir(dir);
+    const legacyPaths = Object.keys(legacy);
+    for (const path of legacyPaths) {
+      const sidecar = await this.lmbReadInkSidecar(path, adapter, dir);
+      this._lmbInkDocs[path] = lmbInkMergePages(sidecar && sidecar.pages, legacy[path]);
+      this._lmbInkLoadedPaths.add(path);
+      this._lmbInkDirtyPaths.add(path);
+      this._lmbInkDirtyRevisions.set(path, 1);
+    }
+    this._lmbInkSidecarReady = true;
+    if (legacyPaths.length) {
+      await this.lmbFlushInkStorage();
+      this.settings.inkAnnotations = {};
+      this.settings.inkSidecarV2Migrated = true;
+      return true;
+    }
+    this.settings.inkSidecarV2Migrated = true;
+    return !migrationWasComplete;
+  } catch (error) {
+    console.warn("[lmb] ink sidecar unavailable; retaining data.json fallback", error);
+    this._lmbInkDocs = legacy;
+    this._lmbInkSidecarReady = false;
+    this._lmbInkSaveState = "error";
+    return false;
+  }
+};
+
+LuciasMarginBookPlugin.prototype.lmbReadInkSidecar = async function (path, adapter, dir) {
+  const target = normalizePath(`${dir || this.lmbInkStorageDir()}/${lmbInkFileKey(path)}`);
+  let sawExisting = false, best = null;
+  for (const candidate of [target, target + ".tmp", target + ".bak"]) {
+    try {
+      if (!(await adapter.exists(candidate))) continue;
+      sawExisting = true;
+      const doc = JSON.parse(await adapter.read(candidate));
+      if (doc && doc.version === LMB_INK_SCHEMA_VERSION && doc.pdfPath === path && doc.pages && typeof doc.pages === "object") {
+        const rank = Math.max(Number(doc.revision) || 0, Number(doc.savedAt) || 0);
+        if (!best || rank > best.rank) best = { doc, rank };
+        continue;
+      }
+      console.warn("[lmb] incompatible ink sidecar", candidate);
+    } catch (error) { console.warn("[lmb] failed to read ink sidecar", candidate, error); }
+  }
+  if (best) return best.doc;
+  if (sawExisting) throw new Error(`No valid ink sidecar copy for ${path}`);
+  return null;
+};
+
+LuciasMarginBookPlugin.prototype.lmbEnsureInkDocument = function (path) {
+  if (!path || !this._lmbInkSidecarReady || this._lmbInkLoadedPaths && this._lmbInkLoadedPaths.has(path)) return Promise.resolve(true);
+  if (this._lmbInkLoadErrors && this._lmbInkLoadErrors.has(path)) return Promise.resolve(false);
+  if (this._lmbInkLoadPromises.has(path)) return this._lmbInkLoadPromises.get(path);
+  const promise = (async () => {
+    try {
+      const doc = await this.lmbReadInkSidecar(path, this.app.vault.adapter, this.lmbInkStorageDir());
+      this._lmbInkDocs[path] = doc ? doc.pages : {};
+      this._lmbInkLoadedPaths.add(path);
+      document.querySelectorAll(".lmb-ink-layer").forEach((canvas) => {
+        if (canvas.dataset.lmbInkPath === path) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLayer(canvas); }
+      });
+      return true;
+    } catch (error) {
+      console.warn("[lmb] lazy ink load failed", path, error);
+      if (this._lmbInkLoadErrors) this._lmbInkLoadErrors.add(path);
+      this._lmbInkSaveState = "error"; this.lmbUpdateInkSaveStatus(); return false;
+    } finally { this._lmbInkLoadPromises.delete(path); }
+  })();
+  this._lmbInkLoadPromises.set(path, promise);
+  return promise;
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkDocumentReady = function (path) {
+  return !this._lmbInkSidecarReady || !this._lmbInkLoadedPaths || this._lmbInkLoadedPaths.has(path);
+};
+
+LuciasMarginBookPlugin.prototype.lmbHandleInkPdfRename = async function (file, oldPath) {
+  if (!file || file.extension !== "pdf" || !oldPath || oldPath === file.path) return false;
+  try {
+    let oldPages = this._lmbInkDocs && this._lmbInkDocs[oldPath];
+    if (!oldPages && this._lmbInkSidecarReady) {
+      const oldDoc = await this.lmbReadInkSidecar(oldPath, this.app.vault.adapter, this.lmbInkStorageDir());
+      oldPages = oldDoc && oldDoc.pages;
+    }
+    if (!oldPages) return false;
+    let newPages = this._lmbInkDocs && this._lmbInkDocs[file.path];
+    if (!newPages && this._lmbInkSidecarReady) {
+      const newDoc = await this.lmbReadInkSidecar(file.path, this.app.vault.adapter, this.lmbInkStorageDir());
+      newPages = newDoc && newDoc.pages;
+    }
+    this._lmbInkDocs[file.path] = lmbInkMergePages(newPages, oldPages);
+    delete this._lmbInkDocs[oldPath];
+    if (this._lmbInkDirtyPaths) this._lmbInkDirtyPaths.delete(oldPath);
+    if (this._lmbInkDirtyRevisions) this._lmbInkDirtyRevisions.delete(oldPath);
+    if (this._lmbInkLoadedPaths) { this._lmbInkLoadedPaths.delete(oldPath); this._lmbInkLoadedPaths.add(file.path); }
+    if (this._lmbInkHistory) {
+      for (const [key, history] of Array.from(this._lmbInkHistory.entries())) if (key.startsWith(oldPath + "\n")) {
+        this._lmbInkHistory.delete(key); this._lmbInkHistory.set(file.path + key.slice(oldPath.length), history);
+      }
+    }
+    this.lmbMarkInkDirty(file.path);
+    await this.lmbFlushInkStorage();
+    this.lmbScheduleInkRefresh(0); return true;
+  } catch (error) { console.warn("[lmb] PDF ink rename migration failed", oldPath, file.path, error); return false; }
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkId = function () {
+  return "ink-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkObjects = function (path, page, create) {
+  const store = this.lmbInkStore();
+  if (!store[path] && create) store[path] = {};
+  if (!store[path]) return [];
+  const key = String(page), value = store[path][key];
+  if (Array.isArray(value)) store[path][key] = { objects: value.map((stroke) => Object.assign({ type: "pen", id: this.lmbInkId() }, stroke)) };
+  if (!store[path][key] && create) store[path][key] = { objects: [] };
+  const pageData = store[path][key];
+  if (!pageData || !Array.isArray(pageData.objects)) return [];
+  let normalized = false;
+  const seenIds = new Set();
+  for (const object of pageData.objects) {
+    if (!object.id || seenIds.has(object.id)) { object.id = this.lmbInkId(); normalized = true; }
+    seenIds.add(object.id);
+    if (!object.type) { object.type = "pen"; normalized = true; }
+  }
+  if (normalized && this.lmbInkDocumentReady(path)) this.lmbMarkInkDirty(path);
+  return pageData.objects;
+};
+
+LuciasMarginBookPlugin.prototype.lmbReplaceInkObjects = function (path, page, objects) {
+  const store = this.lmbInkStore();
+  if (!store[path]) store[path] = {};
+  store[path][String(page)] = { objects: lmbInkClone(objects || []) };
+  this.lmbInvalidateInkSpatial(path, page);
+};
+
+LuciasMarginBookPlugin.prototype.lmbMarkInkDirty = function (path) {
+  if (!path) return;
+  if (!this._lmbInkDirtyPaths) this._lmbInkDirtyPaths = new Set();
+  if (!this._lmbInkDirtyRevisions) this._lmbInkDirtyRevisions = new Map();
+  this._lmbInkDirtyPaths.add(path);
+  this._lmbInkDirtyRevisions.set(path, (this._lmbInkDirtyRevisions.get(path) || 0) + 1);
+  this._lmbInkRetryCount = 0;
+  this._lmbInkSaveState = "saving";
+  this.lmbUpdateInkSaveStatus();
+  clearTimeout(this._lmbInkSaveTimer);
+  this._lmbInkSaveTimer = setTimeout(() => this.lmbFlushInkStorage().catch(() => {}), 350);
+};
+
+LuciasMarginBookPlugin.prototype.lmbFlushInkStorage = async function () {
+  if (this._lmbInkFlushPromise) return this._lmbInkFlushPromise;
+  this._lmbInkFlushPromise = (async () => {
+    const paths = Array.from(this._lmbInkDirtyPaths || []).map((path) => [path, this._lmbInkDirtyRevisions && this._lmbInkDirtyRevisions.get(path) || 0]);
+    if (!paths.length) { this._lmbInkSaveState = "saved"; this.lmbUpdateInkSaveStatus(); return true; }
+    try {
+      if (!this._lmbInkSidecarReady) {
+        this.settings.inkAnnotations = this.lmbInkStore();
+        await this.saveSettings();
+      } else {
+        const adapter = this.app.vault.adapter, dir = this.lmbInkStorageDir();
+        for (const [path] of paths) {
+          const target = normalizePath(`${dir}/${lmbInkFileKey(path)}`), temp = target + ".tmp", backup = target + ".bak";
+          const body = JSON.stringify({ version: LMB_INK_SCHEMA_VERSION, pdfPath: path, revision: this._lmbInkDirtyRevisions.get(path) || 0, savedAt: Date.now(), pages: this.lmbInkStore()[path] || {} });
+          await adapter.write(temp, body);
+          JSON.parse(await adapter.read(temp));
+          if (await adapter.exists(target)) {
+            try { await adapter.write(backup, await adapter.read(target)); } catch (_) {}
+          }
+          await adapter.write(target, body);
+          const written = await adapter.read(target);
+          const verified = JSON.parse(written);
+          if (verified.pdfPath !== path || verified.version !== LMB_INK_SCHEMA_VERSION) throw new Error("ink sidecar verification failed");
+          if (written !== body) throw new Error("ink sidecar content verification failed");
+        }
+      }
+      for (const [path, revision] of paths) if ((this._lmbInkDirtyRevisions.get(path) || 0) === revision) this._lmbInkDirtyPaths.delete(path);
+      this._lmbInkRetryCount = 0;
+      this._lmbInkSaveState = this._lmbInkDirtyPaths.size ? "saving" : "saved";
+      this.lmbUpdateInkSaveStatus();
+      return true;
+    } catch (error) {
+      this._lmbInkSaveState = "error";
+      this.lmbUpdateInkSaveStatus();
+      console.warn("[lmb] ink save failed", error);
+      this._lmbInkRetryCount = (this._lmbInkRetryCount || 0) + 1;
+      if (this._lmbInkRetryCount === 1) new Notice("MarginBook：手写批注保存失败，原数据仍保留，将稍后重试", 5000);
+      throw error;
+    } finally {
+      this._lmbInkFlushPromise = null;
+      if (!this._unloaded && this._lmbInkDirtyPaths && this._lmbInkDirtyPaths.size && this._lmbInkRetryCount <= 5) {
+        clearTimeout(this._lmbInkSaveTimer);
+        const delays = [1000, 2000, 5000, 15000, 60000];
+        this._lmbInkSaveTimer = setTimeout(() => this.lmbFlushInkStorage().catch(() => {}), delays[Math.max(0, this._lmbInkRetryCount - 1)] || 60000);
+      }
+    }
+  })();
+  return this._lmbInkFlushPromise;
+};
+
+LuciasMarginBookPlugin.prototype.lmbSaveInkSoon = function (path) {
+  const canvas = this.lmbActiveInkCanvas();
+  this.lmbMarkInkDirty(path || canvas && canvas.dataset.lmbInkPath);
+};
+
+LuciasMarginBookPlugin.prototype.lmbSetInkMode = function (on) {
+  this.inkMode = !!on;
+  if (!this.inkTool || !LMB_INK_TOOLS.includes(this.inkTool)) this.inkTool = this.settings.inkLastTool || "pen";
+  this.inkColor = this.inkColor || this.settings.inkPenColor || "#e05252";
+  this.inkWidth = Number(this.inkWidth || this.settings.inkPenWidth) || 3;
+  if (this.inkMode && this.rectMode && typeof this.setRectMode === "function") this.setRectMode(false);
+  try {
+    document.body.toggleClass("lmb-ink-mode", this.inkMode);
+    document.querySelectorAll(".lmb-toolbar-ink").forEach((el) => el.toggleClass("is-active", this.inkMode));
+  } catch (_) {}
+  this.lmbRefreshInkLayers();
+  this.lmbRenderInkTools();
+  new Notice(this.inkMode ? "MarginBook：手写批注已开启；笔书写，手指滚动和缩放" : "MarginBook：手写批注已关闭", 1800);
+};
+
+LuciasMarginBookPlugin.prototype.lmbScheduleInkRefresh = function (delay) {
+  clearTimeout(this._lmbInkRefreshTimer);
+  this._lmbInkRefreshTimer = setTimeout(() => this.lmbRefreshInkLayers(), Number(delay) || 0);
+};
+
+LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
+  try {
+    const leaves = this.app.workspace.getLeavesOfType("pdf") || [];
+    for (const leaf of leaves) {
+      const file = leaf && leaf.view && leaf.view.file, root = leaf && leaf.containerEl;
+      if (!file || !root) continue;
+      this.lmbEnsureInkDocument(file.path).catch(() => {});
+      root.querySelectorAll(".page").forEach((pageEl, index) => this.lmbEnsureInkLayer(pageEl, file.path, index));
+    }
+    if (this.inkMode && document.querySelectorAll(".lmb-ink-tools").length !== leaves.length) this.lmbRenderInkTools();
+  } catch (error) { console.warn("[lmb] ink refresh failed", error); }
+};
+
+LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
+  if (!pageEl || !pdfPath) return;
+  const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
+  let canvas = pageEl.querySelector(":scope > .lmb-ink-layer");
+  let live = pageEl.querySelector(":scope > .lmb-ink-live-layer");
+  if (!canvas) { canvas = document.createElement("canvas"); canvas.className = "lmb-ink-layer"; pageEl.appendChild(canvas); }
+  if (!live) { live = document.createElement("canvas"); live.className = "lmb-ink-live-layer"; pageEl.appendChild(live); }
+  const identity = `${pdfPath}\n${pageNumber}`, identityChanged = canvas.dataset.lmbInkIdentity !== identity;
+  for (const layer of [canvas, live]) {
+    layer.dataset.lmbInkPath = pdfPath; layer.dataset.lmbInkPage = String(pageNumber);
+    layer.dataset.lmbInkIdentity = identity;
+    layer.style.display = "block"; layer.style.pointerEvents = "none";
+  }
+  const width = Math.max(1, Math.round(pageEl.clientWidth)), height = Math.max(1, Math.round(pageEl.clientHeight));
+  const ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
+  let resized = false;
+  for (const layer of [canvas, live]) {
+    if (layer.width !== Math.round(width * ratio) || layer.height !== Math.round(height * ratio)) {
+      layer.width = Math.round(width * ratio); layer.height = Math.round(height * ratio);
+      layer.style.width = width + "px"; layer.style.height = height + "px"; resized = true;
+    }
+  }
+  if (!pageEl.dataset.lmbInkBound) {
+    pageEl.dataset.lmbInkBound = "1";
+    this.lmbBindInkPage(pageEl, canvas, live);
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => this.lmbScheduleInkRefresh(30));
+      observer.observe(pageEl); pageEl._lmbInkResizeObserver = observer;
+    }
+  }
+  if (identityChanged) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLiveLayer(live, null); }
+  if (identityChanged || resized || canvas.dataset.lmbInkDrawn !== "1") this.lmbDrawInkLayer(canvas);
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkPoint = function (pageEl, event) {
+  const rect = pageEl.getBoundingClientRect();
+  const rawTime = Number(event.timeStamp);
+  return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: Number(event.pressure) > 0 ? Number(event.pressure) : .5, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
+  let events = [event];
+  try {
+    if (typeof event.getCoalescedEvents === "function") {
+      const coalesced = event.getCoalescedEvents();
+      if (Array.isArray(coalesced) && coalesced.length) {
+        events = coalesced.slice();
+        const last = events[events.length - 1];
+        if (last.clientX !== event.clientX || last.clientY !== event.clientY || last.timeStamp !== event.timeStamp) events.push(event);
+      }
+    }
+  } catch (_) {}
+  return events.map((sample) => this.lmbInkPoint(pageEl, sample));
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
+  if (!this.inkMode || this._lmbInkSpacePan || this.inkTool === "hand") return false;
+  if (event.pointerType === "touch") return false;
+  if (event.pointerType === "mouse" && this.settings.inkInputMode === "pen-only") return false;
+  return event.pointerType !== "mouse" || event.button === 0;
+};
+
+LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live) {
+  let active = null;
+  const path = () => canvas.dataset.lmbInkPath, page = () => canvas.dataset.lmbInkPage;
+  const redrawLive = () => this.lmbRequestInkLiveDraw(live, active);
+  const down = (event) => {
+    if (active) return;
+    if (!this.lmbInkShouldDraw(event)) return;
+    if (!this.lmbInkDocumentReady(path())) {
+      this.lmbEnsureInkDocument(path()).catch(() => {});
+      new Notice(this._lmbInkLoadErrors && this._lmbInkLoadErrors.has(path()) ? "MarginBook：此 PDF 的批注文件无法读取，已停止写入以保护数据" : "MarginBook：正在加载此 PDF 的批注，请稍后再写", 2600); return;
+    }
+    const objects = this.lmbInkObjects(path(), page(), true), point = this.lmbInkPoint(pageEl, event);
+    let tool = this.inkTool;
+    if (event.pointerType === "pen" && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
+    event.preventDefault(); event.stopPropagation();
+    try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
+    const before = lmbInkClone(objects);
+    if (tool === "text") { this.lmbStartInkText(canvas, point); return; }
+    if (tool === "select") {
+      if (this._lmbInkSelectionContext && this._lmbInkSelectionContext.canvas !== canvas) {
+        const oldLive = this._lmbInkSelectionContext.canvas && this._lmbInkSelectionContext.canvas.parentElement && this._lmbInkSelectionContext.canvas.parentElement.querySelector(":scope > .lmb-ink-live-layer");
+        this._lmbInkSelection = []; this._lmbInkSelectionContext = null; if (oldLive) this.lmbDrawInkLiveLayer(oldLive, null);
+      }
+      active = this.lmbStartInkSelection(canvas, point, objects, event.shiftKey);
+      if (!active) active = { kind: "lasso", points: [point], before, additive: !!event.shiftKey, priorSelection: (this._lmbInkSelection || []).slice() };
+      else active.beforePage = before;
+      active.pointerId = event.pointerId;
+      this._lmbInkHiddenIds = new Set(active.kind === "moveMulti" ? active.entries.map((entry) => entry.object.id) : active.object ? [active.object.id] : []);
+      this.lmbDrawInkLayer(canvas); redrawLive(); return;
+    }
+    if (tool === "eraser") { active = { kind: "erase", before, removed: new Set(), point, pointerId: event.pointerId }; this.lmbEraseAt(canvas, point, active); redrawLive(); return; }
+    const preset = tool === "highlighter"
+      ? { color: this.settings.inkHighlighterColor || "#ffd84d", width: Number(this.settings.inkHighlighterWidth) || 12, opacity: .3 }
+      : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
+    const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
+    active = { kind: "draw", object, before, pointerId: event.pointerId }; redrawLive();
+  };
+  const move = (event) => {
+    if (!active || active.pointerId != null && event.pointerId !== active.pointerId) return;
+    event.preventDefault(); event.stopPropagation();
+    const points = this.lmbInkEventPoints(pageEl, event), point = points[points.length - 1];
+    if (active.kind === "draw") {
+      const object = active.object;
+      if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
+      else { object.x2 = point.x; object.y2 = point.y; }
+    } else if (active.kind === "erase") for (const sample of points) this.lmbEraseAt(canvas, sample, active);
+    else if (active.kind === "lasso") lmbInkAppendSamples(active.points, points, .0015);
+    else this.lmbMoveInkSelection(active, point);
+    redrawLive();
+  };
+  const finish = (event, cancelled) => {
+    if (!active || event && active.pointerId != null && event.pointerId !== active.pointerId) return;
+    if (event) { event.preventDefault(); event.stopPropagation(); }
+    if (!cancelled && event) {
+      const finalPoints = this.lmbInkEventPoints(pageEl, event), finalPoint = finalPoints[finalPoints.length - 1];
+      if (active.kind === "draw") {
+        if (active.object.type === "pen" || active.object.type === "highlighter") lmbInkAppendSamples(active.object.points, finalPoints, .00005);
+        else { active.object.x2 = finalPoint.x; active.object.y2 = finalPoint.y; }
+      } else if (active.kind === "erase") for (const sample of finalPoints) this.lmbEraseAt(canvas, sample, active);
+      else if (active.kind === "lasso") lmbInkAppendSamples(active.points, finalPoints, .0005);
+      else if (!["selectionOnly"].includes(active.kind)) this.lmbMoveInkSelection(active, finalPoint);
+    }
+    const current = active; active = null;
+    const objects = this.lmbInkObjects(path(), page(), true);
+    if (cancelled) this.lmbReplaceInkObjects(path(), page(), current.beforePage || current.before || objects);
+    else if (current.kind === "draw") {
+      const object = current.object;
+      if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, .00018, .055);
+      const isStroke = object.type === "pen" || object.type === "highlighter";
+      const longEnough = Math.hypot((object.x2 || 0) - (object.x1 || 0), (object.y2 || 0) - (object.y1 || 0)) > .001;
+      if (isStroke || longEnough) objects.push(object);
+      this.lmbCommitInkChange(path(), page(), current.before, "draw");
+    } else if (current.kind === "lasso") {
+      const selected = lmbInkObjectsInLasso(objects, current.points);
+      const selectedIds = selected.map((object) => object.id);
+      this._lmbInkSelection = current.additive ? Array.from(new Set((current.priorSelection || []).concat(selectedIds))) : selectedIds;
+      this._lmbInkSelectionContext = { canvas, path: path(), page: page() };
+    } else if (current.kind === "erase") this.lmbCommitInkChange(path(), page(), current.before, "erase");
+    else this.lmbCommitInkChange(path(), page(), current.beforePage, current.kind);
+    this._lmbInkHiddenIds = null;
+    this.lmbDrawInkLayer(canvas); this.lmbDrawInkLiveLayer(live, null);
+  };
+  pageEl.addEventListener("pointerdown", down, true);
+  pageEl.addEventListener("pointermove", move, true);
+  pageEl.addEventListener("pointerup", (event) => finish(event, false), true);
+  pageEl.addEventListener("pointercancel", (event) => finish(event, true), true);
+  pageEl.addEventListener("lostpointercapture", (event) => finish(event, true), true);
+  pageEl.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
+};
+
+LuciasMarginBookPlugin.prototype.lmbRequestInkLiveDraw = function (live, active) {
+  live._lmbInkPendingActive = active;
+  if (live._lmbInkFrame) return;
+  live._lmbInkFrame = requestAnimationFrame(() => { live._lmbInkFrame = 0; this.lmbDrawInkLiveLayer(live, live._lmbInkPendingActive); });
+};
+
+LuciasMarginBookPlugin.prototype.lmbCanvasContext = function (canvas) {
+  const ctx = canvas.getContext("2d"), ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
+  if (!ctx) return null;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  return { ctx, width: canvas.clientWidth, height: canvas.clientHeight };
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width, height) {
+  if (!object) return;
+  const color = object.color || "#e05252", type = object.type;
+  ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.globalAlpha = object.opacity == null ? 1 : object.opacity;
+  if (type === "pen" || type === "highlighter") {
+    const points = object.points || [];
+    if (!points.length) { ctx.restore(); return; }
+    if (type === "highlighter") ctx.globalCompositeOperation = "multiply";
+    if (points.length === 1) {
+      const radius = lmbInkSegmentWidth(object, points[0], null, width) / 2;
+      ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
+    } else if (type === "highlighter") {
+      ctx.lineWidth = lmbInkSegmentWidth(object, points[0], null, width);
+      ctx.beginPath(); ctx.moveTo(points[0].x * width, points[0].y * height);
+      for (let i = 1; i < points.length - 1; i++) {
+        const mid = { x: (points[i].x + points[i + 1].x) / 2, y: (points[i].y + points[i + 1].y) / 2 };
+        ctx.quadraticCurveTo(points[i].x * width, points[i].y * height, mid.x * width, mid.y * height);
+      }
+      ctx.lineTo(points[points.length - 1].x * width, points[points.length - 1].y * height); ctx.stroke();
+    } else {
+      let previous = points[0], cursor = previous;
+      for (let i = 1; i < points.length; i++) {
+        const point = points[i], priorWidth = lmbInkSegmentWidth(object, previous, i > 1 ? points[i - 2] : null, width);
+        ctx.lineWidth = (priorWidth + lmbInkSegmentWidth(object, point, previous, width)) / 2;
+        const mid = { x: (previous.x + point.x) / 2, y: (previous.y + point.y) / 2 };
+        ctx.beginPath(); ctx.moveTo(cursor.x * width, cursor.y * height); ctx.quadraticCurveTo(previous.x * width, previous.y * height, mid.x * width, mid.y * height); ctx.stroke(); cursor = mid;
+        previous = point;
+      }
+      ctx.beginPath(); ctx.moveTo(cursor.x * width, cursor.y * height); ctx.lineTo(previous.x * width, previous.y * height); ctx.stroke();
+    }
+  } else {
+    ctx.lineWidth = object.widthUnit === "page" ? Math.max(.5, object.width * width) : Number(object.width) || 3;
+    if (type === "line") { ctx.beginPath(); ctx.moveTo(object.x1 * width, object.y1 * height); ctx.lineTo(object.x2 * width, object.y2 * height); ctx.stroke(); }
+    else if (type === "rect") ctx.strokeRect(Math.min(object.x1, object.x2) * width, Math.min(object.y1, object.y2) * height, Math.abs(object.x2 - object.x1) * width, Math.abs(object.y2 - object.y1) * height);
+    else if (type === "text") {
+      const size = object.fontUnit === "page" ? Math.max(9, object.fontSize * width) : object.fontSize || 16;
+      ctx.font = `${size}px sans-serif`; ctx.textBaseline = "top";
+      String(object.text || "").split("\n").forEach((line, index) => ctx.fillText(line, object.x * width, object.y * height + index * size * 1.25, (object.w || .24) * width));
+    }
+  }
+  ctx.restore();
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkLayer = function (canvas) {
+  const info = this.lmbCanvasContext(canvas); if (!info) return;
+  info.ctx.clearRect(0, 0, info.width, info.height);
+  const hidden = this._lmbInkHiddenIds || new Set();
+  for (const object of this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) if (!hidden.has(object.id)) this.lmbDrawInkObject(info.ctx, object, info.width, info.height);
+  canvas.dataset.lmbInkDrawn = "1";
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkLiveLayer = function (canvas, active) {
+  const info = this.lmbCanvasContext(canvas); if (!info) return;
+  const { ctx, width, height } = info; ctx.clearRect(0, 0, width, height);
+  if (active && active.kind === "draw") this.lmbDrawInkObject(ctx, active.object, width, height);
+  if (active && ["move", "resize"].includes(active.kind)) this.lmbDrawInkObject(ctx, active.object, width, height);
+  if (active && active.kind === "moveMulti") for (const entry of active.entries) this.lmbDrawInkObject(ctx, entry.object, width, height);
+  if (active && active.kind === "lasso") {
+    ctx.save(); ctx.strokeStyle = "#2d8cff"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.beginPath();
+    active.points.forEach((point, index) => index ? ctx.lineTo(point.x * width, point.y * height) : ctx.moveTo(point.x * width, point.y * height)); ctx.stroke(); ctx.restore();
+  }
+  const selected = new Set(Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : []);
+  const objects = this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage);
+  for (const object of objects.filter((item) => selected.has(item.id))) {
+    const bounds = lmbInkBounds(object);
+    ctx.save(); ctx.strokeStyle = "#2d8cff"; ctx.lineWidth = 1; ctx.setLineDash([5, 3]);
+    ctx.strokeRect(bounds.x * width - 4, bounds.y * height - 4, Math.max(8, bounds.w * width + 8), Math.max(8, bounds.h * height + 8));
+    ctx.setLineDash([]); ctx.fillStyle = "#2d8cff";
+    if (object.type === "line") {
+      ctx.fillRect(object.x1 * width - 6, object.y1 * height - 6, 12, 12);
+      ctx.fillRect(object.x2 * width - 6, object.y2 * height - 6, 12, 12);
+    } else ctx.fillRect((bounds.x + bounds.w) * width - 6, (bounds.y + bounds.h) * height - 6, 12, 12);
+    ctx.restore();
+  }
+};
+
+LuciasMarginBookPlugin.prototype.lmbObjectBounds = function (object) { return lmbInkBounds(object); };
+
+LuciasMarginBookPlugin.prototype.lmbInvalidateInkSpatial = function (path, page) {
+  if (this._lmbInkSpatialCache) this._lmbInkSpatialCache.delete(`${path}\n${page}`);
+};
+
+LuciasMarginBookPlugin.prototype.lmbBuildInkSpatial = function (objects) {
+  const cellSize = .05, cells = new Map(), byId = new Map();
+  for (const object of objects || []) {
+    if (!object || !object.id) continue; byId.set(object.id, object);
+    const bounds = lmbInkBounds(object), minX = Math.floor(bounds.x / cellSize), maxX = Math.floor((bounds.x + bounds.w) / cellSize), minY = Math.floor(bounds.y / cellSize), maxY = Math.floor((bounds.y + bounds.h) / cellSize);
+    for (let x = minX; x <= maxX; x++) for (let y = minY; y <= maxY; y++) {
+      const key = `${x},${y}`; if (!cells.has(key)) cells.set(key, new Set()); cells.get(key).add(object.id);
+    }
+  }
+  return { cellSize, cells, byId };
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkSpatialCandidates = function (spatial, point, tolerance) {
+  const ids = new Set(), size = spatial.cellSize, minX = Math.floor((point.x - tolerance) / size), maxX = Math.floor((point.x + tolerance) / size), minY = Math.floor((point.y - tolerance) / size), maxY = Math.floor((point.y + tolerance) / size);
+  for (let x = minX; x <= maxX; x++) for (let y = minY; y <= maxY; y++) for (const id of spatial.cells.get(`${x},${y}`) || []) ids.add(id);
+  return Array.from(ids, (id) => spatial.byId.get(id)).filter(Boolean);
+};
+
+LuciasMarginBookPlugin.prototype.lmbStartInkSelection = function (canvas, point, objects, additive) {
+  const tolerance = Math.max(.006, 9 / Math.max(1, canvas.clientWidth));
+  const hit = objects.slice().reverse().find((object) => lmbInkObjectHit(object, point, tolerance));
+  const prior = Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : [];
+  if (!hit) { if (!additive) this._lmbInkSelection = []; return null; }
+  const ids = additive ? (prior.includes(hit.id) ? prior.filter((id) => id !== hit.id) : prior.concat(hit.id)) : [hit.id];
+  this._lmbInkSelection = ids; this._lmbInkSelectionContext = { canvas, path: canvas.dataset.lmbInkPath, page: canvas.dataset.lmbInkPage };
+  if (!ids.includes(hit.id)) return { kind: "selectionOnly", start: point };
+  if (ids.length > 1) return { kind: "moveMulti", start: point, entries: objects.filter((object) => ids.includes(object.id)).map((object) => ({ object, before: lmbInkClone(object), bounds: lmbInkBounds(object) })) };
+  const bounds = lmbInkBounds(hit);
+  if (hit.type === "line") {
+    const d1 = lmbInkDistance(point, { x: hit.x1, y: hit.y1 }), d2 = lmbInkDistance(point, { x: hit.x2, y: hit.y2 });
+    if (Math.min(d1, d2) <= tolerance * 2) return { kind: "resize", endpoint: d1 <= d2 ? 1 : 2, object: hit, start: point, before: lmbInkClone(hit), bounds };
+  }
+  const resize = point.x > bounds.x + bounds.w - tolerance * 2 && point.y > bounds.y + bounds.h - tolerance * 2;
+  const resizeKeys = hit.type === "rect" ? { x: hit.x1 > hit.x2 ? "x1" : "x2", y: hit.y1 > hit.y2 ? "y1" : "y2" } : null;
+  return { kind: resize ? "resize" : "move", resizeKeys, object: hit, start: point, before: lmbInkClone(hit), bounds };
+};
+
+LuciasMarginBookPlugin.prototype.lmbMoveInkSelection = function (selection, point) {
+  if (!selection) return;
+  if (selection.kind === "moveMulti") { for (const entry of selection.entries) this.lmbMoveInkSelection({ kind: "move", object: entry.object, before: entry.before, bounds: entry.bounds, start: selection.start }, point); return; }
+  const object = selection.object, before = selection.before, dx = point.x - selection.start.x, dy = point.y - selection.start.y;
+  if (!object) return;
+  if (selection.kind === "resize") {
+    if (object.type === "text") {
+      const newWidth = Math.max(.04, (selection.bounds.w || .2) + dx);
+      object.fontSize = Math.max(.009, Math.min(.09, (before.fontUnit === "page" ? before.fontSize : (before.fontSize || 16) / 1000) * newWidth / (selection.bounds.w || .2)));
+      object.fontUnit = "page"; object.w = newWidth; object.h = Math.max(.025, (selection.bounds.h || .05) + dy);
+    } else if (object.type === "pen" || object.type === "highlighter") {
+      const sx = Math.max(.08, ((selection.bounds.w || .02) + dx) / (selection.bounds.w || .02)), sy = Math.max(.08, ((selection.bounds.h || .02) + dy) / (selection.bounds.h || .02));
+      object.points = before.points.map((p) => Object.assign({}, p, { x: selection.bounds.x + (p.x - selection.bounds.x) * sx, y: selection.bounds.y + (p.y - selection.bounds.y) * sy }));
+    } else if (object.type === "line") {
+      const suffix = selection.endpoint === 1 ? "1" : "2"; object[`x${suffix}`] = before[`x${suffix}`] + dx; object[`y${suffix}`] = before[`y${suffix}`] + dy;
+    } else {
+      const keys = selection.resizeKeys || { x: "x2", y: "y2" }; object[keys.x] = before[keys.x] + dx; object[keys.y] = before[keys.y] + dy;
+    }
+  } else if (object.type === "pen" || object.type === "highlighter") object.points = before.points.map((p) => Object.assign({}, p, { x: p.x + dx, y: p.y + dy }));
+  else if (object.type === "text") { object.x = before.x + dx; object.y = before.y + dy; }
+  else { object.x1 = before.x1 + dx; object.y1 = before.y1 + dy; object.x2 = before.x2 + dx; object.y2 = before.y2 + dy; }
+};
+
+LuciasMarginBookPlugin.prototype.lmbEraseAt = function (canvas, point, active) {
+  const objects = this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage, true);
+  const tolerance = Math.max(.008, (Number(this.settings.inkEraserSize) || 18) / Math.max(1, canvas.clientWidth));
+  if (!active.spatial) active.spatial = this.lmbBuildInkSpatial(active.before || objects);
+  const hits = new Set();
+  for (const object of this.lmbInkSpatialCandidates(active.spatial, point, tolerance)) {
+    if (!active.removed.has(object.id) && lmbInkObjectHit(object, point, tolerance)) hits.add(object.id);
+  }
+  let changed = hits.size > 0;
+  if (changed) for (let index = objects.length - 1; index >= 0; index--) if (hits.has(objects[index].id)) { active.removed.add(objects[index].id); objects.splice(index, 1); }
+  if (changed) this.lmbRequestInkStaticDraw(canvas);
+};
+
+LuciasMarginBookPlugin.prototype.lmbRequestInkStaticDraw = function (canvas) {
+  if (canvas._lmbInkStaticFrame) return;
+  canvas._lmbInkStaticFrame = requestAnimationFrame(() => { canvas._lmbInkStaticFrame = 0; this.lmbDrawInkLayer(canvas); });
+};
+
+LuciasMarginBookPlugin.prototype.lmbStartInkText = function (canvas, point) {
+  const pageEl = canvas.parentElement, box = document.createElement("textarea");
+  box.className = "lmb-ink-text-editor"; box.placeholder = "输入备注…"; box.style.left = point.x * 100 + "%"; box.style.top = point.y * 100 + "%"; box.style.color = this.inkColor;
+  pageEl.appendChild(box); box.focus(); let finished = false;
+  const finish = (save) => {
+    if (finished) return; finished = true;
+    const text = box.value.trim();
+    if (save && text) {
+      const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, objects = this.lmbInkObjects(path, page, true), before = lmbInkClone(objects);
+      const measuredWidth = Math.max(40, Number(box.offsetWidth) || 190), measuredHeight = Math.max(28, Number(box.offsetHeight) || 54);
+      objects.push({ id: this.lmbInkId(), type: "text", text, x: point.x, y: point.y, w: measuredWidth / Math.max(1, canvas.clientWidth), h: measuredHeight / Math.max(1, canvas.clientHeight), color: this.inkColor, width: this.inkWidth / 1000, widthUnit: "page", fontSize: .016, fontUnit: "page" });
+      this.lmbCommitInkChange(path, page, before, "text"); this.lmbDrawInkLayer(canvas);
+    }
+    box.remove();
+  };
+  box.addEventListener("blur", () => finish(true), { once: true });
+  box.addEventListener("keydown", (event) => { if (event.key === "Escape") finish(false); else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") box.blur(); });
+};
+
+LuciasMarginBookPlugin.prototype.lmbHistoryFor = function (path, page) {
+  if (!this._lmbInkHistory) this._lmbInkHistory = new Map();
+  const key = `${path}\n${page}`;
+  if (!this._lmbInkHistory.has(key)) this._lmbInkHistory.set(key, { undo: [], redo: [] });
+  return this._lmbInkHistory.get(key);
+};
+
+LuciasMarginBookPlugin.prototype.lmbCommitInkChange = function (path, page, before, label) {
+  const after = lmbInkClone(this.lmbInkObjects(path, page, true));
+  const patch = lmbInkBuildPatch(before, after);
+  if (!patch.added.length && !patch.removed.length && !patch.modified.length) return false;
+  const history = this.lmbHistoryFor(path, page);
+  history.undo.push({ patch, label });
+  if (history.undo.length > LMB_INK_HISTORY_LIMIT) history.undo.shift();
+  history.redo.length = 0; this.lmbInvalidateInkSpatial(path, page); this.lmbMarkInkDirty(path); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbActiveInkCanvas = function () {
+  const activeRoot = this.app.workspace.activeLeaf && this.app.workspace.activeLeaf.containerEl;
+  const root = arguments[0] && typeof arguments[0].querySelectorAll === "function" ? arguments[0] : activeRoot || document;
+  const explicitPath = arguments[1];
+  const file = this.app.workspace.getActiveFile(), filePath = explicitPath || file && file.path; if (!filePath) return null;
+  const candidates = Array.from(root.querySelectorAll(".lmb-ink-layer")).filter((canvas) => canvas.dataset.lmbInkPath === filePath);
+  let best = null, bestArea = -1;
+  for (const canvas of candidates) {
+    const rect = canvas.getBoundingClientRect(), visible = Math.max(0, Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top));
+    if (visible > bestArea) { best = canvas; bestArea = visible; }
+  }
+  return best;
+};
+
+LuciasMarginBookPlugin.prototype.lmbUndoInk = function (canvas) { return this.lmbApplyInkHistory("undo", canvas); };
+LuciasMarginBookPlugin.prototype.lmbRedoInk = function (canvas) { return this.lmbApplyInkHistory("redo", canvas); };
+LuciasMarginBookPlugin.prototype.lmbApplyInkHistory = function (direction, preferredCanvas) {
+  const canvas = preferredCanvas || this.lmbActiveInkCanvas(); if (!canvas) return false;
+  const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, history = this.lmbHistoryFor(path, page), entry = history[direction].pop(); if (!entry) return false;
+  this.lmbReplaceInkObjects(path, page, lmbInkApplyPatch(this.lmbInkObjects(path, page), entry.patch, direction));
+  if (direction === "undo") history.redo.push(entry); else history.undo.push(entry);
+  this._lmbInkSelection = []; this._lmbInkSelectionContext = null; this.lmbRedrawInkPage(canvas); this.lmbMarkInkDirty(path); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbClearInk = function () {
+  const canvas = this.lmbActiveInkCanvas(); if (!canvas) return false;
+  const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, objects = this.lmbInkObjects(path, page);
+  if (!objects.length) return false;
+  const before = lmbInkClone(objects); objects.length = 0; this._lmbInkSelection = []; this._lmbInkSelectionContext = null;
+  this.lmbCommitInkChange(path, page, before, "clear"); this.lmbRedrawInkPage(canvas); new Notice("MarginBook：已清空当前页，可用撤销恢复", 2200); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbDeleteInkSelection = function (preferredCanvas) {
+  const context = this._lmbInkSelectionContext;
+  if (preferredCanvas && (!context || context.canvas !== preferredCanvas)) return false;
+  const canvas = context && context.canvas && context.canvas.isConnected ? context.canvas : preferredCanvas || this.lmbActiveInkCanvas();
+  const ids = new Set(Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : []); if (!canvas || !ids.size) return false;
+  const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, objects = this.lmbInkObjects(path, page), before = lmbInkClone(objects);
+  for (let i = objects.length - 1; i >= 0; i--) if (ids.has(objects[i].id)) objects.splice(i, 1);
+  if (before.length === objects.length) return false;
+  this._lmbInkSelection = []; this._lmbInkSelectionContext = null;
+  this.lmbCommitInkChange(path, page, before, "delete"); this.lmbRedrawInkPage(canvas); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbRedrawInkPage = function (canvas) {
+  if (!canvas) return;
+  this.lmbDrawInkLayer(canvas);
+  const live = canvas.parentElement && canvas.parentElement.querySelector(":scope > .lmb-ink-live-layer");
+  if (live) this.lmbDrawInkLiveLayer(live, null);
+};
+
+LuciasMarginBookPlugin.prototype.lmbApplyInkStyleToSelection = function (property, value, scopeHost) {
+  const context = this._lmbInkSelectionContext, ids = new Set(this._lmbInkSelection || []);
+  if (!context || !ids.size) return false;
+  if (scopeHost && typeof scopeHost.contains === "function" && !scopeHost.contains(context.canvas)) return false;
+  const objects = this.lmbInkObjects(context.path, context.page), before = lmbInkClone(objects);
+  for (const object of objects) if (ids.has(object.id)) {
+    if (property === "color") object.color = value;
+    if (property === "width") { object.width = Number(value) / 1000; object.widthUnit = "page"; }
+  }
+  if (!this.lmbCommitInkChange(context.path, context.page, before, "style")) return false;
+  this.lmbRedrawInkPage(context.canvas); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbSetInkTool = function (tool) {
+  if (!LMB_INK_TOOLS.includes(tool)) return;
+  this.inkTool = tool; this.settings.inkLastTool = tool;
+  if (tool === "highlighter") { this.inkColor = this.settings.inkHighlighterColor || "#ffd84d"; this.inkWidth = Number(this.settings.inkHighlighterWidth) || 12; }
+  else if (["pen", "text", "line", "rect"].includes(tool)) { this.inkColor = this.settings.inkPenColor || "#e05252"; this.inkWidth = Number(this.settings.inkPenWidth) || 3; }
+  this.lmbPersistInkPreferences(); this.lmbRenderInkTools();
+};
+
+LuciasMarginBookPlugin.prototype.lmbPersistInkPreferences = function () {
+  clearTimeout(this._lmbInkPrefsTimer);
+  this._lmbInkPrefsTimer = setTimeout(() => this.saveSettings().catch((error) => console.warn("[lmb] ink preferences save failed", error)), 300);
+};
+
+LuciasMarginBookPlugin.prototype.lmbUpdateInkSaveStatus = function () {
+  const label = this._lmbInkSaveState === "saving" ? "保存中…" : this._lmbInkSaveState === "error" ? "保存失败" : "已保存";
+  document.querySelectorAll(".lmb-ink-save-status").forEach((element) => { element.textContent = label; element.dataset.state = this._lmbInkSaveState || "saved"; });
+};
+
+LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
+  document.querySelectorAll(".lmb-ink-tools").forEach((bar) => bar.remove());
+  if (!this.inkMode) return;
+  const specs = [["hand", "✋", "抓手（空格临时启用）"], ["select", "⌁", "选择 / 套索"], ["pen", "✎", "钢笔"], ["highlighter", "▰", "荧光笔"], ["eraser", "◇", "整笔橡皮"], ["text", "T", "文字"], ["line", "╱", "直线"], ["rect", "□", "矩形"]];
+  for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
+    const host = leaf && leaf.containerEl; if (!host) continue;
+    const bar = document.createElement("div"); bar.className = "lmb-ink-tools"; if (this.settings.inkToolbarCollapsed) bar.classList.add("is-collapsed");
+    const toggle = document.createElement("button"); toggle.className = "lmb-ink-collapse"; toggle.textContent = this.settings.inkToolbarCollapsed ? "✎" : "‹"; toggle.title = "收起 / 展开手写工具栏";
+    toggle.addEventListener("click", () => { this.settings.inkToolbarCollapsed = !this.settings.inkToolbarCollapsed; this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); bar.appendChild(toggle);
+    const content = document.createElement("div"); content.className = "lmb-ink-tools-content"; bar.appendChild(content);
+    for (const [tool, label, title] of specs) {
+      const button = document.createElement("button"); button.textContent = label; button.title = title; button.dataset.tool = tool; button.classList.toggle("is-active", this.inkTool === tool);
+      button.addEventListener("click", () => this.lmbSetInkTool(tool)); content.appendChild(button);
+    }
+    const colors = this.inkTool === "highlighter" ? ["#ffd84d", "#7ee787", "#70b7ff"] : ["#e05252", "#222222", "#2d8cff"];
+    const swatches = document.createElement("div"); swatches.className = "lmb-ink-swatches";
+    for (const value of colors) {
+      const swatch = document.createElement("button"); swatch.className = "lmb-ink-swatch"; swatch.style.backgroundColor = value; swatch.title = value; swatch.classList.toggle("is-active", (this.inkColor || "").toLowerCase() === value);
+      swatch.addEventListener("click", () => { this.inkColor = value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = value; else this.settings.inkPenColor = value; this.lmbApplyInkStyleToSelection("color", value, host); this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); swatches.appendChild(swatch);
+    }
+    content.appendChild(swatches);
+    const color = document.createElement("input"); color.type = "color"; color.value = this.inkColor || "#e05252"; color.title = "自定义颜色";
+    color.addEventListener("change", () => { this.inkColor = color.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = color.value; else this.settings.inkPenColor = color.value; this.lmbApplyInkStyleToSelection("color", color.value, host); this.lmbPersistInkPreferences(); }); content.appendChild(color);
+    const width = document.createElement("input"); width.type = "range"; width.min = "1"; width.max = this.inkTool === "highlighter" ? "30" : "14"; width.step = "1"; width.value = String(this.inkWidth || 3); width.title = `粗细 ${width.value}`;
+    width.addEventListener("input", () => { this.inkWidth = Number(width.value); width.title = `粗细 ${width.value}`; if (this.inkTool === "highlighter") this.settings.inkHighlighterWidth = this.inkWidth; else this.settings.inkPenWidth = this.inkWidth; });
+    width.addEventListener("change", () => { this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); content.appendChild(width);
+    const leafCanvas = () => this.lmbActiveInkCanvas(host, leaf.view && leaf.view.file && leaf.view.file.path);
+    const undo = document.createElement("button"); undo.textContent = "↶"; undo.title = "撤销"; undo.addEventListener("click", () => this.lmbUndoInk(leafCanvas())); content.appendChild(undo);
+    const redo = document.createElement("button"); redo.textContent = "↷"; redo.title = "重做"; redo.addEventListener("click", () => this.lmbRedoInk(leafCanvas())); content.appendChild(redo);
+    const del = document.createElement("button"); del.textContent = "⌫"; del.title = "删除所选"; del.addEventListener("click", () => this.lmbDeleteInkSelection(leafCanvas())); content.appendChild(del);
+    const status = document.createElement("span"); status.className = "lmb-ink-save-status"; content.appendChild(status); host.appendChild(bar);
+  }
+  this.lmbUpdateInkSaveStatus();
+};
+
+LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
+  this.inkTool = this.settings.inkLastTool || "pen"; this.inkColor = this.settings.inkPenColor || "#e05252"; this.inkWidth = Number(this.settings.inkPenWidth) || 3; this._lmbInkSelection = [];
+  this.registerDomEvent(document, "keydown", (event) => {
+    if (event.code === "Space" && this.inkMode && !/INPUT|TEXTAREA/.test(event.target && event.target.tagName || "")) this._lmbInkSpacePan = true;
+    if (event.target && event.target.classList && event.target.classList.contains("lmb-ink-text-editor")) return;
+    if (event.key === "Escape" && this.inkMode) { this.lmbSetInkMode(false); return; }
+    if (!this.inkMode) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { const changed = event.shiftKey ? this.lmbRedoInk() : this.lmbUndoInk(); if (changed) event.preventDefault(); }
+    else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y" && this.lmbRedoInk()) event.preventDefault();
+    else if ((event.key === "Delete" || event.key === "Backspace") && this.lmbDeleteInkSelection(this.lmbActiveInkCanvas())) event.preventDefault();
+  }, true);
+  this.registerDomEvent(document, "keyup", (event) => { if (event.code === "Space") this._lmbInkSpacePan = false; }, true);
+  this.registerDomEvent(window, "blur", () => { this._lmbInkSpacePan = false; }, true);
+  const observer = new MutationObserver((records) => {
+    for (const record of records) for (const node of Array.from(record.removedNodes || [])) {
+      if (!node || node.nodeType !== 1) continue;
+      const pages = [];
+      if (node.matches && node.matches(".page[data-lmb-ink-bound]")) pages.push(node);
+      if (node.querySelectorAll) pages.push(...node.querySelectorAll(".page[data-lmb-ink-bound]"));
+      for (const pageEl of pages) {
+        if (pageEl._lmbInkResizeObserver) { pageEl._lmbInkResizeObserver.disconnect(); pageEl._lmbInkResizeObserver = null; }
+        if (this._lmbInkSelectionContext && pageEl.contains && pageEl.contains(this._lmbInkSelectionContext.canvas)) { this._lmbInkSelection = []; this._lmbInkSelectionContext = null; }
+      }
+    }
+    const relevant = records.some((record) => Array.from(record.addedNodes || []).some((node) => node.nodeType === 1 && (node.matches && node.matches(".page,.pdf-viewer-container") || node.querySelector && node.querySelector(".page"))));
+    if (relevant) this.lmbScheduleInkRefresh(60);
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  this.register(() => {
+    observer.disconnect(); clearTimeout(this._lmbInkSaveTimer); clearTimeout(this._lmbInkPrefsTimer); this.lmbFlushInkStorage().catch(() => {});
+    document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
+    document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => { if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect(); });
+  });
+};

@@ -9,11 +9,15 @@
 
 const {
   Plugin, Notice, TFile, PluginSettingTab, Setting, normalizePath, Modal,
-  FuzzySuggestModal, setIcon
+  FuzzySuggestModal, MarkdownRenderer, setIcon, Platform
 } = require("obsidian");
 
+// Platform is part of Obsidian's public API and is available on desktop and mobile.
+// Keep the fallback for older test stubs that do not expose it.
+const LMB_IS_MOBILE = !!(Platform && (Platform.isMobileApp || Platform.isMobile));
+
 // Stable excerpt identifier embedded in Markdown blocks.
-const EX_ID_RE = /\^ex-[0-9a-z]{4,8}/;
+const EX_ID_RE = /\^ex-[0-9a-z]{4,16}/;
 
 /* ==================== P1：摘录索引层 ====================
  * 动机：现有链路是 canvas → 摘录 md 的单向同步，打开 PDF 时无法知道「哪些段落
@@ -125,7 +129,7 @@ function lmbHeightAfterOverflow(currentHeight, overflow) {
 // 第一次 fit 后滚动条消失、可用宽度变化，文字会重新换行，于是相同内容第二次测出不同高度。
 // 这里克隆整张卡片到同一个 Canvas 容器中，保留主题/祖先选择器和最终外框宽度，但解除
 // 高度与 overflow 约束，让浏览器按“无滚动条的自然布局”计算整卡高度。
-function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
+function lmbMeasureNaturalCard(wrapperEl, contentEl, scale, opts) {
   let clone = null;
   try {
     if (!wrapperEl || !contentEl || typeof wrapperEl.cloneNode !== "function") return 0;
@@ -190,7 +194,7 @@ function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
     // Obsidian Markdown 预览层有时自己承担滚动；一并解除这些纯容器的约束。
     if (cloneContent.querySelectorAll) {
       const layoutLayers = cloneContent.querySelectorAll(
-        ".markdown-preview-view, .markdown-preview-sizer, .markdown-preview-section, .markdown-rendered"
+        ".canvas-node-content, .canvas-node-container, .markdown-preview-view, .markdown-preview-sizer, .markdown-preview-section, .markdown-rendered"
       );
       for (const el of Array.from(layoutLayers)) {
         if (!el || !el.style) continue;
@@ -198,6 +202,11 @@ function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
         el.style.setProperty("min-height", "0", "important");
         el.style.setProperty("max-height", "none", "important");
         el.style.setProperty("overflow", "visible", "important");
+        // 窄卡片最容易触发 Obsidian 的 flex 拉伸：旧节点高度会被写进中间容器的
+        // flex-basis/min-block-size，单清 height 仍会把离屏副本撑到旧高度。
+        el.style.setProperty("flex", "none", "important");
+        el.style.setProperty("block-size", "auto", "important");
+        el.style.setProperty("min-block-size", "0", "important");
       }
     }
 
@@ -215,7 +224,12 @@ function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
     const liveOverflow = lmbVerticalOverflow(contentEl);
     const liveOverflowFloor = liveOverflow > 0
       ? lmbHeightAfterOverflow(liveOuterHeight, liveOverflow) : 0;
-    const natural = Math.max(cloneHeight, contentHeight + measuredChrome, liveOverflowFloor);
+    // 切换文字/图片视图时，liveOuterHeight 仍是切换前的固定卡片高度，不能把它
+    // 作为新视图的下限，否则从高图片切回短文字时永远缩不下来。
+    const ignoreLiveHeight = !!(opts && opts.ignoreLiveHeight);
+    const natural = ignoreLiveHeight
+      ? Math.max(cloneHeight, contentHeight)
+      : Math.max(cloneHeight, contentHeight + measuredChrome, liveOverflowFloor);
     // 仅保留 4px 给小数像素取整/边框抗锯齿，不再按内容类型叠加大块经验余量。
     return natural > 0 ? Math.max(60, Math.min(4000, Math.ceil(natural + 4))) : 0;
   } catch (_) {
@@ -266,7 +280,6 @@ const LMB_NOTE_TYPE_DEFAULT = "ppd-note";
  * lmb-comment 是保留类型字面量（不做成设置项），解析器按字面量识别。 */
 const LMB_COMMENT_TYPE = "lmb-comment";
 const LMB_COMMENT_EMPTY_TITLE = "添加评论";
-const LMB_COMMENT_TITLE = "评论";
 const LMB_COMMENT_CALLOUT_RE = /^\s*>\s*\[!lmb-comment\]\s*([+-]?)\s*(.*)$/;
 /* ==================== v0.11.3：双重摘录（文字+截图）卡片视图切换 ====================
  * 双重摘录卡 = 引用块（文字）+ 截图 embed 同时在卡里，卡上挂一个 lmb-view callout
@@ -296,9 +309,15 @@ const LMB_VIEW_CALLOUT_RE = /^\s*>\s*\[!lmb-view\]\s*([+-]?)\s*(.*)$/;
 const LMB_STYLES = [
   ".lmb-chip{position:fixed;z-index:1000;",
   "background:var(--interactive-accent,#7c6cf0);color:var(--text-on-accent,#fff);",
-  "font-size:12px;padding:6px 12px;border-radius:16px;cursor:grab;",
+  "font-size:12px;padding:5px 7px 5px 12px;border-radius:16px;cursor:grab;display:flex;align-items:center;gap:8px;",
   "box-shadow:0 4px 14px rgba(0,0,0,.5);user-select:none;white-space:nowrap;}",
   ".lmb-chip:active{cursor:grabbing}",
+  ".lmb-chip-action{border:0;border-radius:9px;width:27px;height:27px;padding:5px;background:rgba(255,255,255,.16);color:inherit;cursor:pointer;display:grid;place-items:center;}",
+  ".lmb-chip-action:hover{background:rgba(255,255,255,.34)}",
+  "body.lmb-mobile .lmb-chip{max-width:calc(100vw - 20px);white-space:normal;font-size:13px;padding:7px 8px 7px 12px;gap:6px;}",
+  "body.lmb-mobile .lmb-chip-action{width:40px;height:40px;min-width:40px;border-radius:12px;touch-action:manipulation;}",
+  "body.lmb-mobile.lmb-rect-mode .pdf-viewer-container,body.lmb-mobile.lmb-rect-mode .page{touch-action:none!important;}",
+  "body.lmb-mobile .lmb-pdf-sidebar-host{padding-right:var(--lmb-pdf-sidebar-width,340px)!important;}",
   ".lmb-rect{position:fixed;z-index:999;",
   "border:2px dashed var(--interactive-accent,#7c6cf0);",
   "background:rgba(124,108,240,.15);pointer-events:none;}",
@@ -325,6 +344,38 @@ const LMB_STYLES = [
   //       而"在 PDF 上划选拖拽"是本插件的主工作流，不能破坏。
   ".lmb-mark{position:absolute;pointer-events:none;border-radius:2px;",
   "mix-blend-mode:multiply;box-sizing:border-box;}",
+  '.lmb-mark.lmb-mark-image{border:2px dashed currentColor;outline:1px solid rgba(255,255,255,.5);outline-offset:-4px;mix-blend-mode:normal;background:transparent!important;}',
+  '.lmb-color-palette{position:fixed;z-index:10001;display:flex!important;flex-flow:row nowrap!important;align-items:center!important;gap:6px;padding:7px;border:1px solid var(--background-modifier-border);border-radius:12px;background:var(--background-primary);box-shadow:0 5px 18px rgba(0,0,0,.32);}',
+  '.lmb-color-palette button{appearance:none!important;display:block!important;flex:0 0 26px!important;width:26px!important;min-width:26px!important;max-width:26px!important;height:26px!important;min-height:26px!important;max-height:26px!important;padding:0!important;margin:0!important;border:2px solid rgba(255,255,255,.72)!important;border-radius:50%!important;line-height:0!important;cursor:pointer;box-shadow:0 0 0 1px rgba(0,0,0,.18);}.lmb-color-palette button:hover{transform:scale(1.08);}',
+  '.lmb-mark[data-no]::after{content:attr(data-no);position:absolute;left:-9px;top:-9px;',
+  'min-width:18px;height:18px;padding:0 3px;border-radius:9px;background:var(--interactive-accent);',
+  'color:var(--text-on-accent);font:700 11px/18px sans-serif;text-align:center;mix-blend-mode:normal;box-sizing:border-box;}',
+  '.lmb-focus-mode .lmb-mark{opacity:.12;transition:opacity .18s ease;}',
+  '.lmb-focus-mode .lmb-flash{opacity:1!important;z-index:30;}',
+  '.callout[data-callout="lmb-excerpt"]{--callout-color:91,155,213;border-left-width:3px;',
+  'background:color-mix(in srgb,var(--background-secondary) 92%,rgb(var(--callout-color)));margin:12px 0;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-title{font-size:12px;letter-spacing:.02em;color:var(--text-muted);}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content{padding-top:6px!important;padding-bottom:6px!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>p:has(>.lmb-excerpt-id){display:none!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>p:empty,.callout[data-callout="lmb-excerpt"]>.callout-content>blockquote:empty{display:none!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>blockquote{margin-top:4px!important;margin-bottom:6px!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>p{margin-top:6px;margin-bottom:6px;}',
+  '.lmb-excerpt-note-action{display:flex;justify-content:flex-end;gap:12px;border-top:1px solid var(--background-modifier-border);margin-top:10px;padding-top:8px;}',
+  '.lmb-excerpt-note-action button{font-size:12px;color:var(--text-accent);background:transparent;border:0;cursor:pointer;}',
+  '.lmb-excerpt-note-action .lmb-excerpt-view-toggle{margin-right:auto;}',
+  '.lmb-md-dual-excerpt:not(.lmb-show-image) .lmb-excerpt-image-view{display:none!important;}',
+  '.lmb-md-dual-excerpt.lmb-show-image .lmb-excerpt-text-view{display:none!important;}',
+  '.lmb-md-dual-excerpt.lmb-show-image .lmb-excerpt-image-view{display:block!important;}',
+  '.lmb-excerpt-note-live{margin-top:6px;padding:10px 12px;border-left:4px solid rgb(112,196,157);border-radius:7px;background:var(--background-secondary);}',
+  '.lmb-excerpt-note-live-title{font-size:13px;font-weight:600;color:var(--text-muted);margin-bottom:6px;}',
+  '.lmb-excerpt-note-live-body>:first-child{margin-top:0;}.lmb-excerpt-note-live-body>:last-child{margin-bottom:0;}',
+  '.lmb-excerpt-id{display:none!important;}',
+  '.modal:has(.lmb-note-editor){width:min(900px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:hidden;}.modal:has(.lmb-note-editor) .modal-content{display:flex;flex-direction:column;min-height:0;max-width:none;overflow:hidden;}',
+  '.lmb-note-editor{width:100%;max-width:none;box-sizing:border-box;min-width:0;}.lmb-note-editor-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;height:min(420px,calc(100vh - 240px));min-height:240px;}',
+  '.lmb-note-editor-input,.lmb-note-editor-preview{min-width:0;min-height:0;height:100%;box-sizing:border-box;padding:12px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-primary);color:var(--text-normal);overflow:auto;}',
+  '.lmb-note-editor-input{resize:vertical;font:14px/1.6 var(--font-text);}.lmb-note-preview-empty{color:var(--text-faint);}',
+  '.lmb-note-editor-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;}',
+  '@media(max-width:700px){.modal:has(.lmb-note-editor){max-height:calc(100vh - 16px);}.lmb-note-editor-grid{grid-template-columns:1fr;height:auto;min-height:0;}.lmb-note-editor-input,.lmb-note-editor-preview{height:190px;}.lmb-note-editor-actions{flex-wrap:wrap;}}',
   // 降级标记：selection 缺失或 span 对不上时画页顶细条，宁可不准也不消失
   '.lmb-mark[data-fallback="1"]{left:0 !important;right:0 !important;',
   "top:0 !important;height:3px !important;width:auto !important;opacity:.75;}",
@@ -344,6 +395,19 @@ const LMB_STYLES = [
   "border-radius:0 !important;box-shadow:none !important;padding:4px 8px !important;margin-top:2px;}",
   '.callout[data-callout="lmb-comment"] .callout-title{gap:6px;}',
   '.callout[data-callout="lmb-comment"] .callout-title-inner{color:var(--text-muted);font-weight:400;font-size:12.5px;}',
+  // v0.21.5：Canvas 评论与 Markdown 摘录笔记统一视觉语言。只改渲染，不改评论数据，
+  // 已有卡片无需迁移；仍可点击整个评论框打开原来的编辑窗口。
+  '.canvas-node .callout[data-callout="lmb-comment"]{--callout-icon:pencil;',
+  'margin:10px 8px 4px!important;padding:8px 10px!important;border:0!important;',
+  'border-left:4px solid rgb(112,196,157)!important;border-radius:7px!important;',
+  'background:var(--background-secondary)!important;box-shadow:none!important;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-title{display:none!important;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-content{padding-top:0;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-content>:first-child{margin-top:0;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-content>:last-child{margin-bottom:0;}',
+  '.canvas-node .callout[data-callout="lmb-excerpt"]{margin-top:4px!important;margin-bottom:4px!important;}',
+  '.canvas-node .callout[data-callout="lmb-excerpt"]>.callout-content{padding-top:2px!important;padding-bottom:2px!important;}',
+  '.canvas-node .callout[data-callout="lmb-comment"]{margin-top:6px!important;}',
   '.callout[data-callout="lmb-comment"] .callout-icon{color:var(--text-faint);}',
   // 折叠箭头推到最右（PDF Flow 的「›」位置）；lmb-comment-clickable 供 JS/测试识别
   '.callout[data-callout="lmb-comment"] .callout-fold{margin-left:auto;}',
@@ -354,9 +418,27 @@ const LMB_STYLES = [
   "padding:2px 8px !important;}",
   '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar .clickable-icon{',
   "margin:0 1px !important;padding:3px 5px !important;}",
+  '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar .lmb-toolbar-group{display:flex;align-items:center;',
+  'justify-content:flex-end;gap:1px;margin-left:auto!important;padding:0!important;flex:0 0 auto;}',
+  '.lmb-toolbar-ink.is-active{color:var(--text-on-accent)!important;background:var(--interactive-accent)!important;}',
+  '.lmb-ink-layer,.lmb-ink-live-layer{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;z-index:50!important;display:block;touch-action:auto!important;pointer-events:none!important;}',
+  '.lmb-ink-live-layer{z-index:51!important;}',
+  'body.lmb-ink-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair;}',
+  '.workspace-leaf-content[data-type="pdf"]{position:relative;}',
+  '.lmb-ink-tools{position:absolute;z-index:1000;top:44px;right:12px;display:flex;align-items:center;gap:4px;padding:6px;border:1px solid var(--background-modifier-border);border-radius:11px;background:color-mix(in srgb,var(--background-primary) 94%,transparent);backdrop-filter:blur(8px);box-shadow:var(--shadow-s,0 4px 16px rgba(0,0,0,.25));}',
+  '.lmb-ink-tools-content{display:flex;align-items:center;gap:4px;}.lmb-ink-tools.is-collapsed .lmb-ink-tools-content{display:none;}',
+  '.lmb-ink-tools button{min-width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);padding:4px 7px;cursor:pointer;font-size:14px;}.lmb-ink-tools button:hover{background:var(--background-modifier-hover);}.lmb-ink-tools button.is-active{background:var(--interactive-accent);color:var(--text-on-accent);}',
+  '.lmb-ink-tools .lmb-ink-collapse{min-width:24px;width:24px;padding:2px;}.lmb-ink-swatches{display:flex;gap:3px;padding:0 2px;}.lmb-ink-tools .lmb-ink-swatch{min-width:18px;width:18px;height:18px;padding:0;border:2px solid var(--background-primary);box-shadow:0 0 0 1px var(--background-modifier-border);border-radius:50%;}.lmb-ink-tools .lmb-ink-swatch.is-active{box-shadow:0 0 0 2px var(--interactive-accent);}',
+  '.lmb-ink-tools input[type="color"]{width:26px;height:26px;padding:1px;border:0;background:transparent;cursor:pointer;}.lmb-ink-tools input[type="range"]{width:82px;cursor:pointer;}.lmb-ink-save-status{min-width:42px;color:var(--text-faint);font-size:10px;white-space:nowrap;}.lmb-ink-save-status[data-state="error"]{color:var(--text-error);}',
+  '@media(max-width:700px){.lmb-ink-tools{top:48px;right:6px;max-width:calc(100% - 12px);overflow-x:auto;}.lmb-ink-tools button{min-width:42px;height:42px;font-size:17px;}.lmb-ink-tools .lmb-ink-collapse{min-width:36px;width:36px}.lmb-ink-tools input[type="range"]{width:100px}.lmb-ink-save-status{display:none;}}',
+  '.lmb-ink-text-editor{position:absolute;z-index:60;min-width:130px;min-height:44px;resize:both;padding:5px 7px;border:1px solid var(--interactive-accent);border-radius:4px;background:var(--background-primary);font:16px/1.35 var(--font-text);box-shadow:var(--shadow-s,0 2px 8px rgba(0,0,0,.18));}',
+  '.workspace-leaf-content[data-type="pdf"] .lmb-toolbar-group .clickable-icon{margin:0!important;',
+  'padding:3px!important;width:28px!important;height:28px!important;min-width:28px!important;max-width:28px!important;display:inline-flex;align-items:center;justify-content:center;flex:0 0 28px!important;}',
+  '.workspace-leaf-content[data-type="pdf"] .lmb-toolbar-group svg{display:block!important;width:17px!important;height:17px!important;min-width:17px!important;max-width:17px!important;stroke:currentColor!important;flex:0 0 17px!important;}',
   // 注入的框选按钮：激活态高亮（与 ribbon is-active 同一套主题色语义）
   ".lmb-toolbar-crop.is-active{color:var(--text-on-accent)!important;",
   "background:var(--interactive-accent)!important;}",
+  '.lmb-toolbar-sidebar.is-active{color:var(--text-on-accent)!important;background:var(--interactive-accent)!important;}',
   // 框选模式开启时，PDF 页面光标换十字，给「正在框选」的即时视觉反馈
   'body.lmb-rect-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair !important;}',
   // ===== v0.11.3：双重摘录卡（文字+截图）视图切换 =====
@@ -421,7 +503,8 @@ const LMB_STYLES = [
   //   （比如缓存命中后按钮被挂到了错误的宿主），至少视觉上不会炸。
   '.pdf-embed .lmb-toolbar-crop,',
   '.pdf-embed .lmb-toolbar-md,',
-  '.pdf-embed .lmb-toolbar-canvas{display:none !important;}',
+  '.pdf-embed .lmb-toolbar-canvas,',
+  '.pdf-embed .lmb-toolbar-sidebar{display:none !important;}',
 
   // ---- 2. 非 PDF 视图里不显示注入的按钮 ----
   // 理由：用 :not() 白名单式限定，而不是黑名单式排除 —— 默认「任何非 PDF 的 leaf 都隐藏」，
@@ -429,14 +512,15 @@ const LMB_STYLES = [
   //   （这条是对并行改动 30-plugin-core.js 的防御：那边正在调整注入宿主的选择策略。）
   '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-crop,',
   '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-md,',
-  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-canvas{display:none !important;}',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-canvas,',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-sidebar{display:none !important;}',
 
   // ---- 3. 三个注入按钮的通用视觉基线 ----
   // 理由：给后续所有 per-view-type 覆写提供一个稳定的基类（cursor + opacity 过渡），
   //   将来针对某视图做 hover / 显隐动画时，从这个基线继承即可，不用每个视图重抄一遍。
   //   刻意**只加不影响现有外观的属性**：cursor 是交互语义、transition 只声明过渡曲线，
   //   不指定初始 opacity，所以当前渲染结果与加这条之前完全一致。
-  ".lmb-toolbar-crop,.lmb-toolbar-md,.lmb-toolbar-canvas{cursor:pointer;transition:opacity .15s ease;}",
+  ".lmb-toolbar-crop,.lmb-toolbar-md,.lmb-toolbar-canvas,.lmb-toolbar-sidebar{cursor:pointer;transition:opacity .15s ease;}",
 
   // ===== v0.13.0 / v0.13.2：canvas 卡片悬浮操作栏（.lmb-canvas-bar）=====
   // 定位逻辑全在 JS（lmbCalcBarPos 每轮写内联 left/top），CSS 只管呈现，别在这儿改定位。
@@ -456,20 +540,27 @@ const LMB_STYLES = [
   '.lmb-canvas-bar .lmb-bar-comment,',
   '.lmb-canvas-bar .lmb-bar-jump,',
   '.lmb-canvas-bar .lmb-bar-view,',
+  '.lmb-canvas-bar .lmb-bar-color,',
   '.lmb-canvas-bar .lmb-bar-fit,',
+  '.lmb-canvas-bar .lmb-bar-follow,',
   '.lmb-canvas-bar .lmb-bar-disconnect{display:inline-flex;align-items:center;justify-content:center;gap:4px;width:auto;height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;transition:background .12s ease,color .12s ease;}',
   '.lmb-canvas-bar .lmb-bar-text{font-size:11px;line-height:1;letter-spacing:0.5px;font-weight:500;}',
   '.lmb-canvas-bar .lmb-bar-comment:hover,',
   '.lmb-canvas-bar .lmb-bar-jump:hover,',
   '.lmb-canvas-bar .lmb-bar-view:hover,',
+  '.lmb-canvas-bar .lmb-bar-color:hover,',
   '.lmb-canvas-bar .lmb-bar-fit:hover,',
+  '.lmb-canvas-bar .lmb-bar-follow:hover,',
   '.lmb-canvas-bar .lmb-bar-disconnect:hover{background:var(--background-modifier-hover);color:var(--text-normal);}',
+  '.lmb-canvas-bar .lmb-bar-follow.is-active{background:var(--interactive-accent);color:var(--text-on-accent);}',
 
   '.lmb-disconnect-candidate{cursor:pointer!important;filter:drop-shadow(0 0 3px var(--interactive-accent));}',
   '.lmb-disconnect-candidate path{stroke:var(--interactive-accent)!important;stroke-width:6px!important;pointer-events:stroke!important;cursor:pointer!important;}',
 
   // setIcon 注入的 svg 默认会撑成 100% 把按钮顶变形，这里统一尺寸
-  '.lmb-canvas-bar svg{width:14px;height:14px;display:block;}',
+  '.lmb-canvas-bar svg{width:14px!important;height:14px!important;min-width:14px!important;max-width:14px!important;display:block!important;flex:0 0 14px!important;}',
+  'body.lmb-mobile .lmb-canvas-bar{display:grid!important;grid-template-columns:repeat(4,max-content);align-items:center!important;gap:3px;padding:4px;max-width:calc(100% - 8px);}',
+  'body.lmb-mobile .lmb-canvas-bar>div{height:34px!important;min-height:34px!important;padding:0 9px!important;white-space:nowrap;touch-action:manipulation;}',
 
   // 不适用的按钮由 JS 走 hideRemove（display:none），这里不给额外样式，避免和 JS 打架
 
@@ -485,12 +576,112 @@ const LMB_STYLES = [
   //   不移除元素，querySelector 找得到）。卡片 markdown 文本一字未改。
   //   只作用于 canvas 节点内；md 阅读视图保持原样。
   '.canvas-node-content .callout[data-callout="lmb-comment"]:not(:has(.callout-content)),',
-  '.canvas-node-content .callout[data-callout="lmb-view"]{display:none !important;}'
+  '.canvas-node-content .callout[data-callout="lmb-view"]{display:none !important;}',
+
+  // ===== PDF 批注边页：与 PDF 并排占位，不覆盖阅读区 =====
+  // 保留 PDF.js 原生 block/absolute 布局；用 padding 划出边页空间，绝不能把宿主改成 flex。
+  '.lmb-pdf-sidebar-host{position:relative!important;padding-right:var(--lmb-pdf-sidebar-width,340px)!important;',
+  'box-sizing:border-box!important;overflow:hidden!important;}',
+  '.lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed{padding-right:0!important;}',
+  '.lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed>.lmb-pdf-excerpt-sidebar{display:none!important;}',
+  '.lmb-pdf-excerpt-sidebar{position:absolute;z-index:15;right:0;top:var(--lmb-pdf-sidebar-top,0px);bottom:0;min-width:260px;max-width:min(50vw,560px);height:auto;',
+  'padding:0 10px 28px 13px;overflow:auto;box-sizing:border-box;background:var(--background-primary);',
+  'border-left:1px solid var(--background-modifier-border);scroll-behavior:smooth;}',
+  '.lmb-pdf-sidebar-resizer{position:absolute;z-index:5;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize;}',
+  '.lmb-pdf-sidebar-resizer:hover,.lmb-pdf-sidebar-resizer.is-dragging{background:var(--interactive-accent);opacity:.75;}',
+  '.lmb-pdf-sidebar-title{position:sticky;top:0;padding:12px 3px 10px;margin-bottom:9px;',
+  'background:var(--background-primary);border-bottom:1px solid var(--background-modifier-border);z-index:2;}',
+  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;}',
+  '.lmb-pdf-sidebar-title-main{font-size:14px;font-weight:700;line-height:1.4;}',
+  '.lmb-pdf-sidebar-count{font-size:10px;color:var(--text-on-accent);background:var(--interactive-accent);padding:1px 6px;border-radius:99px;}',
+  '.lmb-pdf-sidebar-file{font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}',
+  '.lmb-pdf-sidebar-title-sub{font-size:11px;color:var(--text-muted);margin-top:2px;}',
+  '.lmb-pdf-sidebar-controls{display:flex;align-items:center;gap:6px;margin-top:8px;height:34px;}',
+  '.lmb-pdf-sidebar-controls button,.lmb-pdf-sidebar-item-actions button{border:1px solid var(--background-modifier-border);',
+  'appearance:none!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;flex:0 0 auto!important;height:30px!important;min-height:30px!important;max-height:30px!important;line-height:1!important;border-radius:7px;background:var(--background-secondary);color:var(--text-muted);font-size:11px;padding:0 10px!important;margin:0!important;cursor:pointer;}',
+  '.lmb-pdf-sidebar-controls button.is-active{background:var(--interactive-accent);color:var(--text-on-accent);border-color:transparent;}',
+  '.lmb-pdf-sidebar-follow{margin-left:auto!important;}',
+  '.lmb-pdf-sidebar-search{width:100%;box-sizing:border-box;margin-top:8px;padding:6px 8px;border-radius:7px;',
+  'border:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-normal);}',
+  '.lmb-pdf-sidebar-list{display:flex;flex-direction:column;gap:8px;}',
+  '.lmb-pdf-sidebar-item{border:1px solid var(--background-modifier-border);border-radius:9px;padding:9px;',
+  'background:var(--background-secondary);box-sizing:border-box;cursor:pointer;transition:border-color .15s,background .15s;}',
+  '.lmb-pdf-sidebar-item:hover{border-color:var(--background-modifier-border-hover);}',
+  '.lmb-pdf-sidebar-item.is-active{border-color:var(--interactive-accent);background:color-mix(in srgb,var(--background-secondary) 82%,var(--interactive-accent));}',
+  '.lmb-pdf-sidebar-item.is-page-hidden,.lmb-pdf-sidebar-item.is-search-hidden{display:none;}',
+  '.lmb-pdf-sidebar-item-header{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:5px;}',
+  '.lmb-pdf-sidebar-item-title{font-size:11px;font-weight:700;color:var(--text-accent);}',
+  '.lmb-pdf-sidebar-item-tags{font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.lmb-pdf-sidebar-item-text{font-size:12px;line-height:1.5;white-space:normal;word-break:break-word;}',
+  '.lmb-pdf-sidebar-item-text>p:first-child{margin-top:0;}.lmb-pdf-sidebar-item-text>p:last-child{margin-bottom:0;}',
+  '.lmb-pdf-sidebar-item-image{margin-top:6px;}.lmb-pdf-sidebar-item-image img{display:block;width:100%;height:auto;',
+  'max-height:360px;object-fit:contain;border-radius:6px;background:var(--background-primary);}',
+  '.lmb-pdf-sidebar-item-text.is-hidden,.lmb-pdf-sidebar-item-image.is-hidden{display:none!important;}',
+  '.lmb-pdf-sidebar-item-note{font-size:12px;line-height:1.4;margin-top:6px;padding:6px 8px;border-left:3px solid rgb(112,196,157);',
+  'background:var(--background-primary);border-radius:5px;}',
+  '.lmb-pdf-sidebar-item-note-title{font-weight:600;font-size:10px;color:var(--text-muted);margin-bottom:2px;}',
+  '.lmb-pdf-sidebar-item-note-body{white-space:normal;word-break:break-word;line-height:1.4;}',
+  '.lmb-pdf-sidebar-item-note-body table{font-size:12px!important;line-height:1.35!important;width:100%;table-layout:fixed;}',
+  '.lmb-pdf-sidebar-item-note-body th,.lmb-pdf-sidebar-item-note-body td{font-size:inherit!important;line-height:inherit!important;padding:4px 6px!important;min-width:0!important;overflow-wrap:anywhere;vertical-align:top;}',
+  '.lmb-pdf-sidebar-item-note-body p{margin:2px 0!important;min-height:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body>p:first-child{margin-top:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body>p:last-child{margin-bottom:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body ul,.lmb-pdf-sidebar-item-note-body ol{margin:2px 0!important;padding-left:18px!important;}',
+  '.lmb-pdf-sidebar-item-note-body li{margin:0!important;padding:0!important;line-height:1.4!important;}',
+  '.lmb-pdf-sidebar-item-note-body li>p{display:inline;margin:0!important;padding:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body li+li{margin-top:1px!important;}',
+  '.lmb-pdf-sidebar-item-actions{display:flex;flex-wrap:wrap;align-items:center;gap:5px;justify-content:flex-end;margin-top:8px;}',
+  '.lmb-pdf-sidebar-item-actions.is-empty{display:none;}',
+  '.lmb-pdf-sidebar-item-text-excerpt{font-weight:700;letter-spacing:.01em;}',
+  '.lmb-pdf-sidebar-item-actions .lmb-pdf-sidebar-icon-button{display:inline-flex;align-items:center;justify-content:center;',
+  'width:30px;height:30px;min-width:30px;padding:0;color:var(--text-muted);}',
+  '.lmb-pdf-sidebar-item-actions .lmb-pdf-sidebar-icon-button:hover{color:var(--text-accent);border-color:var(--interactive-accent);}',
+  '.lmb-pdf-sidebar-icon-button{color:var(--text-normal)!important;opacity:1!important;}',
+  '.lmb-pdf-sidebar-icon-button svg{display:block!important;width:16px!important;height:16px!important;min-width:16px!important;max-width:16px!important;flex:0 0 16px!important;stroke:currentColor!important;stroke-width:2!important;opacity:1!important;}',
+  '.lmb-pdf-sidebar-empty{text-align:center;color:var(--text-muted);padding:42px 10px;}',
+  '.lmb-mark-sidebar-active{outline:2px solid var(--interactive-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--interactive-accent) 25%,transparent);}',
+  'body.lmb-mobile .lmb-pdf-excerpt-sidebar{min-width:280px!important;max-width:min(38vw,420px)!important;box-shadow:none!important;}',
+  'body.lmb-mobile .lmb-pdf-sidebar-resizer{display:none;}',
+  '@media(max-width:700px){body.lmb-mobile .lmb-pdf-sidebar-host{padding-right:min(46vw,320px)!important;}body.lmb-mobile .lmb-pdf-excerpt-sidebar{width:min(46vw,320px)!important;min-width:240px!important;max-width:min(46vw,320px)!important;}}'
 ];
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports.__lmbStyles = { LMB_STYLES };
 }
+
+/* compat/obsidian-adapters — Obsidian 私有 Canvas / PDF API 的单一边界。
+ * 业务模块应优先通过这里读取或提交内部对象；宿主升级时集中在本文件适配。 */
+const LmbCanvasAdapter = Object.freeze({
+  data(canvas) {
+    try { return canvas && typeof canvas.getData === "function" ? canvas.getData() : null; }
+    catch (_) { return null; }
+  },
+  selection(canvas) {
+    try { return canvas ? Array.from(typeof canvas.getSelection === "function" ? canvas.getSelection() : (canvas.selection || [])) : []; }
+    catch (_) { return []; }
+  },
+  commit(canvas, data) {
+    try {
+      if (!canvas || typeof canvas.setData !== "function" || typeof canvas.requestSave !== "function") return false;
+      canvas.setData(data); canvas.requestSave(); return true;
+    } catch (_) { return false; }
+  }
+});
+
+const LmbPdfAdapter = Object.freeze({
+  viewer(view) {
+    try { return view && view.containerEl && (view.containerEl.querySelector(".pdfViewer") || view.containerEl); }
+    catch (_) { return null; }
+  },
+  isRelevantMutation(node) {
+    try {
+      if (!node) return false;
+      if (node.nodeType === 3) return !!(node.parentElement && node.parentElement.closest(".textLayer"));
+      return node.nodeType === 1 && !node.classList.contains("lmb-mark")
+        && !!node.closest(".page, .textLayer, .annotationLayer");
+    } catch (_) { return false; }
+  }
+});
 
 /* 23-pure-note —— 补充描述(ppd-note) + 独立评论(lmb-comment) 解析/合并（纯函数，可单测） */
 
@@ -676,7 +867,7 @@ function lmbJoinComment(body, commentText, opts) {
     if (o.allowEmpty !== true) return base;
     return base + "\n\n> [!" + LMB_COMMENT_TYPE + "]- " + LMB_COMMENT_EMPTY_TITLE;
   }
-  const head = "> [!" + LMB_COMMENT_TYPE + "] " + LMB_COMMENT_TITLE;
+  const head = "> [!" + LMB_COMMENT_TYPE + "]";
   const callout = [head].concat(String(commentText).split("\n").map((l) => (l.trim() ? "> " + l : ">")));
   return base + "\n\n" + callout.join("\n");
 }
@@ -964,6 +1155,66 @@ function lmbLayoutGroup(parent, kids, side, gap = 30) {
     }
   }
 }
+
+/**
+ * 按有向连线（fromNode=父，toNode=子）平移一组被拖动卡片的全部后代。
+ * 多选拖动时，显式移动的卡片不再被祖先重复平移；环形连线也只访问一次。
+ * @returns {number} 实际被联动平移的卡片数
+ */
+function lmbMoveDescendants(nodes, edges, movements) {
+  const byId = new Map((nodes || []).filter((n) => n && n.id).map((n) => [n.id, n]));
+  const children = new Map();
+  for (const edge of edges || []) {
+    if (!edge || !byId.has(edge.fromNode) || !byId.has(edge.toNode) || edge.fromNode === edge.toNode) continue;
+    if (!children.has(edge.fromNode)) children.set(edge.fromNode, []);
+    children.get(edge.fromNode).push(edge.toNode);
+  }
+  const roots = (movements || []).filter((m) => m && byId.has(m.id)
+    && Number.isFinite(m.dx) && Number.isFinite(m.dy) && (m.dx !== 0 || m.dy !== 0));
+  const explicit = new Set(roots.map((m) => m.id));
+  const shifted = new Set();
+  for (const move of roots) {
+    const seen = new Set([move.id]);
+    const queue = [...(children.get(move.id) || [])];
+    while (queue.length) {
+      const id = queue.shift();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      for (const childId of children.get(id) || []) queue.push(childId);
+      if (explicit.has(id) || shifted.has(id)) continue;
+      const node = byId.get(id);
+      if (!node || node.type === "group") continue;
+      node.x = Math.round((Number(node.x) || 0) + move.dx);
+      node.y = Math.round((Number(node.y) || 0) + move.dy);
+      shifted.add(id);
+    }
+  }
+  return shifted.size;
+}
+
+/** v0.19：按父子边把一棵树排成左→右或上→下的阅读树；无环保护。 */
+function lmbLayoutTree(nodes, edges, direction = "right", gap = 60) {
+  const byId = new Map((nodes || []).filter((n) => n && n.id && n.type !== "group").map((n) => [n.id, n]));
+  const kids = new Map(), childIds = new Set();
+  for (const e of edges || []) if (byId.has(e.fromNode) && byId.has(e.toNode)) {
+    if (!kids.has(e.fromNode)) kids.set(e.fromNode, []);
+    kids.get(e.fromNode).push(e.toNode); childIds.add(e.toNode);
+  }
+  const roots = [...byId.keys()].filter((id) => !childIds.has(id));
+  let cursor = 0;
+  const walk = (id, depth, seen) => {
+    if (seen.has(id)) return 0; seen.add(id);
+    const node = byId.get(id), children = kids.get(id) || [];
+    let span = 0;
+    for (const child of children) span += walk(child, depth + 1, seen) + gap;
+    span = Math.max(span - (children.length ? gap : 0), direction === "down" ? (node.width || 200) : (node.height || 120));
+    if (direction === "down") { node.x = Math.round(cursor + (span - (node.width || 200)) / 2); node.y = Math.round(depth * ((node.height || 120) + gap)); }
+    else { node.x = Math.round(depth * ((node.width || 240) + gap)); node.y = Math.round(cursor + (span - (node.height || 120)) / 2); }
+    cursor += span + gap; return span;
+  };
+  for (const id of roots) walk(id, 0, new Set());
+  return roots.length;
+}
 /* ==================== v0.11.0：首连锁定 / 改挂侧 / 尺寸重居中 ==================== */
 
 /**
@@ -1135,9 +1386,39 @@ function lmbDiffCanvasNodes(prevIds, exNodes) {
  * 注意：^ex- 是块尾锚点——遇到它就给当前条目定稿。没有 ^ex- 的悬空条目也会保留
  *       （exId 为 null），遵循全插件「宁可画得不准也不丢数据」的原则。
  */
+function lmbUnwrapExcerptCard(content) {
+  if (typeof content !== "string" || !/\[!lmb-excerpt\]/i.test(content)) return content || "";
+  return content.split(/\r?\n/).filter((line) => !/\[!lmb-excerpt\]/i.test(line) && !/class=["']lmb-excerpt-id["']/i.test(line))
+    .map((line) => line.replace(/^(\s*)>\s?/, "$1")).join("\n");
+}
+
+function lmbParsePdfLinkTarget(linkText) {
+  try {
+    const bar = String(linkText || "").indexOf("|");
+    const href = bar >= 0 ? String(linkText).slice(0, bar) : String(linkText || "");
+    const hash = href.lastIndexOf("#");
+    if (hash < 0) return null;
+    const query = href.slice(hash + 1);
+    const tm = new URLSearchParams(query);
+    return tm.get("target") || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function lmbParseExcerptDoc(content, sourcePath) {
   const entries = [];
   if (!content || typeof content !== "string") return entries;
+  // v0.18：只把插件受控生成区编入索引，用户补充区里的 PDF 链接不会制造幽灵摘录。
+  const generated = content.match(/<!--\s*LMB:BEGIN\s*-->([\s\S]*?)<!--\s*LMB:END\s*-->/i);
+  // 词语备注是用户主动建立的独立条目，不能随 Canvas 同步重写的受控区一起被覆盖。
+  // 因此它单独保存在文档尾部；索引时把两个区域合并读取。
+  const wordNotes = content.match(/<!--\s*LMB:WORD-NOTES:BEGIN\s*-->([\s\S]*?)<!--\s*LMB:WORD-NOTES:END\s*-->/i);
+  const manual = content.match(/<!--\s*LMB:MANUAL-EXCERPTS:BEGIN\s*-->([\s\S]*?)<!--\s*LMB:MANUAL-EXCERPTS:END\s*-->/i);
+  if (generated) content = generated[1] + (manual ? "\n" + manual[1] : "") + (wordNotes ? "\n" + wordNotes[1] : "");
+  // v0.20：摘录卡使用外层 lmb-excerpt callout。解析前只剥掉这一层视觉包装，
+  // 内部原文、图片、评论和 ^ex 锚点仍按旧格式解析，存量文档完全兼容。
+  content = lmbUnwrapExcerptCard(content);
   const lines = content.split(/\r?\n/);
   let pending = null;
   const flush = () => { if (pending) { entries.push(pending); pending = null; } };
@@ -1147,22 +1428,33 @@ function lmbParseExcerptDoc(content, sourcePath) {
    *   「原文 我的批注」），「> #误当标签」被收成假标签，note 里若含 [[y.pdf#page=3]]
    *   还会凭空开出一条幽灵摘录。
    *   状态位：遇 `[!` 首行置 true，遇非 `>` 行（空行 / 新块）复位。 */
-  let inCallout = false;
+  let inCalloutDepth = 0;
+  let inLooseMirrorComment = false;
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] || "";
-    if (!/^\s*>/.test(raw)) inCallout = false;   // 块结束（空行/新块）→ 复位
+    // 兼容已被旧同步逻辑污染的文档：外层摘录 Callout 解包后，原本与外层
+    // 同级的 lmb-comment 会失去 `>`，变成普通 `[!lmb-comment]` 文本。
+    if (/^\s*\[!lmb-comment\]/i.test(raw)) { inLooseMirrorComment = true; continue; }
+    if (inLooseMirrorComment) {
+      if (!/^\s*>/.test(raw)) continue;
+      inLooseMirrorComment = false;
+    }
+    const quoteDepth = ((raw.match(/^\s*((?:>\s*)*)/) || ["", ""])[1].match(/>/g) || []).length;
+    // 嵌套备注比摘录正文深一层；回到较浅的 ^ex 锚点时退出备注块。
+    if (!/^\s*>/.test(raw) || (inCalloutDepth && quoteDepth < inCalloutDepth)) inCalloutDepth = 0;
 
     // Callout 必须先于链接解析处理，否则其正文中的 PDF 链接会生成幽灵摘录。
-    if (/^\s*(?:>\s*)+\[!/.test(raw)) { inCallout = true; continue; }
-    if (inCallout) continue;
+    if (/^\s*(?:>\s*)+\[!/.test(raw)) { inCalloutDepth = quoteDepth || 1; continue; }
+    if (inCalloutDepth && EX_ID_RE.test(raw) && quoteDepth <= inCalloutDepth) inCalloutDepth = 0;
+    if (inCalloutDepth && quoteDepth >= inCalloutDepth) continue;
 
     // 1) 回跳链接行 → 开新条目
     LMB_LINK_RE.lastIndex = 0;
     const lm = LMB_LINK_RE.exec(raw);
     if (lm) {
       flush();
-      inCallout = false;
+      inCalloutDepth = 0;
       const sm = LMB_SEL_RE.exec((lm[3] || "").trim());
       const rm = LMB_RECT_RE.exec((lm[4] || "").trim());
       pending = {
@@ -1170,15 +1462,21 @@ function lmbParseExcerptDoc(content, sourcePath) {
         page: parseInt(lm[2], 10),
         selection: sm ? [+sm[1], +sm[2], +sm[3], +sm[4]] : null,
         rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null,
+        target: lmbParsePdfLinkTarget(raw),
         exId: null,
         tags: [],
         text: "",
+        imagePath: null,
         sourceMd: sourcePath || null,
         line: i
       };
       continue;
     }
     if (!pending) continue;
+
+    // 图片是摘录的媒体内容，不应作为 `![[附件.webp]]` 原样混进侧栏正文。
+    const image = raw.match(/!\[\[([^\]|]+\.(?:webp|png|jpe?g))(?:\|[^\]]*)?\]\]/i);
+    if (image) { pending.imagePath = image[1]; continue; }
 
     // 2) ^ex- 锚点 → 定稿
     const ex = EX_ID_RE.exec(raw);
@@ -1231,6 +1529,245 @@ function lmbRestoreRefDisplayName(line, base, page) {
   if (page == null || !line || line.indexOf("|📖]]") < 0) return line;
   const full = "【" + String(base || "") + "-P." + page + "】";
   return line.replace(/\|\s*📖\s*\]\]/g, "|" + full + "]]");
+}
+
+/* PDF ink geometry and sampling helpers. Kept DOM-free for deterministic tests. */
+
+const LMB_INK_SCHEMA_VERSION = 2;
+const LMB_INK_HISTORY_LIMIT = 100;
+
+function lmbInkClamp(value, min, max) {
+  return Math.max(min, Math.min(max, Number(value) || 0));
+}
+
+function lmbInkClone(value) {
+  return JSON.parse(JSON.stringify(value == null ? null : value));
+}
+
+function lmbInkDistance(a, b) {
+  return Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0));
+}
+
+function lmbInkDistanceToSegment(point, start, end) {
+  const dx = end.x - start.x, dy = end.y - start.y;
+  const length2 = dx * dx + dy * dy;
+  if (!length2) return lmbInkDistance(point, start);
+  const t = lmbInkClamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / length2, 0, 1);
+  return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
+}
+
+function lmbInkBounds(object) {
+  if (!object) return { x: 0, y: 0, w: 0, h: 0 };
+  if (object.type === "pen" || object.type === "highlighter") {
+    const points = Array.isArray(object.points) ? object.points : [];
+    if (!points.length) return { x: 0, y: 0, w: 0, h: 0 };
+    let minX = points[0].x, maxX = minX, minY = points[0].y, maxY = minY;
+    for (let i = 1; i < points.length; i++) {
+      minX = Math.min(minX, points[i].x); maxX = Math.max(maxX, points[i].x);
+      minY = Math.min(minY, points[i].y); maxY = Math.max(maxY, points[i].y);
+    }
+    const pad = object.widthUnit === "page" ? Math.max(0, Number(object.width) || 0) / 2 : 0;
+    return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
+  }
+  if (object.type === "text") return { x: object.x || 0, y: object.y || 0, w: object.w || .2, h: object.h || .05 };
+  const pad = object.widthUnit === "page" ? Math.max(0, Number(object.width) || 0) / 2 : 0;
+  return {
+    x: Math.min(object.x1 || 0, object.x2 || 0) - pad, y: Math.min(object.y1 || 0, object.y2 || 0) - pad,
+    w: Math.abs((object.x2 || 0) - (object.x1 || 0)) + pad * 2, h: Math.abs((object.y2 || 0) - (object.y1 || 0)) + pad * 2
+  };
+}
+
+function lmbInkPointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i], b = polygon[j];
+    const crosses = ((a.y > point.y) !== (b.y > point.y))
+      && point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) || 1e-9) + a.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function lmbInkObjectHit(object, point, tolerance) {
+  if (!object) return false;
+  const t = Math.max(.001, Number(tolerance) || .01)
+    + (object.widthUnit === "page" ? Math.max(0, Number(object.width) || 0) / 2 : 0);
+  if (object.type === "pen" || object.type === "highlighter") {
+    const points = object.points || [];
+    if (points.length === 1) return lmbInkDistance(point, points[0]) <= t;
+    for (let i = 1; i < points.length; i++) {
+      if (lmbInkDistanceToSegment(point, points[i - 1], points[i]) <= t) return true;
+    }
+    return false;
+  }
+  if (object.type === "line") return lmbInkDistanceToSegment(point,
+    { x: object.x1, y: object.y1 }, { x: object.x2, y: object.y2 }) <= t;
+  const bounds = lmbInkBounds(object);
+  if (object.type === "rect") {
+    const edges = [
+      [{ x: bounds.x, y: bounds.y }, { x: bounds.x + bounds.w, y: bounds.y }],
+      [{ x: bounds.x + bounds.w, y: bounds.y }, { x: bounds.x + bounds.w, y: bounds.y + bounds.h }],
+      [{ x: bounds.x + bounds.w, y: bounds.y + bounds.h }, { x: bounds.x, y: bounds.y + bounds.h }],
+      [{ x: bounds.x, y: bounds.y + bounds.h }, { x: bounds.x, y: bounds.y }]
+    ];
+    return edges.some((edge) => lmbInkDistanceToSegment(point, edge[0], edge[1]) <= t);
+  }
+  return point.x >= bounds.x - t && point.x <= bounds.x + bounds.w + t
+    && point.y >= bounds.y - t && point.y <= bounds.y + bounds.h + t;
+}
+
+function lmbInkObjectsInLasso(objects, polygon) {
+  if (!Array.isArray(polygon) || polygon.length < 3) return [];
+  const polygonEdges = polygon.map((point, index) => [point, polygon[(index + 1) % polygon.length]]);
+  const intersects = (a, b, c, d) => {
+    const cross = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    const onSegment = (p, q, r) => q.x >= Math.min(p.x, r.x) - 1e-9 && q.x <= Math.max(p.x, r.x) + 1e-9 && q.y >= Math.min(p.y, r.y) - 1e-9 && q.y <= Math.max(p.y, r.y) + 1e-9;
+    const abC = cross(a, b, c), abD = cross(a, b, d), cdA = cross(c, d, a), cdB = cross(c, d, b);
+    if (Math.abs(abC) < 1e-9 && onSegment(a, c, b)) return true;
+    if (Math.abs(abD) < 1e-9 && onSegment(a, d, b)) return true;
+    if (Math.abs(cdA) < 1e-9 && onSegment(c, a, d)) return true;
+    if (Math.abs(cdB) < 1e-9 && onSegment(c, b, d)) return true;
+    return Math.sign(abC) !== Math.sign(abD) && Math.sign(cdA) !== Math.sign(cdB);
+  };
+  return (objects || []).filter((object) => {
+    const bounds = lmbInkBounds(object);
+    const probes = [
+      { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 },
+      { x: bounds.x, y: bounds.y }, { x: bounds.x + bounds.w, y: bounds.y + bounds.h }
+    ];
+    if (probes.some((point) => lmbInkPointInPolygon(point, polygon))) return true;
+    if (polygon.some((point) => point.x >= bounds.x && point.x <= bounds.x + bounds.w && point.y >= bounds.y && point.y <= bounds.y + bounds.h)) return true;
+    let segments = [];
+    if (object.type === "pen" || object.type === "highlighter") {
+      const points = object.points || []; segments = points.slice(1).map((point, index) => [points[index], point]);
+    } else if (object.type === "line") segments = [[{ x: object.x1, y: object.y1 }, { x: object.x2, y: object.y2 }]];
+    else if (object.type === "rect") {
+      const a = { x: bounds.x, y: bounds.y }, b = { x: bounds.x + bounds.w, y: bounds.y }, c = { x: bounds.x + bounds.w, y: bounds.y + bounds.h }, d = { x: bounds.x, y: bounds.y + bounds.h };
+      segments = [[a, b], [b, c], [c, d], [d, a]];
+    }
+    return segments.some((segment) => polygonEdges.some((edge) => intersects(segment[0], segment[1], edge[0], edge[1])));
+  });
+}
+
+function lmbInkNormalizePoint(point, previous) {
+  const rawTime = Number(point.t), time = Number.isFinite(rawTime) ? rawTime : Date.now();
+  const pressure = Number(point.p);
+  return {
+    x: lmbInkClamp(point.x, 0, 1), y: lmbInkClamp(point.y, 0, 1),
+    p: pressure > 0 ? lmbInkClamp(pressure, .02, 1) : .5,
+    t: previous && time <= previous.t ? previous.t + 1 : time
+  };
+}
+
+function lmbInkAppendSamples(target, samples, minDistance) {
+  const result = target || [];
+  const threshold = Math.max(.00005, Number(minDistance) || .00035);
+  for (const raw of samples || []) {
+    const prior = result[result.length - 1];
+    const point = lmbInkNormalizePoint(raw, prior);
+    if (!prior || lmbInkDistance(prior, point) >= threshold || point.t - prior.t >= 12) result.push(point);
+    else prior.p = (prior.p * 2 + point.p) / 3;
+  }
+  return result;
+}
+
+function lmbInkPerpendicularDistance(point, start, end) {
+  return lmbInkDistanceToSegment(point, start, end);
+}
+
+function lmbInkSimplifyPoints(points, epsilon, pressureEpsilon) {
+  if (!Array.isArray(points) || points.length <= 2) return (points || []).slice();
+  let maxScore = 0, index = 0;
+  const spatialLimit = Number(epsilon) || .00025, pressureLimit = Number(pressureEpsilon) || .06;
+  const start = points[0], end = points[points.length - 1];
+  for (let i = 1; i < points.length - 1; i++) {
+    const distance = lmbInkPerpendicularDistance(points[i], points[0], points[points.length - 1]);
+    const ratio = i / (points.length - 1);
+    const expectedPressure = (start.p == null ? .5 : start.p) + ((end.p == null ? .5 : end.p) - (start.p == null ? .5 : start.p)) * ratio;
+    const pressureDelta = Math.abs((points[i].p == null ? .5 : points[i].p) - expectedPressure);
+    const score = Math.max(distance / spatialLimit, pressureDelta / pressureLimit);
+    if (score > maxScore) { index = i; maxScore = score; }
+  }
+  if (maxScore <= 1) return [points[0], points[points.length - 1]];
+  const left = lmbInkSimplifyPoints(points.slice(0, index + 1), spatialLimit, pressureLimit);
+  const right = lmbInkSimplifyPoints(points.slice(index), spatialLimit, pressureLimit);
+  return left.slice(0, -1).concat(right);
+}
+
+function lmbInkBuildPatch(before, after) {
+  const left = Array.isArray(before) ? before : [], right = Array.isArray(after) ? after : [];
+  const beforeMap = new Map(left.map((object, index) => [object.id, { object, index }]));
+  const afterMap = new Map(right.map((object, index) => [object.id, { object, index }]));
+  const added = [], removed = [], modified = [];
+  for (const [id, entry] of afterMap) {
+    if (!beforeMap.has(id)) added.push({ index: entry.index, object: lmbInkClone(entry.object) });
+    else if (JSON.stringify(beforeMap.get(id).object) !== JSON.stringify(entry.object)) {
+      modified.push({ id, before: lmbInkClone(beforeMap.get(id).object), after: lmbInkClone(entry.object) });
+    }
+  }
+  for (const [id, entry] of beforeMap) if (!afterMap.has(id)) removed.push({ index: entry.index, object: lmbInkClone(entry.object) });
+  return { added, removed, modified };
+}
+
+function lmbInkApplyPatch(objects, patch, direction) {
+  const result = lmbInkClone(objects || []), undo = direction === "undo";
+  const removeEntries = undo ? patch.added : patch.removed;
+  const insertEntries = undo ? patch.removed : patch.added;
+  const removeIds = new Set((removeEntries || []).map((entry) => entry.object.id));
+  for (let i = result.length - 1; i >= 0; i--) if (removeIds.has(result[i].id)) result.splice(i, 1);
+  for (const change of patch.modified || []) {
+    const index = result.findIndex((object) => object.id === change.id);
+    if (index >= 0) result[index] = lmbInkClone(undo ? change.before : change.after);
+  }
+  for (const entry of (insertEntries || []).slice().sort((a, b) => a.index - b.index)) {
+    const existing = result.findIndex((object) => object.id === entry.object.id);
+    if (existing >= 0) result.splice(existing, 1);
+    result.splice(Math.max(0, Math.min(result.length, entry.index)), 0, lmbInkClone(entry.object));
+  }
+  return result;
+}
+
+function lmbInkMergePages(older, newer) {
+  const result = lmbInkClone(older && typeof older === "object" ? older : {});
+  for (const [page, value] of Object.entries(newer && typeof newer === "object" ? newer : {})) {
+    const newObjects = Array.isArray(value) ? value : value && Array.isArray(value.objects) ? value.objects : [];
+    const oldValue = result[page], oldObjects = Array.isArray(oldValue) ? oldValue : oldValue && Array.isArray(oldValue.objects) ? oldValue.objects : [];
+    const merged = oldObjects.map((object) => lmbInkClone(object));
+    const positions = new Map(merged.map((object, index) => [object.id, index]));
+    for (const object of newObjects) {
+      if (object && object.id && positions.has(object.id)) merged[positions.get(object.id)] = lmbInkClone(object);
+      else { if (object && object.id) positions.set(object.id, merged.length); merged.push(lmbInkClone(object)); }
+    }
+    result[page] = { objects: merged };
+  }
+  return result;
+}
+
+function lmbInkSegmentWidth(object, point, previous, pageWidth) {
+  const base = object.widthUnit === "page"
+    ? Math.max(.5, (Number(object.width) || .003) * pageWidth)
+    : Math.max(.5, Number(object.width) || 3);
+  if (object.pressureMode === "fixed" || object.type === "highlighter") return base;
+  const pressure = lmbInkClamp(point && point.p || .5, .05, 1);
+  const distance = previous ? lmbInkDistance(point, previous) * pageWidth : 0;
+  const elapsed = previous ? Math.max(1, (point.t || 0) - (previous.t || 0)) : 16;
+  const velocity = distance / elapsed;
+  const speedFactor = lmbInkClamp(1.08 - velocity * .9, .72, 1.08);
+  const pressureFactor = object.pressureMode === "fountain" ? .72 + pressure * .48 : .34 + pressure * 1.08;
+  return Math.max(.45, base * pressureFactor * speedFactor);
+}
+
+function lmbInkFileKey(path) {
+  let hash = 2166136261, hash2 = 2246822507;
+  const value = String(path || "");
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+    hash2 ^= value.charCodeAt(i);
+    hash2 = Math.imul(hash2, 3266489909);
+  }
+  const slug = value.split(/[\\/]/).pop().replace(/[^a-z0-9._-]+/gi, "-").slice(0, 48) || "document";
+  return `${slug}-${(hash >>> 0).toString(36)}${(hash2 >>> 0).toString(36)}.json`;
 }
 
 /* ============================================================
@@ -1497,7 +2034,7 @@ if (typeof module !== "undefined" && module.exports) {
  * 三个功能（评论 / 跳转 / 切换视图）在 v0.11.0 ~ v0.11.3 都已实现，
  * 本文件只是把入口从「卡内」搬到「卡片上方的悬浮栏」，不新增业务逻辑。
  */
-const LMB_BAR_POLL_MS = 120;      // 悬浮栏轮询间隔（ms）
+const LMB_BAR_POLL_MS = 800;      // 事件驱动后的低频兜底轮询（ms）
 const LMB_BAR_GAP = 8;            // 悬浮栏与卡片边缘的间距（px）
 const LMB_BAR_MARGIN = 4;         // 贴边时的安全留白（px）
 const LMB_BAR_SEL = ".lmb-canvas-bar";  // 悬浮栏容器 class
@@ -1509,15 +2046,14 @@ const LMB_BAR_SEL = ".lmb-canvas-bar";  // 悬浮栏容器 class
 //   （例如 v0.13.4 的 fit 按钮绑的是 `if (!c) return` 静默版）。
 //   表现极其迷惑：代码明明改了、也重载了，行为却是老样子。
 //   加版本号后，版本不匹配的浮层会被移除重建，保证用户手上的永远是"当前代码造的"浮层。
-const LMB_BAR_VERSION = "v0.16.14";
+const LMB_BAR_VERSION = "v0.24.1";
 
-/* LMB_BAR_POLL_MS 为什么是 120ms：
+/* LMB_BAR_POLL_MS 为什么是 800ms：
  *   - canvas **没有原生「选中变化」事件**。advanced-canvas 插件那个 `selection-changed`
  *     不是 Obsidian 原生 API，是它自己 monkey-patch canvas 内部方法造出来的；
  *     我们不依赖 advanced-canvas，所以只能轮询。
- *   - 120ms 是「跟手」和「不烧 CPU」的折中：人眼对 >150ms 的延迟才有明显迟滞感，
- *     120ms 内刷新基本感觉不到；同时每秒 ~8 次，每次只做一次 rect 读取 + 几次比较，
- *     开销可以忽略。
+ *   - pointerup、active-leaf-change 已负责立即刷新；800ms 只兜底宿主未暴露的选中、平移与缩放变动，
+ *     将常驻检查从每秒约 8 次降到约 1 次。
  *   - **一次轮询同时解决两件事**，这是选轮询而非监听的额外收益：
  *       ① 选中变化 → 要**重建按钮**（不同卡片能点的按钮不一样，见 lmbPickBarActions）
  *       ② 视口平移/缩放 → 要**重算位置**（卡片在屏幕上的位置变了，浮层要跟着走）
@@ -1580,8 +2116,8 @@ function lmbBarFix2(v) {
  * @param {{left:number, top:number, width:number, height:number}} wrapperRect  挂载容器（canvas.wrapperEl 或 .canvas-wrapper）的视口 rect
  * @param {{width:number, height:number}} barSize  悬浮栏自身尺寸
  * @param {{gap?:number, margin?:number}} [opts]   可选；不传用 LMB_BAR_GAP / LMB_BAR_MARGIN
- * @returns {{left:number, top:number, placement:"left"|"inside"}} placement：
- *   "left" = 卡片左边缘外侧（默认）、"inside" = 卡片内侧左侧（贴边时的退路）
+ * @returns {{left:number, top:number, placement:"left"|"right"}} placement：
+ *   "left" = 卡片左边缘外侧（默认）、"right" = 左边不足时放到右边缘外侧
  */
 function lmbCalcBarPos(nodeRect, wrapperRect, barSize, opts) {
   try {
@@ -1610,17 +2146,32 @@ function lmbCalcBarPos(nodeRect, wrapperRect, barSize, opts) {
     const relLeft = nodeLeft - wrapLeft;
     const relTop = nodeTop - wrapTop;
 
+    // iPad 使用横向工具栏，放在卡片下方；桌面继续使用左侧竖排。
+    if (opts && opts.mobile) {
+      let mobileLeft = relLeft + (nodeW - barW) / 2;
+      let mobileTop = relTop + nodeH + gap;
+      let mobilePlacement = "bottom";
+      if (mobileTop + barH > wrapH - margin) {
+        mobileTop = relTop - barH - gap;
+        mobilePlacement = "top";
+      }
+      const mobileMaxLeft = wrapW - barW - margin;
+      mobileLeft = mobileMaxLeft < margin ? margin : Math.max(margin, Math.min(mobileMaxLeft, mobileLeft));
+      mobileTop = Math.max(margin, Math.min(Math.max(margin, wrapH - barH - margin), mobileTop));
+      return { left: Math.round(mobileLeft), top: Math.round(mobileTop), placement: mobilePlacement };
+    }
+
     // 2. v0.13.2：默认贴在卡片**左侧**（竖排，顶端对齐卡片顶端）
     //    上一版是「卡片上边缘外侧」，用户反馈贴左更顺手、视觉上更像"卡片的"工具栏。
     let left = relLeft - barW - gap;
     let top = relTop;
     let placement = "left";
 
-    // 3. 左侧放不下 → 退到卡片**内侧**左侧（左对齐 + 顶端对齐，会遮挡卡片左侧一点点）
-    //    刻意不翻到右侧 —— 那是别人的领域，且不叫"左侧"了。
+    // 3. 左侧放不下 → 翻到卡片**右侧外边**。绝不先塞进卡片内部，避免首次
+    //    测量与下一帧测量之间出现“栏从卡片里跳出去”的闪动。
     if (left < margin) {
-      left = relLeft + gap;
-      placement = "inside";
+      left = relLeft + nodeW + gap;
+      placement = "right";
     }
 
     // 4. 左右钳制（含「浮层比容器还宽」的颠倒区间边界）
@@ -1736,9 +2287,9 @@ function lmbPickBarActions(nodeText) {
     const view = hasEmbed && (jump !== null);
     // v0.13.3：fit = 自适应高度。文本节点都能调（lmbFitNodeById 内部判断 node.type）
     const fit = hasText;
-    return { comment: comment, jump: jump, view: view, fit: fit, disconnect: false };
+    return { comment: comment, jump: jump, view: view, fit: fit, color: hasText && EX_ID_RE.test(nodeText), disconnect: false };
   } catch (e) {
-    return { comment: false, jump: null, view: false, fit: false, disconnect: false };
+    return { comment: false, jump: null, view: false, fit: false, color: false, disconnect: false };
   }
 }
 
@@ -1798,10 +2349,9 @@ function lmbBarSignature(nodeIds, viewport) {
       .sort();
 
     // 视口段：非数字一律按 0 处理（viewport 传 null 不该让指纹机制整个废掉）
-    const vp = viewport || {};
-    const v = lmbBarFix2(vp.x) + "," + lmbBarFix2(vp.y) + "," + lmbBarFix2(vp.zoom);
-
-    return sorted.join(",") + "|" + v;
+    // 工具栏动作只由选中节点决定；平移/缩放只影响位置，不能触发按钮状态重建。
+    // 保留 viewport 参数以兼容旧调用方，但故意不再写进指纹。
+    return sorted.join(",");
   } catch (e) {
     return "";
   }
@@ -1854,12 +2404,32 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   noteIntoSync: false,
   noteAutoBoxOnNew: false,
   commentAutoBoxOnNew: false,
+  excerptCardWidth: 560,
   autoAttachScreenshot: true,
-  autoCleanOnDelete: false,
+  excerptImageFolder: "附件/{pdf}",
+  imageExcerptMarkStyle: "dashed",
+  autoCleanOnDelete: true,
+  moveDescendantsWithParent: false,
+  nodeViews: {},
+  excerptViews: {},
+  quickExcerpts: {},
+  excerptColors: {},
   notePlaceholderOffMigrated: false,
   commentBoxOffMigrated: false,
   naturalHeightV2Migrated: false,
-  overflowHeightVerifiedMigrated: false
+  overflowHeightVerifiedMigrated: false,
+  managedExcerptAssetsV1Migrated: false,
+  inkSidecarV2Migrated: false,
+  inkInputMode: "pen-mouse",
+  inkPressureMode: "natural",
+  inkLastTool: "pen",
+  inkPenColor: "#e05252",
+  inkPenWidth: 3,
+  inkHighlighterColor: "#ffd84d",
+  inkHighlighterWidth: 12,
+  inkEraserSize: 18,
+  inkToolbarCollapsed: false,
+  inkAnnotations: {}
 });
 
 class LmbSettingsStore {
@@ -1880,6 +2450,12 @@ class LmbSettingsStore {
       settings.commentBoxOffMigrated = true;
       migrated = true;
     }
+    if (!settings.managedExcerptAssetsV1Migrated) {
+      settings.excerptImageFolder = settings.excerptImageFolder || "附件/{pdf}";
+      settings.autoCleanOnDelete = true;
+      settings.managedExcerptAssetsV1Migrated = true;
+      migrated = true;
+    }
     return { settings, migrated };
   }
 
@@ -1894,12 +2470,34 @@ class LmbSettingsStore {
       noteIntoSync: !!settings.noteIntoSync,
       noteAutoBoxOnNew: settings.noteAutoBoxOnNew !== false,
       commentAutoBoxOnNew: settings.commentAutoBoxOnNew === true,
+      excerptCardWidth: Math.max(320, Math.min(800, Number(settings.excerptCardWidth) || 560)),
       autoAttachScreenshot: settings.autoAttachScreenshot !== false,
+      excerptImageFolder: String(settings.excerptImageFolder || "附件/{pdf}"),
+      imageExcerptMarkStyle: settings.imageExcerptMarkStyle === "highlight" ? "highlight" : "dashed",
       autoCleanOnDelete: settings.autoCleanOnDelete === true,
+      moveDescendantsWithParent: settings.moveDescendantsWithParent === true,
+      nodeViews: settings.nodeViews && typeof settings.nodeViews === "object" ? settings.nodeViews : {},
+      excerptViews: settings.excerptViews && typeof settings.excerptViews === "object" ? settings.excerptViews : {},
+      quickExcerpts: settings.quickExcerpts && typeof settings.quickExcerpts === "object" ? settings.quickExcerpts : {},
+      excerptColors: settings.excerptColors && typeof settings.excerptColors === "object" ? settings.excerptColors : {},
       notePlaceholderOffMigrated: !!settings.notePlaceholderOffMigrated,
       commentBoxOffMigrated: !!settings.commentBoxOffMigrated,
       naturalHeightV2Migrated: !!settings.naturalHeightV2Migrated,
-      overflowHeightVerifiedMigrated: !!settings.overflowHeightVerifiedMigrated
+      overflowHeightVerifiedMigrated: !!settings.overflowHeightVerifiedMigrated,
+      managedExcerptAssetsV1Migrated: !!settings.managedExcerptAssetsV1Migrated,
+      inkSidecarV2Migrated: !!settings.inkSidecarV2Migrated,
+      inkInputMode: settings.inkInputMode === "pen-only" ? "pen-only" : "pen-mouse",
+      inkPressureMode: ["fixed", "natural", "fountain"].includes(settings.inkPressureMode) ? settings.inkPressureMode : "natural",
+      inkLastTool: typeof settings.inkLastTool === "string" ? settings.inkLastTool : "pen",
+      inkPenColor: String(settings.inkPenColor || "#e05252"),
+      inkPenWidth: Math.max(1, Math.min(14, Number(settings.inkPenWidth) || 3)),
+      inkHighlighterColor: String(settings.inkHighlighterColor || "#ffd84d"),
+      inkHighlighterWidth: Math.max(4, Math.min(30, Number(settings.inkHighlighterWidth) || 12)),
+      inkEraserSize: Math.max(8, Math.min(48, Number(settings.inkEraserSize) || 18)),
+      inkToolbarCollapsed: !!settings.inkToolbarCollapsed,
+      inkAnnotations: this.plugin._lmbInkSidecarReady ? {} :
+        (this.plugin._lmbInkDocs && typeof this.plugin._lmbInkDocs === "object" ? this.plugin._lmbInkDocs :
+          (settings.inkAnnotations && typeof settings.inkAnnotations === "object" ? settings.inkAnnotations : {}))
     };
     if (state.autoSize.size) {
       obj.autoSizes = Object.fromEntries(Array.from(state.autoSize, ([path, store]) => [path, Array.from(store)]));
@@ -1934,6 +2532,9 @@ class LuciasMarginBookPlugin extends Plugin {
     this._chipSig = null;            // 当前 chip 承载的选区签名（text@page），防重复重建
     this._lastNoSelNotice = 0;
     this.rectMode = false;           // 框选模式（v0.11.2 起为常驻开关：ribbon/工具栏按钮/命令共用）
+    this.inkMode = false;            // PDF 手写批注模式（非破坏式，数据保存在插件 data.json）
+    this.isMobile = LMB_IS_MOBILE;
+    this._mobileSelectionTimer = null;
     this._ribbonEl = null;
     this._toolbarBtnTimer = null;    // v0.11.2：PDF 工具栏按钮注入的重试定时器
     // v0.12.1：工具栏宿主 DOM 缓存（LmbDomCache，见 25-pure-toolbar.js）
@@ -1943,6 +2544,7 @@ class LuciasMarginBookPlugin extends Plugin {
     this._dragArm = null;            // 我们的 chip 拖拽进行中（drop 捕获用）
     this._instantSkip = 0;           // 即时通道成功后短暂抑制文件层自动父子（防双写）
     this._dropFlush = null;          // v0.7.2：canvas 内松手后的快速通道 {path, t, timer}
+    this._lmbPdfSidebarTimer = null; // PDF 右侧批注侧栏防抖定时器
 
     // P1：摘录索引层（反向索引：摘录 md → PDF/页/选区）
     this._isIndexing = false;        // 全量重建进行中标记（防重入）
@@ -1953,9 +2555,11 @@ class LuciasMarginBookPlugin extends Plugin {
     this.settingsStore = new LmbSettingsStore(this);
     const loadedSettings = await this.settingsStore.load();
     this.settings = loadedSettings.settings;
+    const inkStorageMigrated = await this.lmbInitializeInkStorage();
+    this.lmbSetupInk();
     // v0.12.0 一次性迁移：老配置里 noteAutoBoxOnNew 已被持久化成 true，
     //   只改默认值不生效。用标记保证只强制关这一次，之后用户在设置里改回 true 不再被覆盖。
-    let settingsMigrated = loadedSettings.migrated;
+    let settingsMigrated = loadedSettings.migrated || inkStorageMigrated;
     // v0.16.0 一次性迁移（与上面同一套机制）：老配置里 commentAutoBoxOnNew 已被持久化成 true，
     //   只改默认值对存量用户不生效。强制关这一次，之后用户在设置里改回 true 不再被覆盖。
     // 两项迁移合并成一次有序写入，避免并发 saveData 互相覆盖。
@@ -2009,9 +2613,21 @@ class LuciasMarginBookPlugin extends Plugin {
       await this.saveSettings();
     }
 
-    this.registerDomEvent(document, "mousedown", (e) => this.onDocMouseDown(e), true);
-    this.registerDomEvent(document, "mouseup", (e) => this.onDocMouseUp(e), true);
-    this.registerDomEvent(document, "scroll", () => this.hideChip(), true);
+    if (this.isMobile) {
+      this.registerDomEvent(document, "pointerdown", (e) => this.onDocPointerDown(e), true);
+      this.registerDomEvent(document, "pointerup", (e) => this.onDocPointerUp(e), true);
+      // iOS selection handles can change the selection without another pointerup.
+      this.registerDomEvent(document, "selectionchange", () => this.onMobileSelectionChange(), true);
+    } else {
+      this.registerDomEvent(document, "mousedown", (e) => this.onDocMouseDown(e), true);
+      this.registerDomEvent(document, "mouseup", (e) => this.onDocMouseUp(e), true);
+    }
+    this.registerDomEvent(document, "scroll", (e) => {
+      this.hideChip();
+      this.lmbHandlePdfSidebarScroll(e);
+    }, true);
+    // PDF 标记本身不抢占文字选择；在捕获层按坐标命中标记，实现 PDF → 边页定位。
+    this.registerDomEvent(document, "click", (e) => this.lmbHandlePdfSidebarClick(e), true);
 
     // v0.7.2 松手快速通道：canvas 内 mouseup → 武装 flush，让下一个 modify 走 80ms 极短防抖
     // （原本要干等 400ms 才重排）。capture 阶段注册，早于 Obsidian 自己的 canvas mouseup。
@@ -2030,6 +2646,7 @@ class LuciasMarginBookPlugin extends Plugin {
           }
         }
       } catch (_) { /* noop */ }
+      try { this.lmbCanvasBarTick(); } catch (_) { /* event-driven bar refresh */ }
     }, true);
 
     this.registerEvent(this.app.vault.on("modify", (f) => {
@@ -2083,10 +2700,23 @@ class LuciasMarginBookPlugin extends Plugin {
 
     // v0.11.2：PDF 原生工具栏注入「图片框选」按钮（PDF++ 式 crop 按钮，摆脱 Alt）。
     //   工具栏由 pdf.js 异步渲染，所以在布局事件后做有限次重试（lmbScheduleToolbarButtons）。
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.lmbScheduleToolbarButtons()));
-    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.lmbScheduleToolbarButtons()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      this.lmbScheduleToolbarButtons();
+      this.lmbSchedulePdfSidebarRefresh(220);
+      this.lmbScheduleInkRefresh(220);
+    }));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+      this.lmbScheduleToolbarButtons();
+      this.lmbSchedulePdfSidebarRefresh(120);
+      this.lmbScheduleInkRefresh(120);
+      this.lmbRenderActivePdfSidebar().catch(() => {});
+    }));
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
-      if (f && f.extension === "pdf") this.lmbScheduleToolbarButtons();
+      if (f && f.extension === "pdf") {
+        this.lmbScheduleToolbarButtons();
+        this.lmbSchedulePdfSidebarRefresh(180);
+        this.lmbScheduleInkRefresh(180);
+      }
     }));
 
     // v0.11.2：Esc 退出框选模式（与按钮开关对称；Alt 临时拖拽不受影响）
@@ -2121,6 +2751,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // 切换视图时刷新按钮可用性（灰/亮）
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
       this.updateNoteRibbonState();
+      try { this.lmbCanvasBarTick(); } catch (_) { /* noop */ }
     }));
 
     /* v0.11.0：侧边栏按钮 —— 给（画布里选中的）卡片添加/编辑评论（独立评论体系）。 */
@@ -2135,31 +2766,51 @@ class LuciasMarginBookPlugin extends Plugin {
 
     // v0.11.0：canvas 里点「评论栏」直接弹编辑框（capture 层，折叠箭头/非 canvas 不拦截）
     this.registerDomEvent(document, "click", (e) => this.onCanvasCalloutClick(e), true);
+    this.registerMarkdownPostProcessor((el, ctx) => {
+      this.lmbEnhanceExcerptCallouts(el, ctx).catch((err) => console.warn("[lmb] excerpt note action failed:", err));
+    });
 
     /* ---- P1：摘录索引的增量维护 ----
      * modify 会在每次敲键触发，所以 reindexFile 内有两道廉价闸门
      * （不链 pdf 且不在索引中 → 跳过；mtime 未变 → 跳过），不会读盘。
      */
     this.registerEvent(this.app.vault.on("modify", (f) => {
+      if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
       if (f && f.extension === "canvas") this.lmbScheduleCanvasIndex(f); // P3.5 canvas 索引（v0.16.5 R7 防抖）
       else this.reindexFile(f);
     }));
     this.registerEvent(this.app.vault.on("create", (f) => {
+      if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
       if (f && f.extension === "canvas") this.lmbIndexCanvasFile(f);
       else this.reindexFile(f);
     }));
     this.registerEvent(this.app.vault.on("delete", (f) => {
       if (!f) return;
+      if (f.extension === "md" && this.relatedCache) this.relatedCache.clear();
       if (f.extension === "canvas") {
         for (const [k, v] of Array.from(this.excerptCanvasIndex.entries())) {
           if (v && v.canvasPath === f.path) this.excerptCanvasIndex.delete(k);
         }
       } else this.dropFileFromIndex(f.path);
     }));
+    this.registerEvent(this.app.vault.on("rename", (f, oldPath) => {
+      if ((f && f.extension === "md") || /\.md$/i.test(oldPath || "")) {
+        if (this.relatedCache) this.relatedCache.clear();
+      }
+      if (f && f.extension === "pdf") this.lmbHandleInkPdfRename(f, oldPath).catch((err) => console.warn("[lmb] PDF ink rename failed", err));
+    }));
+    if (this.app.metadataCache && this.app.metadataCache.on) {
+      this.registerEvent(this.app.metadataCache.on("changed", (f) => {
+        if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
+      }));
+    }
     this.app.workspace.onLayoutReady(() => {
       this.buildExcerptIndex();
       // v0.11.2：启动时若 PDF 已打开（layout-change/file-open 不会补发），也要注入工具栏按钮
       this.lmbScheduleToolbarButtons();
+      this.lmbScheduleInkRefresh(250);
+      // v0.17.0：启动时即使用户在恢复的工作区里已经停留在 PDF，也要补一次侧栏渲染。
+      this.lmbSchedulePdfSidebarRefresh(250);
       // v0.13.0：启动 canvas 卡片悬浮栏轮询（每 120ms 比对选中集合与视口状态）
       if (typeof this.lmbStartCanvasBarWatch === "function") this.lmbStartCanvasBarWatch();
     });
@@ -2193,6 +2844,14 @@ class LuciasMarginBookPlugin extends Plugin {
           : "MarginBook: 图片框选模式已关闭", 3000);
       }
     });
+    this.addCommand({
+      id: "pdf-ink-mode",
+      name: "PDF 手写批注模式（开关）",
+      callback: () => this.lmbSetInkMode(!this.inkMode)
+    });
+    this.addCommand({ id: "pdf-ink-undo", name: "PDF 手写批注：撤销当前页上一笔", callback: () => this.lmbUndoInk() });
+    this.addCommand({ id: "pdf-ink-redo", name: "PDF 手写批注：重做当前页操作", callback: () => this.lmbRedoInk() });
+    this.addCommand({ id: "pdf-ink-clear-page", name: "PDF 手写批注：清除当前页", callback: () => this.lmbClearInk() });
 
     // 补丁 C：Recall 回忆模式开关：模糊摘录 blockquote，点击揭示（借鉴 MarginNote 4.4）
     this.addCommand({
@@ -2283,6 +2942,8 @@ class LuciasMarginBookPlugin extends Plugin {
         await this.normalizeOverlappingExcerpts();
       }
     });
+    this.addCommand({ id: "layout-tree-right", name: "将当前 Canvas 排为从左到右知识树", callback: () => this.lmbApplyTreeLayout("right") });
+    this.addCommand({ id: "layout-tree-down", name: "将当前 Canvas 排为自上而下知识树", callback: () => this.lmbApplyTreeLayout("down") });
 
     /* ---- v0.8.0：卡片补充描述（note）三条命令 ---- */
     this.addCommand({
@@ -2367,6 +3028,7 @@ class LuciasMarginBookPlugin extends Plugin {
 
     this.addSettingTab(new LMBSettingTab(this.app, this));
     this.injectStyles();
+    try { document.body.toggleClass("lmb-mobile", !!this.isMobile); } catch (_) {}
 
     // 补丁 C：Recall——阅读模式下把含「【文件名-P.数字】」回跳链接的 blockquote 模糊化。
     // 揭示策略 = 点击后展示 3 秒自动重新模糊：
@@ -2396,8 +3058,9 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     });
 
-    this.debugNotice("已加载 ✓（v0.16.14：卡片断线与撤销）");
-    console.log("[lmb] loaded (v0.16.14)");
+    if (this.isMobile) new Notice("MarginBook 0.24.1 已加载（手写增强版）", 5000);
+    this.debugNotice("已加载 ✓（v0.24.1）");
+    console.log("[lmb] loaded (v0.24.1)");
   }
 
   onunload() {
@@ -2409,9 +3072,14 @@ class LuciasMarginBookPlugin extends Plugin {
     try {
       if (this._toolbarBtnTimer) { clearTimeout(this._toolbarBtnTimer); this._toolbarBtnTimer = null; }
       // v0.16.4 修复 P2-1：此前只删 crop，md / canvas 两颗按钮残留成死按钮
-      document.querySelectorAll(".lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas")
+      document.querySelectorAll(".lmb-toolbar-group")
         .forEach((b) => { if (b.parentNode) b.remove(); });
+      document.querySelectorAll(".lmb-ink-layer,.lmb-ink-live-layer,.lmb-ink-tools").forEach((layer) => layer.remove());
+      // v0.17.0（实验）：清理 PDF 批注侧栏，防止卸载后残留
+      this._lmbClearPdfSidebars();
       document.body.removeClass("lmb-rect-mode");
+      document.body.removeClass("lmb-ink-mode");
+      document.body.removeClass("lmb-mobile");
       // v0.12.1：清掉工具栏宿主的 DOM 缓存（不清的话 Map 里会残留整棵已卸载的 leaf 引用）
       if (this._toolbarCache) this._toolbarCache.clear();
       // v0.13.0：停掉 canvas 悬浮栏轮询 + 移除浮层 DOM
@@ -2601,10 +3269,31 @@ class LuciasMarginBookPlugin extends Plugin {
         try { if (cache) cache.set(leaf, el); } catch (_) { /* noop */ }
       }
 
-      // v0.12.1：以下三个按钮的注入逻辑与 v0.12.0 完全一致，只把宿主从硬编码的
-      //   toolbar 换成上面解析出来（可能来自缓存）的 el。
+      // MarginBook 按钮统一收进一个靠右的紧凑组，避免被 PDF 原生 toolbar
+      // 的 justify-content 分散到整行。
+      let group = el.querySelector(".lmb-toolbar-group");
+      if (!group) {
+        group = document.createElement("div");
+        group.className = "lmb-toolbar-group";
+        el.appendChild(group);
+      }
+      for (const old of Array.from(el.querySelectorAll(":scope > .lmb-toolbar-crop, :scope > .lmb-toolbar-md, :scope > .lmb-toolbar-canvas, :scope > .lmb-toolbar-sidebar"))) {
+        group.appendChild(old);
+      }
+
+      // ⓪ 手写批注（保留原 PDF，按页存为归一化笔划）
+      if (!group.querySelector(".lmb-toolbar-ink")) {
+        const btn = document.createElement("div");
+        btn.className = "clickable-icon lmb-toolbar-ink";
+        btn.setAttribute("aria-label", "MarginBook: PDF 手写批注（开启后用触控笔或鼠标书写；Esc 退出）");
+        try { setIcon(btn, "pen-tool"); } catch (_) { btn.setText("✎"); }
+        btn.addEventListener("click", (e) => { e.stopPropagation(); this.lmbSetInkMode(!this.inkMode); });
+        group.appendChild(btn);
+        btn.toggleClass("is-active", !!this.inkMode);
+      }
+
       // ① 图片框选
-      if (!el.querySelector(".lmb-toolbar-crop")) {
+      if (!group.querySelector(".lmb-toolbar-crop")) {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-crop";
         btn.setAttribute("aria-label",
@@ -2618,12 +3307,12 @@ class LuciasMarginBookPlugin extends Plugin {
             ? "MarginBook: 图片框选模式已开启 —— 直接拖拽截图，Esc 或再点一次关闭"
             : "MarginBook: 图片框选模式已关闭", 2500);
         });
-        el.appendChild(btn);
+        group.appendChild(btn);
         btn.toggleClass("is-active", !!this.rectMode);
       }
 
       // ② 打开/创建摘录文档
-      if (!el.querySelector(".lmb-toolbar-md")) {
+      if (!group.querySelector(".lmb-toolbar-md")) {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-md";
         btn.setAttribute("aria-label",
@@ -2647,11 +3336,11 @@ class LuciasMarginBookPlugin extends Plugin {
             new Notice("MarginBook: 打开摘录文档失败，详情见控制台");
           });
         });
-        el.appendChild(btn);
+        group.appendChild(btn);
       }
 
       // ③ 打开/创建专属画布
-      if (!el.querySelector(".lmb-toolbar-canvas")) {
+      if (!group.querySelector(".lmb-toolbar-canvas")) {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-canvas";
         btn.setAttribute("aria-label",
@@ -2669,7 +3358,24 @@ class LuciasMarginBookPlugin extends Plugin {
             new Notice("MarginBook: 打开专属画布失败，详情见控制台");
           });
         });
-        el.appendChild(btn);
+        group.appendChild(btn);
+      }
+
+      // ④ 打开 / 关闭 PDF 批注边栏
+      if (!group.querySelector(".lmb-toolbar-sidebar")) {
+        const btn = document.createElement("div");
+        btn.className = "clickable-icon lmb-toolbar-sidebar";
+        btn.setAttribute("aria-label", "MarginBook: 打开 / 关闭 PDF 批注边栏");
+        try { setIcon(btn, "panel-right"); } catch (_) { btn.setText("▥"); }
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const leafEl = btn.closest(".workspace-leaf");
+          const currentLeaf = leafEl ? this.app.workspace.getLeavesOfType("pdf").find((l) => l.containerEl === leafEl) : leaf;
+          if (!currentLeaf) return;
+          this.lmbSetPdfSidebarVisible(currentLeaf, currentLeaf._lmbPdfSidebarOpen === false);
+        });
+        group.appendChild(btn);
+        btn.toggleClass("is-active", leaf._lmbPdfSidebarOpen !== false);
       }
     }
     return missing;
@@ -2709,7 +3415,7 @@ class LuciasMarginBookPlugin extends Plugin {
     try {
       // LmbDomCache 没有对外暴露遍历接口（那是别人的文件，不为遍历去改它），
       // 所以退化成全局选择器：这三个类名是本插件独占的，命中集合 == 已注入的按钮集合。
-      const sels = ".lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas";
+      const sels = ".lmb-toolbar-ink, .lmb-toolbar-crop, .lmb-toolbar-md, .lmb-toolbar-canvas, .lmb-toolbar-sidebar";
       document.querySelectorAll(sels).forEach((b) => lmbSetToolbarVisibility(b, mode));
     } catch (_) { /* noop：绝不让异常打断调用方的事件链 */ }
   }
@@ -2775,6 +3481,22 @@ class LuciasMarginBookPlugin extends Plugin {
       if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
       if (this._dropFlush && this._dropFlush.timer) clearTimeout(this._dropFlush.timer);
       this._dropFlush = null;
+      if (this._lmbPdfSidebarTimer) {
+        clearTimeout(this._lmbPdfSidebarTimer);
+        this._lmbPdfSidebarTimer = null;
+      }
+      if (this._mobileSelectionTimer) {
+        clearTimeout(this._mobileSelectionTimer);
+        this._mobileSelectionTimer = null;
+      }
+      if (this._lmbInkSaveTimer) {
+        clearTimeout(this._lmbInkSaveTimer);
+        this._lmbInkSaveTimer = null;
+      }
+      if (this._lmbInkRefreshTimer) {
+        clearTimeout(this._lmbInkRefreshTimer);
+        this._lmbInkRefreshTimer = null;
+      }
       if (this._fitRetry) {
         for (const k of Object.keys(this._fitRetry)) {
           const r = this._fitRetry[k];
@@ -2783,6 +3505,7 @@ class LuciasMarginBookPlugin extends Plugin {
         this._fitRetry = {};
       }
       this._fitRetryImg = {};
+      this._fitRetryActual = {};
       if (this._canvasIndexTimers) {
         this._canvasIndexTimers.forEach((t) => clearTimeout(t));
         this._canvasIndexTimers.clear();
@@ -2830,16 +3553,800 @@ class LuciasMarginBookPlugin extends Plugin {
   /* ==================== 样式 ==================== */
 
   injectStyles() {
-    if (document.getElementById("lmb-styles")) return;
-    const st = document.createElement("style");
-    st.id = "lmb-styles";
+    let st = document.getElementById("lmb-styles");
+    if (!st) {
+      st = document.createElement("style");
+      st.id = "lmb-styles";
+      document.head.appendChild(st);
+    }
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    document.head.appendChild(st);
+    st.dataset.lmbVersion = "0.24.1";
   }
 
 }
+
+/* PDF ink controller: pen-first input, cached rendering, history and sidecar persistence. */
+const LMB_INK_TOOLS = ["hand", "select", "pen", "highlighter", "eraser", "text", "line", "rect"];
+
+LuciasMarginBookPlugin.prototype.lmbInkStore = function () {
+  if (!this._lmbInkDocs || typeof this._lmbInkDocs !== "object") {
+    this._lmbInkDocs = this.settings.inkAnnotations && typeof this.settings.inkAnnotations === "object"
+      ? this.settings.inkAnnotations : {};
+  }
+  return this._lmbInkDocs;
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkStorageDir = function () {
+  const id = this.manifest && this.manifest.id || "lucias-marginbook";
+  return normalizePath(`.obsidian/plugins/${id}/ink-data`);
+};
+
+LuciasMarginBookPlugin.prototype.lmbInitializeInkStorage = async function () {
+  const migrationWasComplete = this.settings.inkSidecarV2Migrated === true;
+  const legacy = this.settings.inkAnnotations && typeof this.settings.inkAnnotations === "object"
+    ? this.settings.inkAnnotations : {};
+  this._lmbInkDocs = {};
+  this._lmbInkDirtyPaths = new Set();
+  this._lmbInkDirtyRevisions = new Map();
+  this._lmbInkLoadedPaths = new Set();
+  this._lmbInkLoadPromises = new Map();
+  this._lmbInkLoadErrors = new Set();
+  this._lmbInkRetryCount = 0;
+  this._lmbInkSaveState = "saved";
+  try {
+    const adapter = this.app.vault.adapter, dir = this.lmbInkStorageDir();
+    if (!adapter || typeof adapter.read !== "function" || typeof adapter.write !== "function") throw new Error("adapter unavailable");
+    if (!(await adapter.exists(dir))) await adapter.mkdir(dir);
+    const legacyPaths = Object.keys(legacy);
+    for (const path of legacyPaths) {
+      const sidecar = await this.lmbReadInkSidecar(path, adapter, dir);
+      this._lmbInkDocs[path] = lmbInkMergePages(sidecar && sidecar.pages, legacy[path]);
+      this._lmbInkLoadedPaths.add(path);
+      this._lmbInkDirtyPaths.add(path);
+      this._lmbInkDirtyRevisions.set(path, 1);
+    }
+    this._lmbInkSidecarReady = true;
+    if (legacyPaths.length) {
+      await this.lmbFlushInkStorage();
+      this.settings.inkAnnotations = {};
+      this.settings.inkSidecarV2Migrated = true;
+      return true;
+    }
+    this.settings.inkSidecarV2Migrated = true;
+    return !migrationWasComplete;
+  } catch (error) {
+    console.warn("[lmb] ink sidecar unavailable; retaining data.json fallback", error);
+    this._lmbInkDocs = legacy;
+    this._lmbInkSidecarReady = false;
+    this._lmbInkSaveState = "error";
+    return false;
+  }
+};
+
+LuciasMarginBookPlugin.prototype.lmbReadInkSidecar = async function (path, adapter, dir) {
+  const target = normalizePath(`${dir || this.lmbInkStorageDir()}/${lmbInkFileKey(path)}`);
+  let sawExisting = false, best = null;
+  for (const candidate of [target, target + ".tmp", target + ".bak"]) {
+    try {
+      if (!(await adapter.exists(candidate))) continue;
+      sawExisting = true;
+      const doc = JSON.parse(await adapter.read(candidate));
+      if (doc && doc.version === LMB_INK_SCHEMA_VERSION && doc.pdfPath === path && doc.pages && typeof doc.pages === "object") {
+        const rank = Math.max(Number(doc.revision) || 0, Number(doc.savedAt) || 0);
+        if (!best || rank > best.rank) best = { doc, rank };
+        continue;
+      }
+      console.warn("[lmb] incompatible ink sidecar", candidate);
+    } catch (error) { console.warn("[lmb] failed to read ink sidecar", candidate, error); }
+  }
+  if (best) return best.doc;
+  if (sawExisting) throw new Error(`No valid ink sidecar copy for ${path}`);
+  return null;
+};
+
+LuciasMarginBookPlugin.prototype.lmbEnsureInkDocument = function (path) {
+  if (!path || !this._lmbInkSidecarReady || this._lmbInkLoadedPaths && this._lmbInkLoadedPaths.has(path)) return Promise.resolve(true);
+  if (this._lmbInkLoadErrors && this._lmbInkLoadErrors.has(path)) return Promise.resolve(false);
+  if (this._lmbInkLoadPromises.has(path)) return this._lmbInkLoadPromises.get(path);
+  const promise = (async () => {
+    try {
+      const doc = await this.lmbReadInkSidecar(path, this.app.vault.adapter, this.lmbInkStorageDir());
+      this._lmbInkDocs[path] = doc ? doc.pages : {};
+      this._lmbInkLoadedPaths.add(path);
+      document.querySelectorAll(".lmb-ink-layer").forEach((canvas) => {
+        if (canvas.dataset.lmbInkPath === path) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLayer(canvas); }
+      });
+      return true;
+    } catch (error) {
+      console.warn("[lmb] lazy ink load failed", path, error);
+      if (this._lmbInkLoadErrors) this._lmbInkLoadErrors.add(path);
+      this._lmbInkSaveState = "error"; this.lmbUpdateInkSaveStatus(); return false;
+    } finally { this._lmbInkLoadPromises.delete(path); }
+  })();
+  this._lmbInkLoadPromises.set(path, promise);
+  return promise;
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkDocumentReady = function (path) {
+  return !this._lmbInkSidecarReady || !this._lmbInkLoadedPaths || this._lmbInkLoadedPaths.has(path);
+};
+
+LuciasMarginBookPlugin.prototype.lmbHandleInkPdfRename = async function (file, oldPath) {
+  if (!file || file.extension !== "pdf" || !oldPath || oldPath === file.path) return false;
+  try {
+    let oldPages = this._lmbInkDocs && this._lmbInkDocs[oldPath];
+    if (!oldPages && this._lmbInkSidecarReady) {
+      const oldDoc = await this.lmbReadInkSidecar(oldPath, this.app.vault.adapter, this.lmbInkStorageDir());
+      oldPages = oldDoc && oldDoc.pages;
+    }
+    if (!oldPages) return false;
+    let newPages = this._lmbInkDocs && this._lmbInkDocs[file.path];
+    if (!newPages && this._lmbInkSidecarReady) {
+      const newDoc = await this.lmbReadInkSidecar(file.path, this.app.vault.adapter, this.lmbInkStorageDir());
+      newPages = newDoc && newDoc.pages;
+    }
+    this._lmbInkDocs[file.path] = lmbInkMergePages(newPages, oldPages);
+    delete this._lmbInkDocs[oldPath];
+    if (this._lmbInkDirtyPaths) this._lmbInkDirtyPaths.delete(oldPath);
+    if (this._lmbInkDirtyRevisions) this._lmbInkDirtyRevisions.delete(oldPath);
+    if (this._lmbInkLoadedPaths) { this._lmbInkLoadedPaths.delete(oldPath); this._lmbInkLoadedPaths.add(file.path); }
+    if (this._lmbInkHistory) {
+      for (const [key, history] of Array.from(this._lmbInkHistory.entries())) if (key.startsWith(oldPath + "\n")) {
+        this._lmbInkHistory.delete(key); this._lmbInkHistory.set(file.path + key.slice(oldPath.length), history);
+      }
+    }
+    this.lmbMarkInkDirty(file.path);
+    await this.lmbFlushInkStorage();
+    this.lmbScheduleInkRefresh(0); return true;
+  } catch (error) { console.warn("[lmb] PDF ink rename migration failed", oldPath, file.path, error); return false; }
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkId = function () {
+  return "ink-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkObjects = function (path, page, create) {
+  const store = this.lmbInkStore();
+  if (!store[path] && create) store[path] = {};
+  if (!store[path]) return [];
+  const key = String(page), value = store[path][key];
+  if (Array.isArray(value)) store[path][key] = { objects: value.map((stroke) => Object.assign({ type: "pen", id: this.lmbInkId() }, stroke)) };
+  if (!store[path][key] && create) store[path][key] = { objects: [] };
+  const pageData = store[path][key];
+  if (!pageData || !Array.isArray(pageData.objects)) return [];
+  let normalized = false;
+  const seenIds = new Set();
+  for (const object of pageData.objects) {
+    if (!object.id || seenIds.has(object.id)) { object.id = this.lmbInkId(); normalized = true; }
+    seenIds.add(object.id);
+    if (!object.type) { object.type = "pen"; normalized = true; }
+  }
+  if (normalized && this.lmbInkDocumentReady(path)) this.lmbMarkInkDirty(path);
+  return pageData.objects;
+};
+
+LuciasMarginBookPlugin.prototype.lmbReplaceInkObjects = function (path, page, objects) {
+  const store = this.lmbInkStore();
+  if (!store[path]) store[path] = {};
+  store[path][String(page)] = { objects: lmbInkClone(objects || []) };
+  this.lmbInvalidateInkSpatial(path, page);
+};
+
+LuciasMarginBookPlugin.prototype.lmbMarkInkDirty = function (path) {
+  if (!path) return;
+  if (!this._lmbInkDirtyPaths) this._lmbInkDirtyPaths = new Set();
+  if (!this._lmbInkDirtyRevisions) this._lmbInkDirtyRevisions = new Map();
+  this._lmbInkDirtyPaths.add(path);
+  this._lmbInkDirtyRevisions.set(path, (this._lmbInkDirtyRevisions.get(path) || 0) + 1);
+  this._lmbInkRetryCount = 0;
+  this._lmbInkSaveState = "saving";
+  this.lmbUpdateInkSaveStatus();
+  clearTimeout(this._lmbInkSaveTimer);
+  this._lmbInkSaveTimer = setTimeout(() => this.lmbFlushInkStorage().catch(() => {}), 350);
+};
+
+LuciasMarginBookPlugin.prototype.lmbFlushInkStorage = async function () {
+  if (this._lmbInkFlushPromise) return this._lmbInkFlushPromise;
+  this._lmbInkFlushPromise = (async () => {
+    const paths = Array.from(this._lmbInkDirtyPaths || []).map((path) => [path, this._lmbInkDirtyRevisions && this._lmbInkDirtyRevisions.get(path) || 0]);
+    if (!paths.length) { this._lmbInkSaveState = "saved"; this.lmbUpdateInkSaveStatus(); return true; }
+    try {
+      if (!this._lmbInkSidecarReady) {
+        this.settings.inkAnnotations = this.lmbInkStore();
+        await this.saveSettings();
+      } else {
+        const adapter = this.app.vault.adapter, dir = this.lmbInkStorageDir();
+        for (const [path] of paths) {
+          const target = normalizePath(`${dir}/${lmbInkFileKey(path)}`), temp = target + ".tmp", backup = target + ".bak";
+          const body = JSON.stringify({ version: LMB_INK_SCHEMA_VERSION, pdfPath: path, revision: this._lmbInkDirtyRevisions.get(path) || 0, savedAt: Date.now(), pages: this.lmbInkStore()[path] || {} });
+          await adapter.write(temp, body);
+          JSON.parse(await adapter.read(temp));
+          if (await adapter.exists(target)) {
+            try { await adapter.write(backup, await adapter.read(target)); } catch (_) {}
+          }
+          await adapter.write(target, body);
+          const written = await adapter.read(target);
+          const verified = JSON.parse(written);
+          if (verified.pdfPath !== path || verified.version !== LMB_INK_SCHEMA_VERSION) throw new Error("ink sidecar verification failed");
+          if (written !== body) throw new Error("ink sidecar content verification failed");
+        }
+      }
+      for (const [path, revision] of paths) if ((this._lmbInkDirtyRevisions.get(path) || 0) === revision) this._lmbInkDirtyPaths.delete(path);
+      this._lmbInkRetryCount = 0;
+      this._lmbInkSaveState = this._lmbInkDirtyPaths.size ? "saving" : "saved";
+      this.lmbUpdateInkSaveStatus();
+      return true;
+    } catch (error) {
+      this._lmbInkSaveState = "error";
+      this.lmbUpdateInkSaveStatus();
+      console.warn("[lmb] ink save failed", error);
+      this._lmbInkRetryCount = (this._lmbInkRetryCount || 0) + 1;
+      if (this._lmbInkRetryCount === 1) new Notice("MarginBook：手写批注保存失败，原数据仍保留，将稍后重试", 5000);
+      throw error;
+    } finally {
+      this._lmbInkFlushPromise = null;
+      if (!this._unloaded && this._lmbInkDirtyPaths && this._lmbInkDirtyPaths.size && this._lmbInkRetryCount <= 5) {
+        clearTimeout(this._lmbInkSaveTimer);
+        const delays = [1000, 2000, 5000, 15000, 60000];
+        this._lmbInkSaveTimer = setTimeout(() => this.lmbFlushInkStorage().catch(() => {}), delays[Math.max(0, this._lmbInkRetryCount - 1)] || 60000);
+      }
+    }
+  })();
+  return this._lmbInkFlushPromise;
+};
+
+LuciasMarginBookPlugin.prototype.lmbSaveInkSoon = function (path) {
+  const canvas = this.lmbActiveInkCanvas();
+  this.lmbMarkInkDirty(path || canvas && canvas.dataset.lmbInkPath);
+};
+
+LuciasMarginBookPlugin.prototype.lmbSetInkMode = function (on) {
+  this.inkMode = !!on;
+  if (!this.inkTool || !LMB_INK_TOOLS.includes(this.inkTool)) this.inkTool = this.settings.inkLastTool || "pen";
+  this.inkColor = this.inkColor || this.settings.inkPenColor || "#e05252";
+  this.inkWidth = Number(this.inkWidth || this.settings.inkPenWidth) || 3;
+  if (this.inkMode && this.rectMode && typeof this.setRectMode === "function") this.setRectMode(false);
+  try {
+    document.body.toggleClass("lmb-ink-mode", this.inkMode);
+    document.querySelectorAll(".lmb-toolbar-ink").forEach((el) => el.toggleClass("is-active", this.inkMode));
+  } catch (_) {}
+  this.lmbRefreshInkLayers();
+  this.lmbRenderInkTools();
+  new Notice(this.inkMode ? "MarginBook：手写批注已开启；笔书写，手指滚动和缩放" : "MarginBook：手写批注已关闭", 1800);
+};
+
+LuciasMarginBookPlugin.prototype.lmbScheduleInkRefresh = function (delay) {
+  clearTimeout(this._lmbInkRefreshTimer);
+  this._lmbInkRefreshTimer = setTimeout(() => this.lmbRefreshInkLayers(), Number(delay) || 0);
+};
+
+LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
+  try {
+    const leaves = this.app.workspace.getLeavesOfType("pdf") || [];
+    for (const leaf of leaves) {
+      const file = leaf && leaf.view && leaf.view.file, root = leaf && leaf.containerEl;
+      if (!file || !root) continue;
+      this.lmbEnsureInkDocument(file.path).catch(() => {});
+      root.querySelectorAll(".page").forEach((pageEl, index) => this.lmbEnsureInkLayer(pageEl, file.path, index));
+    }
+    if (this.inkMode && document.querySelectorAll(".lmb-ink-tools").length !== leaves.length) this.lmbRenderInkTools();
+  } catch (error) { console.warn("[lmb] ink refresh failed", error); }
+};
+
+LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
+  if (!pageEl || !pdfPath) return;
+  const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
+  let canvas = pageEl.querySelector(":scope > .lmb-ink-layer");
+  let live = pageEl.querySelector(":scope > .lmb-ink-live-layer");
+  if (!canvas) { canvas = document.createElement("canvas"); canvas.className = "lmb-ink-layer"; pageEl.appendChild(canvas); }
+  if (!live) { live = document.createElement("canvas"); live.className = "lmb-ink-live-layer"; pageEl.appendChild(live); }
+  const identity = `${pdfPath}\n${pageNumber}`, identityChanged = canvas.dataset.lmbInkIdentity !== identity;
+  for (const layer of [canvas, live]) {
+    layer.dataset.lmbInkPath = pdfPath; layer.dataset.lmbInkPage = String(pageNumber);
+    layer.dataset.lmbInkIdentity = identity;
+    layer.style.display = "block"; layer.style.pointerEvents = "none";
+  }
+  const width = Math.max(1, Math.round(pageEl.clientWidth)), height = Math.max(1, Math.round(pageEl.clientHeight));
+  const ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
+  let resized = false;
+  for (const layer of [canvas, live]) {
+    if (layer.width !== Math.round(width * ratio) || layer.height !== Math.round(height * ratio)) {
+      layer.width = Math.round(width * ratio); layer.height = Math.round(height * ratio);
+      layer.style.width = width + "px"; layer.style.height = height + "px"; resized = true;
+    }
+  }
+  if (!pageEl.dataset.lmbInkBound) {
+    pageEl.dataset.lmbInkBound = "1";
+    this.lmbBindInkPage(pageEl, canvas, live);
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => this.lmbScheduleInkRefresh(30));
+      observer.observe(pageEl); pageEl._lmbInkResizeObserver = observer;
+    }
+  }
+  if (identityChanged) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLiveLayer(live, null); }
+  if (identityChanged || resized || canvas.dataset.lmbInkDrawn !== "1") this.lmbDrawInkLayer(canvas);
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkPoint = function (pageEl, event) {
+  const rect = pageEl.getBoundingClientRect();
+  const rawTime = Number(event.timeStamp);
+  return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: Number(event.pressure) > 0 ? Number(event.pressure) : .5, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
+  let events = [event];
+  try {
+    if (typeof event.getCoalescedEvents === "function") {
+      const coalesced = event.getCoalescedEvents();
+      if (Array.isArray(coalesced) && coalesced.length) {
+        events = coalesced.slice();
+        const last = events[events.length - 1];
+        if (last.clientX !== event.clientX || last.clientY !== event.clientY || last.timeStamp !== event.timeStamp) events.push(event);
+      }
+    }
+  } catch (_) {}
+  return events.map((sample) => this.lmbInkPoint(pageEl, sample));
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
+  if (!this.inkMode || this._lmbInkSpacePan || this.inkTool === "hand") return false;
+  if (event.pointerType === "touch") return false;
+  if (event.pointerType === "mouse" && this.settings.inkInputMode === "pen-only") return false;
+  return event.pointerType !== "mouse" || event.button === 0;
+};
+
+LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live) {
+  let active = null;
+  const path = () => canvas.dataset.lmbInkPath, page = () => canvas.dataset.lmbInkPage;
+  const redrawLive = () => this.lmbRequestInkLiveDraw(live, active);
+  const down = (event) => {
+    if (active) return;
+    if (!this.lmbInkShouldDraw(event)) return;
+    if (!this.lmbInkDocumentReady(path())) {
+      this.lmbEnsureInkDocument(path()).catch(() => {});
+      new Notice(this._lmbInkLoadErrors && this._lmbInkLoadErrors.has(path()) ? "MarginBook：此 PDF 的批注文件无法读取，已停止写入以保护数据" : "MarginBook：正在加载此 PDF 的批注，请稍后再写", 2600); return;
+    }
+    const objects = this.lmbInkObjects(path(), page(), true), point = this.lmbInkPoint(pageEl, event);
+    let tool = this.inkTool;
+    if (event.pointerType === "pen" && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
+    event.preventDefault(); event.stopPropagation();
+    try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
+    const before = lmbInkClone(objects);
+    if (tool === "text") { this.lmbStartInkText(canvas, point); return; }
+    if (tool === "select") {
+      if (this._lmbInkSelectionContext && this._lmbInkSelectionContext.canvas !== canvas) {
+        const oldLive = this._lmbInkSelectionContext.canvas && this._lmbInkSelectionContext.canvas.parentElement && this._lmbInkSelectionContext.canvas.parentElement.querySelector(":scope > .lmb-ink-live-layer");
+        this._lmbInkSelection = []; this._lmbInkSelectionContext = null; if (oldLive) this.lmbDrawInkLiveLayer(oldLive, null);
+      }
+      active = this.lmbStartInkSelection(canvas, point, objects, event.shiftKey);
+      if (!active) active = { kind: "lasso", points: [point], before, additive: !!event.shiftKey, priorSelection: (this._lmbInkSelection || []).slice() };
+      else active.beforePage = before;
+      active.pointerId = event.pointerId;
+      this._lmbInkHiddenIds = new Set(active.kind === "moveMulti" ? active.entries.map((entry) => entry.object.id) : active.object ? [active.object.id] : []);
+      this.lmbDrawInkLayer(canvas); redrawLive(); return;
+    }
+    if (tool === "eraser") { active = { kind: "erase", before, removed: new Set(), point, pointerId: event.pointerId }; this.lmbEraseAt(canvas, point, active); redrawLive(); return; }
+    const preset = tool === "highlighter"
+      ? { color: this.settings.inkHighlighterColor || "#ffd84d", width: Number(this.settings.inkHighlighterWidth) || 12, opacity: .3 }
+      : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
+    const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
+    active = { kind: "draw", object, before, pointerId: event.pointerId }; redrawLive();
+  };
+  const move = (event) => {
+    if (!active || active.pointerId != null && event.pointerId !== active.pointerId) return;
+    event.preventDefault(); event.stopPropagation();
+    const points = this.lmbInkEventPoints(pageEl, event), point = points[points.length - 1];
+    if (active.kind === "draw") {
+      const object = active.object;
+      if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
+      else { object.x2 = point.x; object.y2 = point.y; }
+    } else if (active.kind === "erase") for (const sample of points) this.lmbEraseAt(canvas, sample, active);
+    else if (active.kind === "lasso") lmbInkAppendSamples(active.points, points, .0015);
+    else this.lmbMoveInkSelection(active, point);
+    redrawLive();
+  };
+  const finish = (event, cancelled) => {
+    if (!active || event && active.pointerId != null && event.pointerId !== active.pointerId) return;
+    if (event) { event.preventDefault(); event.stopPropagation(); }
+    if (!cancelled && event) {
+      const finalPoints = this.lmbInkEventPoints(pageEl, event), finalPoint = finalPoints[finalPoints.length - 1];
+      if (active.kind === "draw") {
+        if (active.object.type === "pen" || active.object.type === "highlighter") lmbInkAppendSamples(active.object.points, finalPoints, .00005);
+        else { active.object.x2 = finalPoint.x; active.object.y2 = finalPoint.y; }
+      } else if (active.kind === "erase") for (const sample of finalPoints) this.lmbEraseAt(canvas, sample, active);
+      else if (active.kind === "lasso") lmbInkAppendSamples(active.points, finalPoints, .0005);
+      else if (!["selectionOnly"].includes(active.kind)) this.lmbMoveInkSelection(active, finalPoint);
+    }
+    const current = active; active = null;
+    const objects = this.lmbInkObjects(path(), page(), true);
+    if (cancelled) this.lmbReplaceInkObjects(path(), page(), current.beforePage || current.before || objects);
+    else if (current.kind === "draw") {
+      const object = current.object;
+      if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, .00018, .055);
+      const isStroke = object.type === "pen" || object.type === "highlighter";
+      const longEnough = Math.hypot((object.x2 || 0) - (object.x1 || 0), (object.y2 || 0) - (object.y1 || 0)) > .001;
+      if (isStroke || longEnough) objects.push(object);
+      this.lmbCommitInkChange(path(), page(), current.before, "draw");
+    } else if (current.kind === "lasso") {
+      const selected = lmbInkObjectsInLasso(objects, current.points);
+      const selectedIds = selected.map((object) => object.id);
+      this._lmbInkSelection = current.additive ? Array.from(new Set((current.priorSelection || []).concat(selectedIds))) : selectedIds;
+      this._lmbInkSelectionContext = { canvas, path: path(), page: page() };
+    } else if (current.kind === "erase") this.lmbCommitInkChange(path(), page(), current.before, "erase");
+    else this.lmbCommitInkChange(path(), page(), current.beforePage, current.kind);
+    this._lmbInkHiddenIds = null;
+    this.lmbDrawInkLayer(canvas); this.lmbDrawInkLiveLayer(live, null);
+  };
+  pageEl.addEventListener("pointerdown", down, true);
+  pageEl.addEventListener("pointermove", move, true);
+  pageEl.addEventListener("pointerup", (event) => finish(event, false), true);
+  pageEl.addEventListener("pointercancel", (event) => finish(event, true), true);
+  pageEl.addEventListener("lostpointercapture", (event) => finish(event, true), true);
+  pageEl.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
+};
+
+LuciasMarginBookPlugin.prototype.lmbRequestInkLiveDraw = function (live, active) {
+  live._lmbInkPendingActive = active;
+  if (live._lmbInkFrame) return;
+  live._lmbInkFrame = requestAnimationFrame(() => { live._lmbInkFrame = 0; this.lmbDrawInkLiveLayer(live, live._lmbInkPendingActive); });
+};
+
+LuciasMarginBookPlugin.prototype.lmbCanvasContext = function (canvas) {
+  const ctx = canvas.getContext("2d"), ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
+  if (!ctx) return null;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  return { ctx, width: canvas.clientWidth, height: canvas.clientHeight };
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width, height) {
+  if (!object) return;
+  const color = object.color || "#e05252", type = object.type;
+  ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.globalAlpha = object.opacity == null ? 1 : object.opacity;
+  if (type === "pen" || type === "highlighter") {
+    const points = object.points || [];
+    if (!points.length) { ctx.restore(); return; }
+    if (type === "highlighter") ctx.globalCompositeOperation = "multiply";
+    if (points.length === 1) {
+      const radius = lmbInkSegmentWidth(object, points[0], null, width) / 2;
+      ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
+    } else if (type === "highlighter") {
+      ctx.lineWidth = lmbInkSegmentWidth(object, points[0], null, width);
+      ctx.beginPath(); ctx.moveTo(points[0].x * width, points[0].y * height);
+      for (let i = 1; i < points.length - 1; i++) {
+        const mid = { x: (points[i].x + points[i + 1].x) / 2, y: (points[i].y + points[i + 1].y) / 2 };
+        ctx.quadraticCurveTo(points[i].x * width, points[i].y * height, mid.x * width, mid.y * height);
+      }
+      ctx.lineTo(points[points.length - 1].x * width, points[points.length - 1].y * height); ctx.stroke();
+    } else {
+      let previous = points[0], cursor = previous;
+      for (let i = 1; i < points.length; i++) {
+        const point = points[i], priorWidth = lmbInkSegmentWidth(object, previous, i > 1 ? points[i - 2] : null, width);
+        ctx.lineWidth = (priorWidth + lmbInkSegmentWidth(object, point, previous, width)) / 2;
+        const mid = { x: (previous.x + point.x) / 2, y: (previous.y + point.y) / 2 };
+        ctx.beginPath(); ctx.moveTo(cursor.x * width, cursor.y * height); ctx.quadraticCurveTo(previous.x * width, previous.y * height, mid.x * width, mid.y * height); ctx.stroke(); cursor = mid;
+        previous = point;
+      }
+      ctx.beginPath(); ctx.moveTo(cursor.x * width, cursor.y * height); ctx.lineTo(previous.x * width, previous.y * height); ctx.stroke();
+    }
+  } else {
+    ctx.lineWidth = object.widthUnit === "page" ? Math.max(.5, object.width * width) : Number(object.width) || 3;
+    if (type === "line") { ctx.beginPath(); ctx.moveTo(object.x1 * width, object.y1 * height); ctx.lineTo(object.x2 * width, object.y2 * height); ctx.stroke(); }
+    else if (type === "rect") ctx.strokeRect(Math.min(object.x1, object.x2) * width, Math.min(object.y1, object.y2) * height, Math.abs(object.x2 - object.x1) * width, Math.abs(object.y2 - object.y1) * height);
+    else if (type === "text") {
+      const size = object.fontUnit === "page" ? Math.max(9, object.fontSize * width) : object.fontSize || 16;
+      ctx.font = `${size}px sans-serif`; ctx.textBaseline = "top";
+      String(object.text || "").split("\n").forEach((line, index) => ctx.fillText(line, object.x * width, object.y * height + index * size * 1.25, (object.w || .24) * width));
+    }
+  }
+  ctx.restore();
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkLayer = function (canvas) {
+  const info = this.lmbCanvasContext(canvas); if (!info) return;
+  info.ctx.clearRect(0, 0, info.width, info.height);
+  const hidden = this._lmbInkHiddenIds || new Set();
+  for (const object of this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) if (!hidden.has(object.id)) this.lmbDrawInkObject(info.ctx, object, info.width, info.height);
+  canvas.dataset.lmbInkDrawn = "1";
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkLiveLayer = function (canvas, active) {
+  const info = this.lmbCanvasContext(canvas); if (!info) return;
+  const { ctx, width, height } = info; ctx.clearRect(0, 0, width, height);
+  if (active && active.kind === "draw") this.lmbDrawInkObject(ctx, active.object, width, height);
+  if (active && ["move", "resize"].includes(active.kind)) this.lmbDrawInkObject(ctx, active.object, width, height);
+  if (active && active.kind === "moveMulti") for (const entry of active.entries) this.lmbDrawInkObject(ctx, entry.object, width, height);
+  if (active && active.kind === "lasso") {
+    ctx.save(); ctx.strokeStyle = "#2d8cff"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.beginPath();
+    active.points.forEach((point, index) => index ? ctx.lineTo(point.x * width, point.y * height) : ctx.moveTo(point.x * width, point.y * height)); ctx.stroke(); ctx.restore();
+  }
+  const selected = new Set(Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : []);
+  const objects = this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage);
+  for (const object of objects.filter((item) => selected.has(item.id))) {
+    const bounds = lmbInkBounds(object);
+    ctx.save(); ctx.strokeStyle = "#2d8cff"; ctx.lineWidth = 1; ctx.setLineDash([5, 3]);
+    ctx.strokeRect(bounds.x * width - 4, bounds.y * height - 4, Math.max(8, bounds.w * width + 8), Math.max(8, bounds.h * height + 8));
+    ctx.setLineDash([]); ctx.fillStyle = "#2d8cff";
+    if (object.type === "line") {
+      ctx.fillRect(object.x1 * width - 6, object.y1 * height - 6, 12, 12);
+      ctx.fillRect(object.x2 * width - 6, object.y2 * height - 6, 12, 12);
+    } else ctx.fillRect((bounds.x + bounds.w) * width - 6, (bounds.y + bounds.h) * height - 6, 12, 12);
+    ctx.restore();
+  }
+};
+
+LuciasMarginBookPlugin.prototype.lmbObjectBounds = function (object) { return lmbInkBounds(object); };
+
+LuciasMarginBookPlugin.prototype.lmbInvalidateInkSpatial = function (path, page) {
+  if (this._lmbInkSpatialCache) this._lmbInkSpatialCache.delete(`${path}\n${page}`);
+};
+
+LuciasMarginBookPlugin.prototype.lmbBuildInkSpatial = function (objects) {
+  const cellSize = .05, cells = new Map(), byId = new Map();
+  for (const object of objects || []) {
+    if (!object || !object.id) continue; byId.set(object.id, object);
+    const bounds = lmbInkBounds(object), minX = Math.floor(bounds.x / cellSize), maxX = Math.floor((bounds.x + bounds.w) / cellSize), minY = Math.floor(bounds.y / cellSize), maxY = Math.floor((bounds.y + bounds.h) / cellSize);
+    for (let x = minX; x <= maxX; x++) for (let y = minY; y <= maxY; y++) {
+      const key = `${x},${y}`; if (!cells.has(key)) cells.set(key, new Set()); cells.get(key).add(object.id);
+    }
+  }
+  return { cellSize, cells, byId };
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkSpatialCandidates = function (spatial, point, tolerance) {
+  const ids = new Set(), size = spatial.cellSize, minX = Math.floor((point.x - tolerance) / size), maxX = Math.floor((point.x + tolerance) / size), minY = Math.floor((point.y - tolerance) / size), maxY = Math.floor((point.y + tolerance) / size);
+  for (let x = minX; x <= maxX; x++) for (let y = minY; y <= maxY; y++) for (const id of spatial.cells.get(`${x},${y}`) || []) ids.add(id);
+  return Array.from(ids, (id) => spatial.byId.get(id)).filter(Boolean);
+};
+
+LuciasMarginBookPlugin.prototype.lmbStartInkSelection = function (canvas, point, objects, additive) {
+  const tolerance = Math.max(.006, 9 / Math.max(1, canvas.clientWidth));
+  const hit = objects.slice().reverse().find((object) => lmbInkObjectHit(object, point, tolerance));
+  const prior = Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : [];
+  if (!hit) { if (!additive) this._lmbInkSelection = []; return null; }
+  const ids = additive ? (prior.includes(hit.id) ? prior.filter((id) => id !== hit.id) : prior.concat(hit.id)) : [hit.id];
+  this._lmbInkSelection = ids; this._lmbInkSelectionContext = { canvas, path: canvas.dataset.lmbInkPath, page: canvas.dataset.lmbInkPage };
+  if (!ids.includes(hit.id)) return { kind: "selectionOnly", start: point };
+  if (ids.length > 1) return { kind: "moveMulti", start: point, entries: objects.filter((object) => ids.includes(object.id)).map((object) => ({ object, before: lmbInkClone(object), bounds: lmbInkBounds(object) })) };
+  const bounds = lmbInkBounds(hit);
+  if (hit.type === "line") {
+    const d1 = lmbInkDistance(point, { x: hit.x1, y: hit.y1 }), d2 = lmbInkDistance(point, { x: hit.x2, y: hit.y2 });
+    if (Math.min(d1, d2) <= tolerance * 2) return { kind: "resize", endpoint: d1 <= d2 ? 1 : 2, object: hit, start: point, before: lmbInkClone(hit), bounds };
+  }
+  const resize = point.x > bounds.x + bounds.w - tolerance * 2 && point.y > bounds.y + bounds.h - tolerance * 2;
+  const resizeKeys = hit.type === "rect" ? { x: hit.x1 > hit.x2 ? "x1" : "x2", y: hit.y1 > hit.y2 ? "y1" : "y2" } : null;
+  return { kind: resize ? "resize" : "move", resizeKeys, object: hit, start: point, before: lmbInkClone(hit), bounds };
+};
+
+LuciasMarginBookPlugin.prototype.lmbMoveInkSelection = function (selection, point) {
+  if (!selection) return;
+  if (selection.kind === "moveMulti") { for (const entry of selection.entries) this.lmbMoveInkSelection({ kind: "move", object: entry.object, before: entry.before, bounds: entry.bounds, start: selection.start }, point); return; }
+  const object = selection.object, before = selection.before, dx = point.x - selection.start.x, dy = point.y - selection.start.y;
+  if (!object) return;
+  if (selection.kind === "resize") {
+    if (object.type === "text") {
+      const newWidth = Math.max(.04, (selection.bounds.w || .2) + dx);
+      object.fontSize = Math.max(.009, Math.min(.09, (before.fontUnit === "page" ? before.fontSize : (before.fontSize || 16) / 1000) * newWidth / (selection.bounds.w || .2)));
+      object.fontUnit = "page"; object.w = newWidth; object.h = Math.max(.025, (selection.bounds.h || .05) + dy);
+    } else if (object.type === "pen" || object.type === "highlighter") {
+      const sx = Math.max(.08, ((selection.bounds.w || .02) + dx) / (selection.bounds.w || .02)), sy = Math.max(.08, ((selection.bounds.h || .02) + dy) / (selection.bounds.h || .02));
+      object.points = before.points.map((p) => Object.assign({}, p, { x: selection.bounds.x + (p.x - selection.bounds.x) * sx, y: selection.bounds.y + (p.y - selection.bounds.y) * sy }));
+    } else if (object.type === "line") {
+      const suffix = selection.endpoint === 1 ? "1" : "2"; object[`x${suffix}`] = before[`x${suffix}`] + dx; object[`y${suffix}`] = before[`y${suffix}`] + dy;
+    } else {
+      const keys = selection.resizeKeys || { x: "x2", y: "y2" }; object[keys.x] = before[keys.x] + dx; object[keys.y] = before[keys.y] + dy;
+    }
+  } else if (object.type === "pen" || object.type === "highlighter") object.points = before.points.map((p) => Object.assign({}, p, { x: p.x + dx, y: p.y + dy }));
+  else if (object.type === "text") { object.x = before.x + dx; object.y = before.y + dy; }
+  else { object.x1 = before.x1 + dx; object.y1 = before.y1 + dy; object.x2 = before.x2 + dx; object.y2 = before.y2 + dy; }
+};
+
+LuciasMarginBookPlugin.prototype.lmbEraseAt = function (canvas, point, active) {
+  const objects = this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage, true);
+  const tolerance = Math.max(.008, (Number(this.settings.inkEraserSize) || 18) / Math.max(1, canvas.clientWidth));
+  if (!active.spatial) active.spatial = this.lmbBuildInkSpatial(active.before || objects);
+  const hits = new Set();
+  for (const object of this.lmbInkSpatialCandidates(active.spatial, point, tolerance)) {
+    if (!active.removed.has(object.id) && lmbInkObjectHit(object, point, tolerance)) hits.add(object.id);
+  }
+  let changed = hits.size > 0;
+  if (changed) for (let index = objects.length - 1; index >= 0; index--) if (hits.has(objects[index].id)) { active.removed.add(objects[index].id); objects.splice(index, 1); }
+  if (changed) this.lmbRequestInkStaticDraw(canvas);
+};
+
+LuciasMarginBookPlugin.prototype.lmbRequestInkStaticDraw = function (canvas) {
+  if (canvas._lmbInkStaticFrame) return;
+  canvas._lmbInkStaticFrame = requestAnimationFrame(() => { canvas._lmbInkStaticFrame = 0; this.lmbDrawInkLayer(canvas); });
+};
+
+LuciasMarginBookPlugin.prototype.lmbStartInkText = function (canvas, point) {
+  const pageEl = canvas.parentElement, box = document.createElement("textarea");
+  box.className = "lmb-ink-text-editor"; box.placeholder = "输入备注…"; box.style.left = point.x * 100 + "%"; box.style.top = point.y * 100 + "%"; box.style.color = this.inkColor;
+  pageEl.appendChild(box); box.focus(); let finished = false;
+  const finish = (save) => {
+    if (finished) return; finished = true;
+    const text = box.value.trim();
+    if (save && text) {
+      const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, objects = this.lmbInkObjects(path, page, true), before = lmbInkClone(objects);
+      const measuredWidth = Math.max(40, Number(box.offsetWidth) || 190), measuredHeight = Math.max(28, Number(box.offsetHeight) || 54);
+      objects.push({ id: this.lmbInkId(), type: "text", text, x: point.x, y: point.y, w: measuredWidth / Math.max(1, canvas.clientWidth), h: measuredHeight / Math.max(1, canvas.clientHeight), color: this.inkColor, width: this.inkWidth / 1000, widthUnit: "page", fontSize: .016, fontUnit: "page" });
+      this.lmbCommitInkChange(path, page, before, "text"); this.lmbDrawInkLayer(canvas);
+    }
+    box.remove();
+  };
+  box.addEventListener("blur", () => finish(true), { once: true });
+  box.addEventListener("keydown", (event) => { if (event.key === "Escape") finish(false); else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") box.blur(); });
+};
+
+LuciasMarginBookPlugin.prototype.lmbHistoryFor = function (path, page) {
+  if (!this._lmbInkHistory) this._lmbInkHistory = new Map();
+  const key = `${path}\n${page}`;
+  if (!this._lmbInkHistory.has(key)) this._lmbInkHistory.set(key, { undo: [], redo: [] });
+  return this._lmbInkHistory.get(key);
+};
+
+LuciasMarginBookPlugin.prototype.lmbCommitInkChange = function (path, page, before, label) {
+  const after = lmbInkClone(this.lmbInkObjects(path, page, true));
+  const patch = lmbInkBuildPatch(before, after);
+  if (!patch.added.length && !patch.removed.length && !patch.modified.length) return false;
+  const history = this.lmbHistoryFor(path, page);
+  history.undo.push({ patch, label });
+  if (history.undo.length > LMB_INK_HISTORY_LIMIT) history.undo.shift();
+  history.redo.length = 0; this.lmbInvalidateInkSpatial(path, page); this.lmbMarkInkDirty(path); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbActiveInkCanvas = function () {
+  const activeRoot = this.app.workspace.activeLeaf && this.app.workspace.activeLeaf.containerEl;
+  const root = arguments[0] && typeof arguments[0].querySelectorAll === "function" ? arguments[0] : activeRoot || document;
+  const explicitPath = arguments[1];
+  const file = this.app.workspace.getActiveFile(), filePath = explicitPath || file && file.path; if (!filePath) return null;
+  const candidates = Array.from(root.querySelectorAll(".lmb-ink-layer")).filter((canvas) => canvas.dataset.lmbInkPath === filePath);
+  let best = null, bestArea = -1;
+  for (const canvas of candidates) {
+    const rect = canvas.getBoundingClientRect(), visible = Math.max(0, Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top));
+    if (visible > bestArea) { best = canvas; bestArea = visible; }
+  }
+  return best;
+};
+
+LuciasMarginBookPlugin.prototype.lmbUndoInk = function (canvas) { return this.lmbApplyInkHistory("undo", canvas); };
+LuciasMarginBookPlugin.prototype.lmbRedoInk = function (canvas) { return this.lmbApplyInkHistory("redo", canvas); };
+LuciasMarginBookPlugin.prototype.lmbApplyInkHistory = function (direction, preferredCanvas) {
+  const canvas = preferredCanvas || this.lmbActiveInkCanvas(); if (!canvas) return false;
+  const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, history = this.lmbHistoryFor(path, page), entry = history[direction].pop(); if (!entry) return false;
+  this.lmbReplaceInkObjects(path, page, lmbInkApplyPatch(this.lmbInkObjects(path, page), entry.patch, direction));
+  if (direction === "undo") history.redo.push(entry); else history.undo.push(entry);
+  this._lmbInkSelection = []; this._lmbInkSelectionContext = null; this.lmbRedrawInkPage(canvas); this.lmbMarkInkDirty(path); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbClearInk = function () {
+  const canvas = this.lmbActiveInkCanvas(); if (!canvas) return false;
+  const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, objects = this.lmbInkObjects(path, page);
+  if (!objects.length) return false;
+  const before = lmbInkClone(objects); objects.length = 0; this._lmbInkSelection = []; this._lmbInkSelectionContext = null;
+  this.lmbCommitInkChange(path, page, before, "clear"); this.lmbRedrawInkPage(canvas); new Notice("MarginBook：已清空当前页，可用撤销恢复", 2200); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbDeleteInkSelection = function (preferredCanvas) {
+  const context = this._lmbInkSelectionContext;
+  if (preferredCanvas && (!context || context.canvas !== preferredCanvas)) return false;
+  const canvas = context && context.canvas && context.canvas.isConnected ? context.canvas : preferredCanvas || this.lmbActiveInkCanvas();
+  const ids = new Set(Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : []); if (!canvas || !ids.size) return false;
+  const path = canvas.dataset.lmbInkPath, page = canvas.dataset.lmbInkPage, objects = this.lmbInkObjects(path, page), before = lmbInkClone(objects);
+  for (let i = objects.length - 1; i >= 0; i--) if (ids.has(objects[i].id)) objects.splice(i, 1);
+  if (before.length === objects.length) return false;
+  this._lmbInkSelection = []; this._lmbInkSelectionContext = null;
+  this.lmbCommitInkChange(path, page, before, "delete"); this.lmbRedrawInkPage(canvas); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbRedrawInkPage = function (canvas) {
+  if (!canvas) return;
+  this.lmbDrawInkLayer(canvas);
+  const live = canvas.parentElement && canvas.parentElement.querySelector(":scope > .lmb-ink-live-layer");
+  if (live) this.lmbDrawInkLiveLayer(live, null);
+};
+
+LuciasMarginBookPlugin.prototype.lmbApplyInkStyleToSelection = function (property, value, scopeHost) {
+  const context = this._lmbInkSelectionContext, ids = new Set(this._lmbInkSelection || []);
+  if (!context || !ids.size) return false;
+  if (scopeHost && typeof scopeHost.contains === "function" && !scopeHost.contains(context.canvas)) return false;
+  const objects = this.lmbInkObjects(context.path, context.page), before = lmbInkClone(objects);
+  for (const object of objects) if (ids.has(object.id)) {
+    if (property === "color") object.color = value;
+    if (property === "width") { object.width = Number(value) / 1000; object.widthUnit = "page"; }
+  }
+  if (!this.lmbCommitInkChange(context.path, context.page, before, "style")) return false;
+  this.lmbRedrawInkPage(context.canvas); return true;
+};
+
+LuciasMarginBookPlugin.prototype.lmbSetInkTool = function (tool) {
+  if (!LMB_INK_TOOLS.includes(tool)) return;
+  this.inkTool = tool; this.settings.inkLastTool = tool;
+  if (tool === "highlighter") { this.inkColor = this.settings.inkHighlighterColor || "#ffd84d"; this.inkWidth = Number(this.settings.inkHighlighterWidth) || 12; }
+  else if (["pen", "text", "line", "rect"].includes(tool)) { this.inkColor = this.settings.inkPenColor || "#e05252"; this.inkWidth = Number(this.settings.inkPenWidth) || 3; }
+  this.lmbPersistInkPreferences(); this.lmbRenderInkTools();
+};
+
+LuciasMarginBookPlugin.prototype.lmbPersistInkPreferences = function () {
+  clearTimeout(this._lmbInkPrefsTimer);
+  this._lmbInkPrefsTimer = setTimeout(() => this.saveSettings().catch((error) => console.warn("[lmb] ink preferences save failed", error)), 300);
+};
+
+LuciasMarginBookPlugin.prototype.lmbUpdateInkSaveStatus = function () {
+  const label = this._lmbInkSaveState === "saving" ? "保存中…" : this._lmbInkSaveState === "error" ? "保存失败" : "已保存";
+  document.querySelectorAll(".lmb-ink-save-status").forEach((element) => { element.textContent = label; element.dataset.state = this._lmbInkSaveState || "saved"; });
+};
+
+LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
+  document.querySelectorAll(".lmb-ink-tools").forEach((bar) => bar.remove());
+  if (!this.inkMode) return;
+  const specs = [["hand", "✋", "抓手（空格临时启用）"], ["select", "⌁", "选择 / 套索"], ["pen", "✎", "钢笔"], ["highlighter", "▰", "荧光笔"], ["eraser", "◇", "整笔橡皮"], ["text", "T", "文字"], ["line", "╱", "直线"], ["rect", "□", "矩形"]];
+  for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
+    const host = leaf && leaf.containerEl; if (!host) continue;
+    const bar = document.createElement("div"); bar.className = "lmb-ink-tools"; if (this.settings.inkToolbarCollapsed) bar.classList.add("is-collapsed");
+    const toggle = document.createElement("button"); toggle.className = "lmb-ink-collapse"; toggle.textContent = this.settings.inkToolbarCollapsed ? "✎" : "‹"; toggle.title = "收起 / 展开手写工具栏";
+    toggle.addEventListener("click", () => { this.settings.inkToolbarCollapsed = !this.settings.inkToolbarCollapsed; this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); bar.appendChild(toggle);
+    const content = document.createElement("div"); content.className = "lmb-ink-tools-content"; bar.appendChild(content);
+    for (const [tool, label, title] of specs) {
+      const button = document.createElement("button"); button.textContent = label; button.title = title; button.dataset.tool = tool; button.classList.toggle("is-active", this.inkTool === tool);
+      button.addEventListener("click", () => this.lmbSetInkTool(tool)); content.appendChild(button);
+    }
+    const colors = this.inkTool === "highlighter" ? ["#ffd84d", "#7ee787", "#70b7ff"] : ["#e05252", "#222222", "#2d8cff"];
+    const swatches = document.createElement("div"); swatches.className = "lmb-ink-swatches";
+    for (const value of colors) {
+      const swatch = document.createElement("button"); swatch.className = "lmb-ink-swatch"; swatch.style.backgroundColor = value; swatch.title = value; swatch.classList.toggle("is-active", (this.inkColor || "").toLowerCase() === value);
+      swatch.addEventListener("click", () => { this.inkColor = value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = value; else this.settings.inkPenColor = value; this.lmbApplyInkStyleToSelection("color", value, host); this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); swatches.appendChild(swatch);
+    }
+    content.appendChild(swatches);
+    const color = document.createElement("input"); color.type = "color"; color.value = this.inkColor || "#e05252"; color.title = "自定义颜色";
+    color.addEventListener("change", () => { this.inkColor = color.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = color.value; else this.settings.inkPenColor = color.value; this.lmbApplyInkStyleToSelection("color", color.value, host); this.lmbPersistInkPreferences(); }); content.appendChild(color);
+    const width = document.createElement("input"); width.type = "range"; width.min = "1"; width.max = this.inkTool === "highlighter" ? "30" : "14"; width.step = "1"; width.value = String(this.inkWidth || 3); width.title = `粗细 ${width.value}`;
+    width.addEventListener("input", () => { this.inkWidth = Number(width.value); width.title = `粗细 ${width.value}`; if (this.inkTool === "highlighter") this.settings.inkHighlighterWidth = this.inkWidth; else this.settings.inkPenWidth = this.inkWidth; });
+    width.addEventListener("change", () => { this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); content.appendChild(width);
+    const leafCanvas = () => this.lmbActiveInkCanvas(host, leaf.view && leaf.view.file && leaf.view.file.path);
+    const undo = document.createElement("button"); undo.textContent = "↶"; undo.title = "撤销"; undo.addEventListener("click", () => this.lmbUndoInk(leafCanvas())); content.appendChild(undo);
+    const redo = document.createElement("button"); redo.textContent = "↷"; redo.title = "重做"; redo.addEventListener("click", () => this.lmbRedoInk(leafCanvas())); content.appendChild(redo);
+    const del = document.createElement("button"); del.textContent = "⌫"; del.title = "删除所选"; del.addEventListener("click", () => this.lmbDeleteInkSelection(leafCanvas())); content.appendChild(del);
+    const status = document.createElement("span"); status.className = "lmb-ink-save-status"; content.appendChild(status); host.appendChild(bar);
+  }
+  this.lmbUpdateInkSaveStatus();
+};
+
+LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
+  this.inkTool = this.settings.inkLastTool || "pen"; this.inkColor = this.settings.inkPenColor || "#e05252"; this.inkWidth = Number(this.settings.inkPenWidth) || 3; this._lmbInkSelection = [];
+  this.registerDomEvent(document, "keydown", (event) => {
+    if (event.code === "Space" && this.inkMode && !/INPUT|TEXTAREA/.test(event.target && event.target.tagName || "")) this._lmbInkSpacePan = true;
+    if (event.target && event.target.classList && event.target.classList.contains("lmb-ink-text-editor")) return;
+    if (event.key === "Escape" && this.inkMode) { this.lmbSetInkMode(false); return; }
+    if (!this.inkMode) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { const changed = event.shiftKey ? this.lmbRedoInk() : this.lmbUndoInk(); if (changed) event.preventDefault(); }
+    else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y" && this.lmbRedoInk()) event.preventDefault();
+    else if ((event.key === "Delete" || event.key === "Backspace") && this.lmbDeleteInkSelection(this.lmbActiveInkCanvas())) event.preventDefault();
+  }, true);
+  this.registerDomEvent(document, "keyup", (event) => { if (event.code === "Space") this._lmbInkSpacePan = false; }, true);
+  this.registerDomEvent(window, "blur", () => { this._lmbInkSpacePan = false; }, true);
+  const observer = new MutationObserver((records) => {
+    for (const record of records) for (const node of Array.from(record.removedNodes || [])) {
+      if (!node || node.nodeType !== 1) continue;
+      const pages = [];
+      if (node.matches && node.matches(".page[data-lmb-ink-bound]")) pages.push(node);
+      if (node.querySelectorAll) pages.push(...node.querySelectorAll(".page[data-lmb-ink-bound]"));
+      for (const pageEl of pages) {
+        if (pageEl._lmbInkResizeObserver) { pageEl._lmbInkResizeObserver.disconnect(); pageEl._lmbInkResizeObserver = null; }
+        if (this._lmbInkSelectionContext && pageEl.contains && pageEl.contains(this._lmbInkSelectionContext.canvas)) { this._lmbInkSelection = []; this._lmbInkSelectionContext = null; }
+      }
+    }
+    const relevant = records.some((record) => Array.from(record.addedNodes || []).some((node) => node.nodeType === 1 && (node.matches && node.matches(".page,.pdf-viewer-container") || node.querySelector && node.querySelector(".page"))));
+    if (relevant) this.lmbScheduleInkRefresh(60);
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  this.register(() => {
+    observer.disconnect(); clearTimeout(this._lmbInkSaveTimer); clearTimeout(this._lmbInkPrefsTimer); this.lmbFlushInkStorage().catch(() => {});
+    document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
+    document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => { if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect(); });
+  });
+};
 
 /* 31-plugin-selection —— 选区/拖拽/chip/即时通道（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
 
@@ -2866,7 +4373,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
   },
 
-  startRectDrag(leaf, e) {
+  /** Mobile entry point. Pointer events cover Apple Pencil and touch with one path. */
+  onDocPointerDown(e) {
+    if (!e || (e.pointerType !== "touch" && e.pointerType !== "pen")) return;
+    if (this.chipEl && !this.chipEl.contains(e.target)) this.hideChip();
+    if (!this.rectMode) return;
+    const el = e.target && e.target.nodeType === 1 ? e.target : (e.target && e.target.parentElement);
+    const leafEl = el && el.closest && el.closest(".workspace-leaf");
+    const leaf = leafEl && this.app.workspace.getLeavesOfType("pdf").find((l) => l.containerEl === leafEl);
+    if (!leaf || !leaf.view || !leaf.view.file) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.startRectDrag(leaf, e, "pointer");
+  },
+
+  startRectDrag(leaf, e, eventFamily) {
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
     const box = doc.createElement("div");
     box.className = "lmb-rect";
@@ -2881,9 +4402,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       box.style.width = Math.abs(ev.clientX - sx) + "px";
       box.style.height = Math.abs(ev.clientY - sy) + "px";
     };
+    const moveEvent = eventFamily === "pointer" ? "pointermove" : "mousemove";
+    const upEvent = eventFamily === "pointer" ? "pointerup" : "mouseup";
+    const cancelEvent = eventFamily === "pointer" ? "pointercancel" : null;
+    const cleanup = () => {
+      document.removeEventListener(moveEvent, mv, true);
+      document.removeEventListener(upEvent, up, true);
+      if (cancelEvent) document.removeEventListener(cancelEvent, cancel, true);
+    };
+    const cancel = () => { cleanup(); box.remove(); };
     const up = async (ev) => {
-      document.removeEventListener("mousemove", mv, true);
-      document.removeEventListener("mouseup", up, true);
+      cleanup();
       box.remove();
       const w = Math.abs(ev.clientX - sx), h = Math.abs(ev.clientY - sy);
       if (w < 8 || h < 8) return; // 误触，按钮模式保持
@@ -2924,10 +4453,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           this.debugNotice("✓ 框选双重摘录：文字 " + rectText.length
             + " 字 + 截图 " + ctx.attachmentName);
           this.showChip(ev.clientX, ev.clientY,
-            "📝 " + rectText.length + " 字 + 🖼 截图 · 按住拖到 md 或画布", info);
+            "📝 " + rectText.length + " 字 + 🖼 截图" + (this.isMobile ? " · 点按钮保存" : " · 按住拖到 md 或画布"), info);
         } else {
           this.debugNotice("✓ 截图已保存 " + ctx.attachmentName + "（" + ctx.imgW + "×" + ctx.imgH + "）");
-          this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图 · 按住拖到 md 或画布", ctx);
+          this.showChip(ev.clientX, ev.clientY, "🖼 图片已截图" + (this.isMobile ? " · 点按钮保存" : " · 按住拖到 md 或画布"), ctx);
         }
       } else {
         // v0.16.4 修复 P1-1：关闭「自动附截图」（或截图失败）时框选不再整链路报废——
@@ -2962,11 +4491,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const info = { file, pageNum, display, link, text: rectText, isImage: false };
         this.debugNotice("✓ 框选摘录（无截图）：文字 " + rectText.length + " 字");
         this.showChip(ev.clientX, ev.clientY,
-          "📝 " + rectText.length + " 字 · 按住拖到 md 或画布", info);
+            "📝 " + rectText.length + " 字" + (this.isMobile ? " · 点按钮保存" : " · 按住拖到 md 或画布"), info);
       }
     };
-    document.addEventListener("mousemove", mv, true);
-    document.addEventListener("mouseup", up, true);
+    document.addEventListener(moveEvent, mv, true);
+    document.addEventListener(upEvent, up, true);
+    if (cancelEvent) document.addEventListener(cancelEvent, cancel, true);
   },
 
   pageAtPoint(doc, x, y) {
@@ -3044,9 +4574,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!pageEl) return null;
       const ctx = this.resolvePdfContext(pageEl);
       if (!ctx || !ctx.view || !ctx.view.file) return null;
-      const rect = range.getBoundingClientRect();
-      if (!rect || rect.width < 4 || rect.height < 4) return null;
-      const screenRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      // 选区建立时已经保存了相对页面坐标。拖拽开始时 PDF 可能因侧栏/缩放重排，
+      // 不能再用旧 Range 的 getBoundingClientRect（它可能膨胀到整页）。
+      const pr = pageEl.getBoundingClientRect();
+      const pct = info && info.selectionRect;
+      let screenRect = null;
+      if (pct && pct.length === 4 && pr.width > 0 && pr.height > 0) {
+        screenRect = {
+          left: pr.left + pr.width * pct[0] / 100,
+          top: pr.top + pr.height * pct[1] / 100,
+          right: pr.left + pr.width * (pct[0] + pct[2]) / 100,
+          bottom: pr.top + pr.height * (pct[1] + pct[3]) / 100
+        };
+      }
+      // 无可靠百分比矩形时宁可降级为纯文字，也不能再冒险截取整页。
+      if (!screenRect) return null;
       // v0.14.8：settings.autoAttachScreenshot 关掉时不生成 webp
       const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
       const cap = autoAttach ? await this.captureRectImage(ctx.view, pageEl, screenRect, info.pageNum || ctx.pageNum) : null;
@@ -3115,6 +4657,44 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       this._lastNoSelNotice = now;
       this.debugNotice("mouseup：无文字选区（图片框选 = PDF 工具栏按钮 / Alt+拖）");
     }
+  },
+
+  onDocPointerUp(e) {
+    if (!e || (e.pointerType !== "touch" && e.pointerType !== "pen") || this.rectMode) return;
+    // WebKit finalizes its native text selection after pointerup.
+    if (this._mobileSelectionTimer) clearTimeout(this._mobileSelectionTimer);
+    this._mobileSelectionTimer = setTimeout(() => {
+      this._mobileSelectionTimer = null;
+      this.showMobileSelectionChip(e.clientX, e.clientY);
+    }, 120);
+  },
+
+  onMobileSelectionChange() {
+    if (!this.isMobile || this.rectMode) return;
+    if (this._mobileSelectionTimer) clearTimeout(this._mobileSelectionTimer);
+    this._mobileSelectionTimer = setTimeout(() => {
+      this._mobileSelectionTimer = null;
+      this.showMobileSelectionChip();
+    }, 320);
+  },
+
+  showMobileSelectionChip(x, y) {
+    try {
+      const win = typeof activeWindow !== "undefined" ? activeWindow : window;
+      const sel = win.getSelection();
+      const info = sel && !sel.isCollapsed && sel.rangeCount ? this.extractSelection(sel) : null;
+      if (!info) return false;
+      const sig = info.text + "@" + info.pageNum;
+      if (this.chipEl && this._chipSig === sig) return true;
+      const range = sel.getRangeAt(0);
+      try { info._range = range.cloneRange(); } catch (_) { info._range = null; }
+      const rect = range.getBoundingClientRect();
+      const px = Number.isFinite(x) && x > 0 ? x : rect.left + Math.min(rect.width, 48);
+      const py = Number.isFinite(y) && y > 0 ? y : rect.bottom;
+      this._chipSig = sig;
+      this.showChip(px, py, "📑 " + info.text.length + " 字 · 点按钮保存", info);
+      return true;
+    } catch (_) { return false; }
   },
 
   /**
@@ -3212,6 +4792,25 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 图片：裁剪页面画布 → webp 附件 ==================== */
 
+  _lmbExcerptImageFolder(pdfFile) {
+    const safe = (value) => String(value || "").replace(/[\\:*?"<>|]/g, "-").replace(/[. ]+$/g, "").trim();
+    const pdfName = safe(pdfFile && pdfFile.basename) || "未命名PDF";
+    const template = String((this.settings && this.settings.excerptImageFolder) || "附件/{pdf}")
+      .replace(/\{pdf\}/gi, pdfName).replace(/\\/g, "/");
+    const parts = template.split("/").map((part) => safe(part))
+      .filter((part) => part && part !== "." && part !== "..");
+    return normalizePath(parts.join("/") || ("附件/" + pdfName));
+  },
+
+  async _lmbEnsureVaultFolder(folder) {
+    const adapter = this.app.vault.adapter;
+    let current = "";
+    for (const part of String(folder || "").split("/").filter(Boolean)) {
+      current = normalizePath(current ? current + "/" + part : part);
+      if (!(await adapter.exists(current))) await adapter.mkdir(current);
+    }
+  },
+
   /**
    * 屏幕矩形 → 裁剪页面画布 → 保存 webp 附件。
    * 零 pdfjs 内部 API：直接 drawImage 页面上已渲染的 <canvas>。
@@ -3245,11 +4844,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       const stamp = Date.now().toString(36).slice(-4) + Math.floor(Math.random() * 36 * 36).toString(36);
       const name = view.file.basename + "-P" + pageNum + "-" + stamp + ".webp";
-      const folder = view.file.parent && view.file.parent.path ? view.file.parent.path : "/";
-      const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+      const folder = this._lmbExcerptImageFolder(view.file);
+      await this._lmbEnsureVaultFolder(folder);
+      const path = normalizePath(folder + "/" + name);
       await this.app.vault.createBinary(path, buf);
 
-      this.imgDims.set(name, { w: out.width, h: out.height });
+      this.imgDims.set(path, { w: out.width, h: out.height });
+      this.imgDims.set(name, { w: out.width, h: out.height }); // 存量短路径兼容
       this.persistAutoSizeSoon();
 
       const display = "【" + view.file.basename + "-P." + pageNum + "】";
@@ -3271,8 +4872,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         + (rectParam ? "&rect=" + rectParam : "") + "|" + display + "]]";
       return {
         file: view.file, pageNum, display,
-        link, embed: "![[" + name + "]]",
-        attachmentName: name, imgW: out.width, imgH: out.height,
+        link, embed: "![[" + path + "]]",
+        attachmentName: path, imgW: out.width, imgH: out.height,
         rectParam,
         text: "（矩形图像选区）", isImage: true
       };
@@ -3316,6 +4917,28 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!text) return null;
       const display = "【" + file.basename + "-P." + pageNum + "】";
 
+      // 同时保存选区的页面百分比矩形：selection 索引漂移时用它精确回绘，
+      // 自动附图也复用它，避免延迟截图把整页裁进去。
+      let selectionRect = null;
+      try {
+        const range = sel.getRangeAt(0), pr = pageEl.getBoundingClientRect();
+        const rects = Array.from(range.getClientRects()).filter((r) => {
+          if (!r || r.width < .5 || r.height < .5) return false;
+          if (r.right <= pr.left || r.left >= pr.right || r.bottom <= pr.top || r.top >= pr.bottom) return false;
+          return !(r.width > pr.width * .97 && r.height > pr.height * .18);
+        });
+        if (rects.length && pr.width > 0 && pr.height > 0) {
+          const left = Math.max(pr.left, Math.min(...rects.map((r) => r.left)));
+          const top = Math.max(pr.top, Math.min(...rects.map((r) => r.top)));
+          const right = Math.min(pr.right, Math.max(...rects.map((r) => r.right)));
+          const bottom = Math.min(pr.bottom, Math.max(...rects.map((r) => r.bottom)));
+          if (right > left && bottom > top) selectionRect = [
+            100 * (left - pr.left) / pr.width, 100 * (top - pr.top) / pr.height,
+            100 * (right - left) / pr.width, 100 * (bottom - top) / pr.height
+          ].map((v) => Math.round(v * 100) / 100);
+        }
+      } catch (_) {}
+
       // 补丁 B：P1-5 颜色语义——best-effort 探测选区命中的高亮注释背景色 → 映射标签名。
       // 探测不到 / 未命中映射 / 未配置 colorMap 时恒为 null，行为与现状一致。
       let colorTag = null;
@@ -3324,15 +4947,33 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       let link;
       let selectionParams = null; // Bugfix: 必须随 info 返回，contentExId 才能区分「同页同文本不同位置」的选区
+      const targetText = text;
       try {
         const params = this.buildSelectionParams(sel, pageEl);
         if (!params) throw new Error("no selection params");
         selectionParams = params;
-        link = "[[" + file.path + "#page=" + pageNum + "&selection=" + params + "|" + display + "]]";
+        link = "[[" + file.path + "#page=" + pageNum + "&selection=" + params
+          + (selectionRect ? "&rect=" + selectionRect.join(",") : "")
+          + "&target=" + encodeURIComponent(targetText)
+          + "|" + display + "]]";
       } catch (_) {
-        link = "[[" + file.path + "#page=" + pageNum + "|" + display + "]]";
+        // 回退路径（极端场景：buildSelectionParams 失败），也保留目标文本，便于后续定位与审计。
+        link = "[[" + file.path + "#page=" + pageNum
+          + "&target=" + encodeURIComponent(targetText)
+          + "|" + display + "]]";
       }
-      return { file, pageNum, text, link, display, isImage: false, colorTag, selectionParams };
+      return {
+        file,
+        pageNum,
+        text,
+        link,
+        display,
+        isImage: false,
+        colorTag,
+        selectionParams,
+        selectionRect,
+        targetText
+      };
     } catch (err) {
       console.warn("[lmb] extractSelection error:", err);
       return null;
@@ -3374,12 +5015,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 哈希基底：
    *   - 图片选区（isImage）：attachmentName（内含时间戳+随机戳，每张截图天然唯一）
    *   - 文字选区：file.path | pageNum | selectionParams（未注入时回退 text）
-   * 复用 simpleHash（带符号 int32）：>>>0 转无符号后对 36^6 取模，保证恰好 6 位
-   * base36 小写字母数字，稳定匹配 EX_ID_RE = /\^ex-[0-9a-z]{4,8}/。
+   * 使用两个独立 32-bit hash 拼成 10 位 base36，显著降低主键碰撞概率；旧短 ID 继续兼容。
    */
   contentExId(info) {
     try {
-      const MOD36_6 = 2176782336; // 36^6
       const key = (info && info.isImage && info.attachmentName)
         ? "img|" + String(info.attachmentName)
         : [
@@ -3387,9 +5026,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             (info && info.pageNum != null) ? String(info.pageNum) : "?",
             String((info && (info.selectionParams || info.text)) || "")
           ].join("|");
-      const signed = parseInt(this.simpleHash(key), 10) | 0;
-      const u = (signed >>> 0) % MOD36_6;
-      return "ex-" + u.toString(36).padStart(6, "0");
+      const a = parseInt(this.simpleHash(key), 10) >>> 0;
+      const b = parseInt(this.simpleHash(key.split("").reverse().join("") + "|lmb"), 10) >>> 0;
+      return "ex-" + a.toString(36).padStart(7, "0").slice(-7)
+        + b.toString(36).padStart(7, "0").slice(-3);
     } catch (err) {
       // 优雅降级：任何异常回退随机 id（仅损失去重能力，不影响功能）
       console.warn("[lmb] contentExId 降级为随机 id:", err);
@@ -3407,9 +5047,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       //   导出摘录 md 时由 lmbRestoreRefDisplayName 还原【文件名-P.N】全名。
       //   旧版「> ([[..|【x-P.4】]])」外层括号一并去掉（📖 后括号纯占宽度）。
       const refLine = "> " + lmbBookLink(info.link);
-      if (info.isImage) {
-        return info.embed + "\n" + refLine + tagLine + "\n^" + exId;
-      }
+      let raw = "";
+      if (info.isImage) raw = info.embed + "\n" + refLine + tagLine + "\n^" + exId;
 // v0.11.3 双重摘录：文字选区同时截了图（info.img）→ 引用块 + 截图 embed 一起进卡。
     //   v0.16.0：**不再写 `> [!lmb-view]` 切换按钮行**（卡片精简 v2 —— 用户要求卡内不放控件）。
     //   视图切换改由悬浮栏「视图」按钮接管：判定「双重卡」= 同时含 PDF 引用行 + 截图 embed
@@ -3418,22 +5057,166 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     //   副作用：老版本建的双重卡（markdown 里已带 lmb-view 行）仍然能被识别与切换，零迁移。
     //   纯文字路径（无 img）输出与旧版完全一致。
     // v0.14.8：settings.autoAttachScreenshot 关掉时不挂 img.embed（防御性双保险）。
-    let s = refLine + "\n> " + info.text + tagLine;
-    const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
-    if (autoAttach && info.img && info.img.embed) {
-      s += "\n\n" + info.img.embed + "\n\n^" + exId;
-      return s;
-    }
-    return s + "\n^" + exId;
+      if (!raw) {
+        let s = refLine + "\n> " + info.text + tagLine;
+        const autoAttach = !(this.settings && this.settings.autoAttachScreenshot === false);
+        if (autoAttach && info.img && info.img.embed) s += "\n\n" + info.img.embed;
+        raw = s + "\n^" + exId;
+      }
+      // v0.20.1：无论直接拖进 Markdown 还是 Canvas，先生成统一视觉卡；Canvas 同步时会
+      // 用 lmbUnwrapExcerptCard 还原内容，避免摘录文档出现嵌套卡片。
+      const kind = (info.isImage || (info.img && info.img.embed)) ? "图像" : "原文";
+      const title = "P." + ((info && info.pageNum != null) ? info.pageNum : "?") + " · " + kind;
+      return "> [!lmb-excerpt]+ " + title + "\n> <span class=\"lmb-excerpt-id\" data-lmb-ex=\"" + exId + "\"></span>\n" + raw.split("\n").map((line) => "> " + line).join("\n");
     } catch (err) {
       console.error("[lmb] buildDropText error:", err);
       // 降级：恢复旧版随机 id 行为
       const exId = "ex-" + Math.random().toString(36).slice(2, 8);
-      if (info.isImage) {
-        return info.embed + "\n> (" + info.link + ")\n^" + exId;
-      }
-      return "> (" + info.link + ")\n> " + info.text + "\n^" + exId;
+      const raw = info.isImage
+        ? info.embed + "\n> (" + info.link + ")\n^" + exId
+        : "> (" + info.link + ")\n> " + info.text + "\n^" + exId;
+      return "> [!lmb-excerpt]+ 摘录\n" + raw.split("\n").map((line) => "> " + line).join("\n");
     }
+  },
+
+  /**
+   * 词语备注不是普通摘录的缩写：它直接写入摘录 MD 的独立持久化区域，
+   * 不创建 Canvas 卡片、不附截图，也不会因 Canvas 同步而被重写。
+   */
+  async lmbCreateWordNote(info) {
+    try {
+      if (!info || !info.file || !String(info.text || "").trim()) return;
+      const word = String(info.text).replace(/\s+/g, " ").trim();
+      const wordInfo = Object.assign({}, info, { selectionParams: "word-note|" + String(info.selectionParams || word) });
+      const exId = this.contentExId(wordInfo);
+      const source = await this.lmbEnsureExcerptMdFile(info.file);
+      if (!(source instanceof TFile)) { new Notice("MarginBook: 无法创建词语备注文档"); return; }
+      const raw = await this.app.vault.cachedRead(source);
+      const previous = this._lmbFindSidebarNote(raw, exId) || "";
+      new LMBExcerptNoteModal(this.app, {
+        title: "词语备注 · " + word,
+        value: previous,
+        sourcePath: source.path,
+        onSubmit: async (value) => {
+          const text = String(value || "").trim();
+          if (!text && !raw.includes("^" + exId)) return;
+          await this.app.vault.process(source, (current) => {
+            if (current.includes("^" + exId)) return current;
+            const entry = "> [!lmb-excerpt]+ 词语 · P." + (info.pageNum || "?") + "\n"
+              + "> <span class=\"lmb-excerpt-id\" data-lmb-ex=\"" + exId + "\"></span>\n"
+              + "> " + info.link + "\n"
+              + "> **" + word + "**\n"
+              + "> ^" + exId + "\n";
+            const begin = /<!--\s*LMB:WORD-NOTES:BEGIN\s*-->/i;
+            const end = /<!--\s*LMB:WORD-NOTES:END\s*-->/i;
+            if (begin.test(current) && end.test(current)) return current.replace(end, entry + "<!-- LMB:WORD-NOTES:END -->");
+            return current.replace(/\s*$/, "\n\n") + "<!-- LMB:WORD-NOTES:BEGIN -->\n" + entry + "<!-- LMB:WORD-NOTES:END -->\n";
+          });
+          // 新条目先落盘，再以同一套保存逻辑写入备注，保证三端的唯一真相源仍是 MD。
+          if (text) await this.lmbSaveExcerptNote(source, exId, text);
+          await this.reindexFile(source, true);
+          this.lmbRefreshAllMarks();
+          this.lmbSchedulePdfSidebarRefresh(0);
+          new Notice("MarginBook: 已保存“" + word + "”的词语备注");
+        }
+      }).open();
+    } catch (err) {
+      console.warn("[lmb] create word note failed:", err);
+      new Notice("MarginBook: 保存词语备注失败，详情见控制台");
+    }
+  },
+
+  async _lmbCaptureDirectExcerptImage(info) {
+    if (!info || info.isImage || info.img || (this.settings && this.settings.autoAttachScreenshot === false) || !info._range) return info;
+    const fakeSelection = { rangeCount: 1, getRangeAt: () => info._range };
+    const image = await this.captureSelectionImage(fakeSelection, info);
+    if (image) info.img = image;
+    return info;
+  },
+
+  async lmbCreateDirectMdExcerpt(info) {
+    try {
+      await this._lmbCaptureDirectExcerptImage(info);
+      const source = await this.lmbEnsureExcerptMdFile(info.file);
+      if (!(source instanceof TFile)) throw new Error("excerpt document unavailable");
+      const exId = this.contentExId(info);
+      await this.app.vault.process(source, (raw) => {
+        if (raw.includes("^" + exId)) return raw;
+        const isImage = !!info.isImage;
+        let entry = "> [!lmb-excerpt]+ P." + (info.pageNum || "?") + " · " + (isImage ? "图像" : "原文") + "\n"
+          + "> <span class=\"lmb-excerpt-id\" data-lmb-ex=\"" + exId + "\"></span>\n"
+          + "> " + lmbBookLink(info.link) + "\n";
+        if (isImage && info.embed) entry += "> " + info.embed + "\n";
+        else entry += "> " + String(info.text || "") + "\n";
+        if (!isImage && info.img && info.img.embed) entry += "> " + info.img.embed + "\n";
+        entry += "> ^" + exId + "\n";
+        const end = /<!--\s*LMB:MANUAL-EXCERPTS:END\s*-->/i;
+        return end.test(raw) ? raw.replace(end, entry + "<!-- LMB:MANUAL-EXCERPTS:END -->")
+          : raw.replace(/\s*$/, "\n\n") + "<!-- LMB:MANUAL-EXCERPTS:BEGIN -->\n" + entry + "<!-- LMB:MANUAL-EXCERPTS:END -->\n";
+      });
+      await this.reindexFile(source, true); this.lmbRefreshAllMarks(); this.lmbSchedulePdfSidebarRefresh(0);
+      new Notice("MarginBook: 已创建摘录并写入摘录文档");
+    } catch (err) { console.warn("[lmb] direct md excerpt failed:", err); new Notice("MarginBook: 创建摘录失败"); }
+  },
+
+  /** Mobile-safe replacement for HTML5 drag-and-drop: append directly to the PDF canvas. */
+  async lmbCreateDirectCanvasExcerpt(info) {
+    try {
+      await this._lmbCaptureDirectExcerptImage(info);
+      const cf = await this.lmbOpenOrCreatePdfCanvas(info.file);
+      if (!(cf instanceof TFile)) throw new Error("canvas unavailable");
+      const rd = await this._lmbReadCanvasData(cf);
+      if (!rd || !rd.data) throw new Error("canvas data unavailable");
+      const data = rd.data;
+      if (!Array.isArray(data.nodes)) data.nodes = [];
+      if (!Array.isArray(data.edges)) data.edges = [];
+      const text = this.buildDropText(info);
+      const exId = this.contentExId(info);
+      const duplicate = data.nodes.find((n) => n && n.type === "text" && String(n.text || "").includes("^" + exId));
+      if (duplicate) {
+        await this.lmbFocusCanvasNode(cf, duplicate.id);
+        new Notice("MarginBook: 该摘录已在专属画布中");
+        return;
+      }
+      const width = Math.max(320, Math.min(800, Number(this.settings.excerptCardWidth) || 560));
+      const size = this.estimateSizeFor(text, { width });
+      const right = data.nodes.reduce((m, n) => Math.max(m, (Number(n.x) || 0) + (Number(n.width) || 0)), -80);
+      const top = data.nodes.length ? Math.min(...data.nodes.map((n) => Number(n.y) || 0)) : 0;
+      const node = {
+        id: "lmb" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+        type: "text", text, x: right + 80, y: top,
+        width, height: Math.max(120, Math.round(Number(size && size.h) || 220))
+      };
+      data.nodes.push(node);
+      const ok = await this._lmbWriteCanvasData(cf, data, rd.memCanvas, rd.raw);
+      if (!ok) throw new Error("canvas write failed");
+      await this.processCanvas(cf);
+      await this.lmbIndexCanvasFile(cf);
+      await this.lmbFocusCanvasNode(cf, node.id);
+      new Notice("MarginBook: 已加入 PDF 专属画布");
+    } catch (err) {
+      console.warn("[lmb] direct canvas excerpt failed:", err);
+      new Notice("MarginBook: 加入画布失败");
+    }
+  },
+
+  async lmbCreateQuickExcerpt(info) {
+    try {
+      await this._lmbCaptureDirectExcerptImage(info);
+      const path = String(info.file && info.file.path || "").replace(/\\/g, "/");
+      if (!path) throw new Error("pdf unavailable");
+      this.settings.quickExcerpts = this.settings.quickExcerpts || {};
+      const list = this.settings.quickExcerpts[path] || (this.settings.quickExcerpts[path] = []);
+      const signature = String(info.selectionParams || info.text || "");
+      if (!list.some((e) => e.signature === signature && e.page === info.pageNum)) list.push({
+        exId: "quick-" + Date.now().toString(36), signature, page: info.pageNum, selection: info.selectionParams ? info.selectionParams.split(",").map(Number) : null,
+        rect: info.selectionRect || ((info.rectParam || (info.img && info.img.rectParam)) ? String(info.rectParam || info.img.rectParam).split(",").map(Number) : null),
+        target: info.targetText || info.text || "", text: info.text || (info.isImage ? "（图片摘录）" : ""),
+        imagePath: info.attachmentName || (info.img && info.img.attachmentName) || null
+      });
+      await this.saveSettings(); this.lmbRefreshAllMarks(); this.lmbSchedulePdfSidebarRefresh(0);
+      new Notice("MarginBook: 已创建简洁摘录（仅 PDF 侧栏）");
+    } catch (err) { console.warn("[lmb] quick excerpt failed:", err); new Notice("MarginBook: 创建简洁摘录失败"); }
   },
 
   /* ==================== 拖拽手柄（纯原生 HTML5 drag） ==================== */
@@ -3478,8 +5261,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
     const chip = doc.createElement("div");
     chip.className = "lmb-chip";
-    chip.textContent = label;
-    chip.setAttribute("draggable", "true");
+    const chipLabel = doc.createElement("span");
+    chipLabel.className = "lmb-chip-label";
+    chipLabel.textContent = label;
+    chip.appendChild(chipLabel);
+    // 两个独立入口：完整摘录写入 MD；简洁摘录只留在 PDF 侧栏。
+    if (info && info.file && (info.isImage || String(info.text || "").trim())) {
+      const makeAction = (icon, title, action) => {
+        const btn = doc.createElement("button"); btn.className = "lmb-chip-action"; btn.type = "button"; btn.title = title; btn.setAttribute("aria-label", title);
+        try { setIcon(btn, icon); } catch (_) { btn.setText(icon === "file-plus-2" ? "▣" : "⌁"); }
+        btn.addEventListener("mousedown", (ev) => { ev.stopPropagation(); ev.preventDefault(); });
+        btn.addEventListener("click", (ev) => { ev.stopPropagation(); ev.preventDefault(); action.call(this, info).finally(() => this.hideChip()); });
+        chip.appendChild(btn);
+      };
+      makeAction("file-plus-2", "创建完整摘录到摘录文档", this.lmbCreateDirectMdExcerpt);
+      if (this.isMobile) makeAction("layout-dashboard", "加入 PDF 专属画布", this.lmbCreateDirectCanvasExcerpt);
+      makeAction("panel-right-open", "创建简洁摘录到 PDF 侧栏", this.lmbCreateQuickExcerpt);
+    }
+    chip.setAttribute("draggable", this.isMobile ? "false" : "true");
     chip.style.left = Math.min(x + 12, doc.defaultView.innerWidth - 240) + "px";
     chip.style.top = (y + 16) + "px";
     doc.body.appendChild(chip);
@@ -3487,11 +5286,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     /* v0.16.6 P1-1：按下 chip = 用户明确要拖 → 这一刻才启动截图（详见 onDocMouseUp 的注释）。
      *   只挂监听不干活，成本可忽略；截图失败则 info.img 保持 undefined → 降级纯文字摘录。 */
-    const armImage = () => this._armPendingImage(info);
-    chip.addEventListener("mousedown", armImage);
-    chip.addEventListener("touchstart", armImage, { passive: true });
+    // Desktop drag needs the image prepared before dragstart. Mobile actions await
+    // capture themselves, so prefetching on touchstart would create duplicate files.
+    if (!this.isMobile) {
+      const armImage = () => this._armPendingImage(info);
+      chip.addEventListener("mousedown", armImage);
+    }
 
     chip.addEventListener("dragstart", (e) => {
+      if (this.isMobile) { e.preventDefault(); return; }
       // Bugfix(严重回归)：守卫必须限定图片路径。文字选区的 info 没有 attachmentName 字段，
       // 无条件判断把所有文字拖拽在 dragstart 就 preventDefault 掐死（v0.2.0 引入图片截图时误伤，
       // 图片两条路径都是 await 截图完成后才 showChip，此守卫对图片仅剩"未完成"兜底意义）。
@@ -3618,6 +5421,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         continue;
       }
       let changed = false;
+      const movedRoots = moved.map((n) => {
+        const prev = lastPos.get(n.id);
+        return { id: n.id, dx: n.x - prev.x, dy: n.y - prev.y };
+      });
       for (const nn of moved) {
         const others = nodes.filter((n) => n.id !== nn.id && n.type !== "group");
         const hit = lmbPickDropParent(nn, others);
@@ -3665,6 +5472,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         console.log("[lmb] 即时通道（移动）: ", parent.id.slice(0, 8), "->", nn.id.slice(0, 8),
           "(" + ends.fromSide + "→" + ends.toSide + ", 组" + group.length + ")");
       }
+      if (this.settings && this.settings.moveDescendantsWithParent === true) {
+        // 父卡可能在上面的自动挂靠中再次被排布；按最终位置重算 delta，后代保持原相对位置。
+        for (const move of movedRoots) {
+          const root = nodes.find((n) => n && n.id === move.id);
+          const prev = lastPos.get(move.id);
+          if (root && prev) { move.dx = root.x - prev.x; move.dy = root.y - prev.y; }
+        }
+        const count = lmbMoveDescendants(nodes, data.edges, movedRoots);
+        if (count) { changed = true; console.log("[lmb] 子卡联动移动:", count, "张"); }
+      }
       if (changed) {
         try {
           canvasObj.setData(data);
@@ -3687,6 +5504,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 /* 32-plugin-canvas —— 画布处理/尺寸自适应/自愈（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
+
+  async lmbApplyTreeLayout(direction) {
+    const ctx = this.activeCanvasContext();
+    if (!ctx) { new Notice("请先打开一个 Canvas"); return; }
+    const rd = await this._lmbReadCanvasData(ctx.file);
+    if (!rd || !rd.data) return;
+    const moved = lmbLayoutTree(rd.data.nodes || [], rd.data.edges || [], direction);
+    if (!moved) { new Notice("没有可布局的卡片"); return; }
+    await this._lmbWriteCanvasData(ctx.file, rd.data, rd.memCanvas, rd.raw);
+    new Notice(`已按${direction === "down" ? "自上而下" : "从左到右"}树形布局 ${moved} 个根节点`);
+  },
 
   scheduleCanvasSync(file) {
     const old = this.syncTimers.get(file.path);
@@ -3803,6 +5631,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     let changed = false;
     let store = this.autoSize.get(cf.path);
     if (!store) { store = new Map(); this.autoSize.set(cf.path, store); }
+
+    // 新拖入的摘录卡统一宽度。canvasPositions 是持久化的“已见节点”账本，因此不会
+    // 覆盖用户后来手动调整过的存量卡宽度。
+    const lastPosForWidth = this.canvasPositions.get(cf.path) || new Map();
+    const excerptWidth = Math.max(320, Math.min(800, Number(this.settings.excerptCardWidth) || 560));
+    for (const node of nodes) {
+      if (node.type !== "text" || !node.text || !EX_ID_RE.test(node.text)) continue;
+      if (lastPosForWidth.has(node.id)) continue;
+      if (Math.abs((Number(node.width) || 0) - excerptWidth) >= 1) {
+        node.width = excerptWidth;
+        changed = true;
+      }
+    }
 
     /* v0.8.2：新出现的摘录卡自动挂一个「空的补充描述框」。
      *   放在 fitNode 之前，这样尺寸估算会基于「已加框」的文本一次算准，不用二次修正。
@@ -4033,6 +5874,20 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           "(" + ends.fromSide + "→" + ends.toSide + ", 相交" + Math.round(hit.ratio * 100) + "%, 组" + group.length + ")");
       }
 
+      if (this.settings && this.settings.moveDescendantsWithParent === true) {
+        const movements = movedOrNew.filter((n) => lastPos.has(n.id)).map((n) => {
+          const prev = lastPos.get(n.id);
+          return { id: n.id, dx: n.x - prev.x, dy: n.y - prev.y };
+        });
+        const count = lmbMoveDescendants(nodes, data.edges, movements);
+        if (count) {
+          changed = true;
+          this.canvasPositions.set(cf.path, new Map(nodes.filter((n) => n && n.type !== "group")
+            .map((n) => [n.id, { x: n.x, y: n.y, width: n.width || 0, height: n.height || 0 }])));
+          console.log("[lmb] 文件通道子卡联动移动:", count, "张");
+        }
+      }
+
       if (changed) {
         // 持续持久化 sidecar 的兜底补登条目（含本次循环内所有 recenter/reside 补的）
         this.autoEdges.set(cf.path, sidecar2);
@@ -4057,12 +5912,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       seenIds.add(id);
       // v0.8.0：除非设置里明确要同步，否则补充描述不进摘录文档（保持摘录文档是「原文」的镜像）
       // v0.16.6 P1-4：传 note 类型白名单 —— 旧版会把用户自有的 [!warning]/[!quote] 整段删掉
+      // Canvas 的 lmb-comment 只是 Markdown 真相备注的显示镜像，绝不能再写回
+      // 摘录正文，否则会形成 `[!lmb-comment]` 源码 + lmb-note 备注的双份污染。
+      const withoutMirrorComment = lmbSplitComment(node.text).body;
       const srcText = this.settings.noteIntoSync
-        ? node.text
-        : lmbStripNote(node.text, this.settings.noteCalloutType || "ppd-note");
-      const body = srcText
+        ? withoutMirrorComment
+        : lmbStripNote(withoutMirrorComment, this.settings.noteCalloutType || "ppd-note");
+      const body = lmbUnwrapExcerptCard(srcText)
         .split("\n")
-        .filter((l) => !/^\s*\^ex-[0-9a-z]{4,8}\s*$/.test(l))
+        .filter((l) => !/^\s*\^ex-[0-9a-z]{4,16}\s*$/.test(l))
         // v0.11.3：lmb-view 是卡片上的视图切换按钮（UI 开关），不属于摘录内容，剥掉
         .filter((l) => !LMB_VIEW_CALLOUT_RE.test(l))
         .join("\n")
@@ -4162,11 +6020,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           if (!this._fitRetryImg) this._fitRetryImg = {};
           const k = cf.path;
           const cnt = (this._fitRetryImg[k] || 0) + 1;
-          if (cnt <= 3) {
+          if (cnt <= 6) {
             this._fitRetryImg[k] = cnt;
             setTimeout(() => {
               try { this._actualFitRetryForFile(cf).catch(() => {}); } catch (_) {}
-            }, 800 * cnt);
+            }, Math.min(2400, 500 * cnt));
             return;                       // 本轮不测（测了也是偏小值）
           }
           try { delete this._fitRetryImg[k]; } catch (_) {}   // 放弃：按现状测
@@ -4190,6 +6048,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       if (!data || !Array.isArray(data.nodes)) return;
       const sizeUpdates = new Map();
+      let unresolvedActual = false;
       for (const n of data.nodes) {
         if (n.type !== "text" || !n.text || !EX_ID_RE.test(n.text)) continue;
         const cached = store.get(n.id);
@@ -4199,7 +6058,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (cached && cached.hash === textHash && !cached.pendingActual
           && (outerWidth <= 0 || Math.abs((Number(cached.w) || 0) - outerWidth) < 2)) continue;
         const live = canvas.nodes.get ? canvas.nodes.get(n.id) : canvas.nodes[n.id];
-        if (!live) continue;
+        if (!live) { unresolvedActual = true; continue; }
         // v0.13.5：actual 可能拿不到（markdown 异步渲染还没 layout）—— 200ms 后多试一次
         //   仍拿不到就用 estimate（保证至少有值可写，否则 retry 永远静默失败）
         let actual = this.lmbFitNodeActual(live, store);
@@ -4207,6 +6066,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           await new Promise((r) => setTimeout(r, 200));
           actual = this.lmbFitNodeActual(live, store);
         }
+        if (!actual) unresolvedActual = true;
         if (actual && !actual.unchanged) {
           sizeUpdates.set(n.id, { width: Math.round(actual.w), height: Math.round(actual.h) });
         }
@@ -4246,6 +6106,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           await this.app.vault.adapter.write(cf.path, JSON.stringify(fresh, null, indent));
         }
         this.persistAutoSizeSoon();
+      }
+      // iPad 的 Markdown/图片布局可能晚于首轮 250+200ms。只要仍有待实测卡，继续
+      // 低频重试，成功后 pendingActual 会被清掉并自然停止，不再出现“时好时坏”。
+      if (unresolvedActual && !this._unloaded) {
+        if (!this._fitRetryActual) this._fitRetryActual = {};
+        const key = cf.path;
+        const count = (this._fitRetryActual[key] || 0) + 1;
+        if (count <= 6) {
+          this._fitRetryActual[key] = count;
+          setTimeout(() => {
+            try { this._actualFitRetryForFile(cf).catch(() => {}); } catch (_) {}
+          }, Math.min(2400, 400 * count));
+        } else delete this._fitRetryActual[key];
+      } else if (this._fitRetryActual) {
+        delete this._fitRetryActual[cf.path];
       }
     } catch (_) {}
   },
@@ -4400,7 +6275,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // 估算回退（节点未渲染或 DOM 拿不到）
     const prev = store.get(node.id);
     if (prev && prev.hash === hash) return null;
-    const size = this.estimateSizeFor(node.text);
+    const size = this.estimateSizeFor(node.text, { width: currentWidth });
+    size.w = currentWidth > 0 ? currentWidth : Math.max(320, Math.min(800,
+      Number(this.settings && this.settings.excerptCardWidth) || 560));
     // DOM/图片尚未就绪时只估算一次，并明确标记供延迟重测定点处理。
     store.set(node.id, { hash, w: size.w, h: size.h, pendingActual: true });
     this.persistAutoSizeSoon();
@@ -4502,11 +6379,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   /** 图片卡：按截图真实宽高比；文本卡：按行宽/行数估算；v0.11.3 双重卡：取文字/图片布局的较大高 */
-  estimateSizeFor(text) {
+  estimateSizeFor(text, opts) {
+    opts = opts || {};
     const em = text.match(/!\[\[([^\]|]+?)\]\]/);   // em[1] = 完整附件名（含 .webp）
     if (em) {
       const dims = this.imgDims.get(em[1]);
-      const w = 380;
+      const requestedWidth = Number(opts.width) || 0;
+      const w = requestedWidth > 0 ? Math.max(80, requestedWidth)
+        : Math.max(320, Math.min(800, Number(this.settings && this.settings.excerptCardWidth) || 560));
       // v0.11.3 双重卡判定：卡里同时有 embed 和 PDF 引用块行（文字+截图并存，
       //   靠 lmb-view 切换视图）。两种视图共用同一张卡 → 高取两者较大值，
       //   宽度固定不随切换变化（用户要求：切换内容显示方式时固定卡片宽度）。
@@ -4518,8 +6398,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           : 460;                                    // 尺寸档案缺失时的兜底
         // v0.16.6：note 类型白名单随设置走（estimateSizeFor 里的两处调用同源）
         const nt = (this.settings && this.settings.noteCalloutType) || "ppd-note";
-        const textH = this.estimateTextSize(lmbRenderedText(text, nt)).h;
-        return this.addNoteChrome({ w, h: Math.max(imgH, textH) }, text);
+        const textH = this.estimateTextSize(lmbRenderedText(text, nt), w).h;
+        // 同一时刻只显示一种视图，不能再取二者最大值，否则短文字视图会永久
+        // 保留图片高度。未指定时按默认文字视图估算。
+        const visibleH = opts.view === "image" ? imgH : textH;
+        return this.addCommentChrome(this.addNoteChrome({ w, h: visibleH }, text), text);
       }
       if (dims && dims.w > 0) {
         // 图片高（按卡片宽等比）+ 回跳引用行（约 2 行）+ 内边距
@@ -4532,7 +6415,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     //   addNoteChrome 加 ppd-note 高度，新增 addCommentChrome 加 lmb-comment 展开态高度
     return this.addCommentChrome(
       this.addNoteChrome(
-        this.estimateTextSize(lmbRenderedText(text, (this.settings && this.settings.noteCalloutType) || "ppd-note")),
+        this.estimateTextSize(lmbRenderedText(text, (this.settings && this.settings.noteCalloutType) || "ppd-note"), opts.width),
         text
       ),
       text
@@ -4572,7 +6455,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     return { w: size.w, h: Math.ceil(Math.min(2000, size.h + extra)) };
   },
 
-  estimateTextSize(text) {
+  estimateTextSize(text, widthOverride) {
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
     const meas = doc.createElement("span");
     meas.style.cssText = "position:fixed;left:-9999px;top:0;white-space:pre;visibility:hidden;" +
@@ -4589,7 +6472,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     const padX = 28, padY = 40, lineH = 25, quoteIndent = 22;
     const natural = Math.max.apply(null, lines.map((l) => l.w + (l.quote ? quoteIndent : 0)));
-    const w = Math.ceil(Math.min(560, Math.max(260, natural + padX)));
+    const forced = Number(widthOverride) || 0;
+    const w = forced > 0 ? Math.max(80, forced)
+      : Math.ceil(Math.min(560, Math.max(260, natural + padX)));
     const innerW = Math.max(80, w - padX - quoteIndent);
     let h = padY;
     for (const l of lines) {
@@ -4616,6 +6501,218 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 /* 33-plugin-note-comment —— 补充描述 + 独立评论（命令/点击编辑/批量）（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
+
+  /** Unified color source: every surface reads the same per-excerpt setting. */
+  lmbChooseExcerptColor(exId, anchorEl) {
+    if (!exId) return;
+    document.querySelectorAll(".lmb-color-palette").forEach((el) => el.remove());
+    const palette = document.createElement("div");
+    palette.className = "lmb-color-palette";
+    const colors = [
+      ["红", "#e85d5d"], ["橙", "#ec9338"], ["黄", "#d9b72c"], ["绿", "#65c692"],
+      ["蓝", "#5794e8"], ["靛", "#6e78d9"], ["紫", "#ae70d3"]
+    ];
+    const apply = async (hex) => {
+      this.settings.excerptColors = this.settings.excerptColors || {};
+      this.settings.excerptColors[exId] = hex;
+      await this.saveSettings(); palette.remove();
+      this.lmbRefreshAllMarks(); this.lmbSchedulePdfSidebarRefresh(0);
+      document.querySelectorAll('.lmb-excerpt-id[data-lmb-ex="' + exId + '"]').forEach((marker) => this.lmbApplyExcerptColorDom(marker.closest('.callout')));
+    };
+    for (const [name, hex] of colors) {
+      const b = document.createElement("button"); b.type = "button"; b.title = name; b.setAttribute("aria-label", name);
+      b.style.background = hex; b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); apply(hex); };
+      palette.appendChild(b);
+    }
+    document.body.appendChild(palette);
+    const r = anchorEl && anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : null;
+    const pr = palette.getBoundingClientRect();
+    const vw = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+    const vh = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+    let left = r ? r.right + 6 : (vw - pr.width) / 2;
+    // 右侧放不下时改放锚点左侧；仍放不下才钳制，避免 iPad 侧栏里的色板飞出屏幕。
+    if (left + pr.width > vw - 8 && r) left = r.left - pr.width - 6;
+    left = Math.max(8, Math.min(vw - pr.width - 8, left));
+    const top = Math.max(8, Math.min(vh - pr.height - 8, r ? r.top - 2 : (vh - pr.height) / 2));
+    palette.style.left = Math.round(left) + "px";
+    palette.style.top = Math.round(top) + "px";
+    setTimeout(() => document.addEventListener("pointerdown", function close(ev) {
+      if (!palette.contains(ev.target) && ev.target !== anchorEl) { palette.remove(); document.removeEventListener("pointerdown", close, true); }
+    }, true), 0);
+  },
+
+  lmbApplyExcerptColorDom(card) {
+    try {
+      if (!card || !card.querySelector) return;
+      const marker = card.querySelector('.lmb-excerpt-id[data-lmb-ex]');
+      const exId = marker && marker.getAttribute("data-lmb-ex");
+      const hex = exId && this.settings && this.settings.excerptColors && this.settings.excerptColors[exId];
+      if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return;
+      const n = hex.slice(1); card.style.setProperty("--callout-color", parseInt(n.slice(0,2),16) + "," + parseInt(n.slice(2,4),16) + "," + parseInt(n.slice(4,6),16));
+    } catch (_) {}
+  },
+
+  _lmbKeepCardWidth(node) {
+    return Math.max(80, Number(node && node.width)
+      || Math.max(320, Math.min(800, Number(this.settings && this.settings.excerptCardWidth) || 560)));
+  },
+
+  async _lmbAutoFitCard(file, nodeId, fallbackNode, fitOpts) {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    let live = null;
+    try {
+      const leaf = (this.app.workspace.getLeavesOfType("canvas") || [])
+        .find((l) => l && l.view && l.view.file && file && l.view.file.path === file.path);
+      const canvas = leaf && leaf.view && leaf.view.canvas;
+      live = canvas && canvas.nodes
+        ? (typeof canvas.nodes.get === "function" ? canvas.nodes.get(nodeId) : canvas.nodes[nodeId]) : null;
+    } catch (_) {}
+    const key = file && file.path ? file.path + "::" + nodeId : "";
+    const ex = String((live || fallbackNode) && (live || fallbackNode).text || "").match(EX_ID_RE);
+    const exId = ex ? ex[0].slice(1) : "";
+    const savedView = (exId && this.settings && this.settings.excerptViews
+      && this.settings.excerptViews[exId])
+      || (key && this.settings && this.settings.nodeViews ? this.settings.nodeViews[key] : null);
+    return this.lmbFitNodeById(file, nodeId, live || fallbackNode,
+      Object.assign({ quiet: true, allowViewShrink: true, view: savedView || "text" }, fitOpts || {}));
+  },
+
+  _lmbExcerptNoteState(raw, exId) {
+    const lines = String(raw || "").split(/\r?\n/);
+    const anchor = lines.findIndex((line) => line.includes("^" + exId));
+    if (anchor < 0) return null;
+    let begin = -1, end = -1;
+    for (let i = anchor - 1; i >= 0; i--) {
+      if (lines[i].includes("LMB-NOTE:END")) { end = i; continue; }
+      if (lines[i].includes("LMB-NOTE:BEGIN")) { begin = i; break; }
+      if (/\[!lmb-excerpt\]/i.test(lines[i])) break;
+    }
+    let value = "";
+    if (begin >= 0 && end > begin) {
+      value = lines.slice(begin + 1, end)
+        .filter((line) => !/\[!lmb-note\]/i.test(line))
+        .map((line) => line.replace(/^\s*(?:>\s*){2}/, "")).join("\n").trim();
+    }
+    return { lines, anchor, begin, end, value };
+  },
+
+  async lmbSaveExcerptNote(file, exId, value) {
+    if (!(file instanceof TFile) || !exId) return false;
+    let changed = false;
+    await this.app.vault.process(file, (raw) => {
+      const state = this._lmbExcerptNoteState(raw, exId);
+      if (!state) return raw;
+      const anchorLine = state.lines[state.anchor];
+      const prefix = (anchorLine.match(/^(\s*(?:>\s*)*)\^/) || ["", "> "])[1] || "> ";
+      const note = [];
+      if (String(value || "").trim()) {
+        // 摘录本身已经是一层引用块；内部的 note callout 必须再嵌套一层 `> `。
+        // 少这一层时 Obsidian 会把 `[!lmb-note]` 当普通文本显示。
+        // Callout 标题必须是区块第一行；隐藏标记放在标题之后，否则部分 Obsidian
+        // 版本会把 `[!lmb-note]` 当作普通文字。
+        note.push(prefix + "> [!lmb-note]", prefix + "> <!-- LMB-NOTE:BEGIN -->");
+        for (const line of String(value).replace(/\r\n/g, "\n").split("\n")) note.push(prefix + "> " + line);
+        note.push(prefix + "> <!-- LMB-NOTE:END -->");
+      }
+      const from = state.begin >= 0
+        ? (state.begin > 0 && /\[!lmb-note\]/i.test(state.lines[state.begin - 1]) ? state.begin - 1 : state.begin)
+        : state.anchor;
+      const to = state.end >= 0 ? state.end + 1 : state.anchor;
+      state.lines.splice(from, to - from, ...note);
+      changed = true; return state.lines.join("\n");
+    });
+    return changed;
+  },
+
+  async lmbEnhanceExcerptCallouts(el, ctx) {
+    const cards = [];
+    if (el.matches && el.matches('.callout[data-callout="lmb-excerpt"]')) cards.push(el);
+    if (el.querySelectorAll) cards.push(...el.querySelectorAll('.callout[data-callout="lmb-excerpt"]'));
+    for (const card of cards) {
+      if (card.querySelector(".lmb-excerpt-note-action")) continue;
+      const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath || "");
+      if (!(file instanceof TFile)) continue;
+      // 新卡直接带稳定 ID；存量卡则从 postprocessor 的区块信息兼容识别。
+      // getSectionInfo(card) 在部分 Live Preview 版本会返回 null，因此也检查宿主 el。
+      const marker = card.querySelector(".lmb-excerpt-id[data-lmb-ex]");
+      let exId = marker && marker.getAttribute("data-lmb-ex");
+      let raw = "";
+      if (!exId && ctx.getSectionInfo) {
+        for (const target of [card, el, card.parentElement]) {
+          if (!target) continue;
+          const info = ctx.getSectionInfo(target);
+          if (info && info.text) { raw = String(info.text); const ex = EX_ID_RE.exec(raw); if (ex) { exId = ex[0].slice(1); break; } }
+        }
+      }
+      if (!exId) continue;
+      this.lmbApplyExcerptColorDom(card);
+      if (!raw) raw = await this.app.vault.cachedRead(file);
+      const state = this._lmbExcerptNoteState(raw, exId);
+      const content = card.querySelector(":scope > .callout-content") || card;
+
+      // 不同 Obsidian 版本对嵌套自定义 Callout 的解析略有差异。若它被降级成
+      // 普通 blockquote，移除错误的 DOM，并用 MarkdownRenderer 提供稳定兜底。
+      for (const nativeNote of Array.from(content.querySelectorAll('.callout[data-callout="lmb-note"]'))) nativeNote.remove();
+      for (const quote of Array.from(content.querySelectorAll("blockquote"))) {
+        if (/^\s*\[!lmb-note\]/i.test(quote.textContent || "")) quote.remove();
+      }
+      // 隐藏 span、被移除的嵌套 callout 以及空 Markdown 行可能留下有 margin 的空 p/
+      // blockquote。它们没有可见内容，却正是卡片顶部和区块之间大段留白的来源。
+      for (const child of Array.from(content.children)) {
+        if (child.classList && child.classList.contains("lmb-excerpt-note-live")) continue;
+        const hasVisibleMedia = !!child.querySelector("img,video,audio,canvas,svg,.callout");
+        const visibleText = String(child.textContent || "").trim();
+        const markerOnly = !!child.querySelector(".lmb-excerpt-id") && !visibleText;
+        if (markerOnly || (!visibleText && !hasVisibleMedia)) child.remove();
+      }
+      if (state && state.value) {
+        const live = content.createDiv({ cls: "lmb-excerpt-note-live" });
+        const body = live.createDiv({ cls: "lmb-excerpt-note-live-body markdown-rendered" });
+        try { await MarkdownRenderer.render(this.app, state.value, body, file.path, this); }
+        catch (_) { body.setText(state.value); }
+      }
+
+      // Markdown 双重摘录：默认显示文字，可在同一卡片中切换为截图。
+      const image = Array.from(content.querySelectorAll("img"))
+        .find((img) => !img.closest(".lmb-excerpt-note-live"));
+      const textQuote = Array.from(content.querySelectorAll("blockquote"))
+        .find((quote) => !quote.closest(".lmb-excerpt-note-live"));
+      let imageView = image && (image.closest("p") || image.closest(".internal-embed") || image.parentElement);
+      const isDual = !!(imageView && textQuote);
+      if (isDual) {
+        card.addClass("lmb-md-dual-excerpt");
+        textQuote.addClass("lmb-excerpt-text-view");
+        imageView.addClass("lmb-excerpt-image-view");
+        card.toggleClass("lmb-show-image", !!(this.settings.excerptViews
+          && this.settings.excerptViews[exId] === "image"));
+      }
+      const action = card.createDiv({ cls: "lmb-excerpt-note-action" });
+      const colorBtn = action.createEl("button", { text: "● 颜色", cls: "lmb-excerpt-color-action" });
+      colorBtn.onclick = () => this.lmbChooseExcerptColor(exId, colorBtn);
+      if (isDual) {
+        const showingImage = card.hasClass("lmb-show-image");
+        const viewBtn = action.createEl("button", {
+          text: showingImage ? "¶ 显示文字" : "▧ 显示图片", cls: "lmb-excerpt-view-toggle"
+        });
+        viewBtn.onclick = () => {
+          const showImage = !card.hasClass("lmb-show-image");
+          card.toggleClass("lmb-show-image", showImage);
+          viewBtn.setText(showImage ? "¶ 显示文字" : "▧ 显示图片");
+          this.settings.excerptViews = this.settings.excerptViews || {};
+          this.settings.excerptViews[exId] = showImage ? "image" : "text";
+          this.saveSettings().catch(() => {});
+        };
+      }
+      const btn = action.createEl("button", { text: state && state.value ? "✎ 编辑备注" : "＋ 追加备注" });
+      btn.onclick = () => new LMBExcerptNoteModal(this.app, {
+        title: "PDF 摘录备注", value: state ? state.value : "", sourcePath: file.path,
+        onSubmit: async (value) => {
+          const ok = await this.lmbSaveExcerptNote(file, exId, value);
+          new Notice(ok ? "摘录笔记已保存" : "未找到对应摘录，未修改文档");
+        }
+      }).open();
+    }
+  },
 
   /* ==================== v0.8.0：卡片补充描述（note） ==================== */
 
@@ -4648,7 +6745,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         allowEmpty: true
       });
       const size = this.estimateSizeFor(node.text);
-      node.width = Math.round(size.w);
+      node.width = Math.round(this._lmbKeepCardWidth(node));
       node.height = Math.round(size.h);
       let store = this.autoSize.get(ctx.file.path);
       if (!store) { store = new Map(); this.autoSize.set(ctx.file.path, store); }
@@ -4681,7 +6778,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (lmbSplitComment(node.text).hasComment) continue;     // 已有评论 → 跳过
       node.text = lmbJoinComment(node.text, "", { allowEmpty: true });
       const size = this.estimateSizeFor(node.text);
-      node.width = Math.round(size.w);
+      node.width = Math.round(this._lmbKeepCardWidth(node));
       node.height = Math.round(size.h);
       let store = this.autoSize.get(ctx.file.path);
       if (!store) { store = new Map(); this.autoSize.set(ctx.file.path, store); }
@@ -4697,6 +6794,58 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== v0.11.0：独立评论（批注评论底栏） ==================== */
 
+  _lmbCanonicalEntryForExcerpt(exId) {
+    if (!exId || !this.excerptIndex) return null;
+    for (const entries of this.excerptIndex.values()) {
+      const hit = (entries || []).find((entry) => entry && entry.exId === exId && entry.sourceMd);
+      if (hit) return hit;
+    }
+    return null;
+  },
+
+  /** 把某个摘录 Markdown 中的备注镜像到已关联的 Canvas 卡片。Markdown 永远是准值。 */
+  async lmbMirrorMdNotesToCanvas(mdFile, raw, entries) {
+    if (!mdFile || !Array.isArray(entries) || !this.excerptCanvasIndex) return;
+    const grouped = new Map();
+    for (const entry of entries) {
+      if (!entry || !entry.exId || entry.sourceMd !== mdFile.path) continue;
+      const loc = this.excerptCanvasIndex.get(entry.exId);
+      if (!loc || !loc.canvasPath || !loc.nodeId) continue;
+      if (!grouped.has(loc.canvasPath)) grouped.set(loc.canvasPath, []);
+      grouped.get(loc.canvasPath).push({ nodeId: loc.nodeId, exId: entry.exId,
+        note: this._lmbFindSidebarNote(raw, entry.exId) || "" });
+    }
+    if (!grouped.size) return;
+    if (!this._lmbCanvasNoteMirrorBusy) this._lmbCanvasNoteMirrorBusy = new Set();
+    for (const [canvasPath, updates] of grouped) {
+      if (this._lmbCanvasNoteMirrorBusy.has(canvasPath)) continue;
+      const canvasFile = this.app.vault.getAbstractFileByPath(canvasPath);
+      if (!(canvasFile instanceof TFile)) continue;
+      this._lmbCanvasNoteMirrorBusy.add(canvasPath);
+      try {
+        const rd = await this._lmbReadCanvasData(canvasFile);
+        if (!rd) continue;
+        const changed = [];
+        for (const update of updates) {
+          const node = (rd.data.nodes || []).find((n) => n.id === update.nodeId && n.type === "text");
+          if (!node) continue;
+          const cur = lmbSplitComment(node.text || "");
+          if (String(cur.comment || "").trim() === String(update.note || "").trim()
+            && cur.hasComment === !!String(update.note || "").trim()) continue;
+          node.text = lmbJoinComment(cur.body, update.note, { allowEmpty: false });
+          const size = this.estimateSizeFor(node.text, { width: this._lmbKeepCardWidth(node),
+            view: (this.settings.nodeViews || {})[canvasFile.path + "::" + node.id] || "text" });
+          node.width = Math.round(this._lmbKeepCardWidth(node)); node.height = Math.round(size.h);
+          changed.push(node);
+        }
+        if (!changed.length) continue;
+        await this._lmbWriteCanvasData(canvasFile, rd.data, rd.memCanvas, rd.raw);
+        for (const node of changed) await this._lmbAutoFitCard(canvasFile, node.id, node);
+      } catch (err) { console.warn("[lmb] mirror md note to canvas failed:", canvasPath, err); }
+      finally { this._lmbCanvasNoteMirrorBusy.delete(canvasPath); }
+    }
+  },
+
   /**
    * 把评论写进指定节点。commentText 为空串 = 移除评论栏。
    * 结构：评论 callout 永远追加在卡片文本最末（补充描述之后），渲染成底栏。
@@ -4711,11 +6860,23 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!node) return { ok: false, msg: "找不到该卡片（可能已被删除）" };
     if (node.type !== "text") return { ok: false, msg: "只有文本卡片支持评论" };
 
+    // 摘录卡的评论就是统一“备注”。必须先写 Markdown 真相源；写入失败时拒绝
+    // 只改 Canvas，以免三端产生两个不同版本。
+    const exMatch = String(node.text || "").match(EX_ID_RE);
+    if (exMatch) {
+      const exId = exMatch[0].slice(1), entry = this._lmbCanonicalEntryForExcerpt(exId);
+      const mdFile = entry && this.app.vault.getAbstractFileByPath(entry.sourceMd);
+      if (!(mdFile instanceof TFile)) return { ok: false, msg: "找不到该摘录的 Markdown 文档，未保存备注" };
+      const saved = await this.lmbSaveExcerptNote(mdFile, exId, commentText);
+      if (!saved) return { ok: false, msg: "无法写入 Markdown 摘录备注，未修改 Canvas" };
+    }
+
     const cur = lmbSplitComment(node.text || "");
     node.text = lmbJoinComment(cur.body, commentText, { allowEmpty: false });
 
-    const size = this.estimateSizeFor(node.text);
-    node.width = Math.round(size.w);
+    const size = this.estimateSizeFor(node.text, { width: this._lmbKeepCardWidth(node),
+      view: (this.settings.nodeViews || {})[file.path + "::" + node.id] || "text" });
+    node.width = Math.round(this._lmbKeepCardWidth(node));
     node.height = Math.round(size.h);
     if (Array.isArray(data.edges) && data.edges.length) {
       lmbRecenterNode(node, data.nodes || [], data.edges, this.autoEdges.get(file.path) || new Set());
@@ -4726,6 +6887,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     await this._lmbWriteCanvasData(file, data, rd.memCanvas, rd.raw);
     this.persistAutoSizeSoon();
+    await this._lmbAutoFitCard(file, node.id, node);
+    this.lmbSchedulePdfSidebarRefresh(100);
     return { ok: true, msg: "" };
   },
 
@@ -4951,7 +7114,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     // 补充描述会改变卡片高度 → 重算并同步档案
     const size = this.estimateSizeFor(node.text);
-    node.width = Math.round(size.w);
+    node.width = Math.round(this._lmbKeepCardWidth(node));
     node.height = Math.round(size.h);
     // v0.11.0：高度变了 → 组内重新居中（中心保持在父卡横/纵轴上）
     if (Array.isArray(data.edges) && data.edges.length) {
@@ -5007,7 +7170,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /**
    * 摘录文档写入（<PDF名>-摘录.md）—— v0.4.0 树形版。
-   * 已知边界（保留，不解决）：整文件重写，用户对摘录 md 的手工修改会被覆盖。
+   * v0.18：仅更新 LMB:BEGIN/END 受控区域；区域外的用户补充永不覆盖。
    * 结构：frontmatter（PDF / canvas / updated）+ 树形摘录：
    *   - canvas 连线（含自动父子 + 用户手连）导出 parentOf → 子摘录以嵌套引用块
      *   （"> > 正文"）缩进在父摘录之下，大纲/阅读视图直接呈现层级；
@@ -5021,6 +7184,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const pdfBase = pdfPath.split("/").pop().replace(/\.pdf$/i, "");
       const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
       const mdPath = normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      // Markdown 是备注真相源。重建受控摘录区之前先读取现有备注，稍后按 exId
+      // 原样嵌回，避免 Canvas 同步正文时把用户在 MD/PDF 侧栏写的备注覆盖掉。
+      const existing = this.app.vault.getAbstractFileByPath(mdPath);
+      let existingRaw = "";
+      if (existing instanceof TFile) {
+        try { existingRaw = await this.app.vault.read(existing); } catch (_) { existingRaw = ""; }
+      }
 
       // —— 补丁 B：P1-4 相关笔记预取（只算缓存中没有的 id；单个失败不阻断写入）——
       for (const en of entries) {
@@ -5047,16 +7217,38 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const rendered = new Set();
       let body = "";
       let lastKey = null;
+      const pageOrdinals = new Map();
+      const pageCounts = new Map();
+      for (const en of ordered) {
+        const key = en.page == null ? "none" : String(en.page);
+        const next = (pageCounts.get(key) || 0) + 1;
+        pageCounts.set(key, next); pageOrdinals.set(en.id, next);
+      }
       const emitEntry = (en, depth) => {
         const q = depth > 0 ? "> ".repeat(depth) : "";
+        const cardQ = q + "> ";
+        const ordinal = pageOrdinals.get(en.id) || 1;
+        const badge = ordinal <= 20
+          ? ["", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"][ordinal]
+          : "#" + ordinal;
+        const kind = /!\[\[[^\]]+\.(?:webp|png|jpe?g)/i.test(en.body) ? "图像" : "原文";
+        body += q + `> [!lmb-excerpt]+ ${badge} P.${en.page != null ? en.page : "?"} · ${kind}\n`;
+        body += cardQ + `<span class="lmb-excerpt-id" data-lmb-ex="${en.id}"></span>\n`;
         // v0.12.0：卡片引用行是 📖 收拢形态（lmbBookLink），导出到摘录 md 时
         //   还原成完整【文件名-P.N】——md 要能独立阅读、Recall 模糊也靠全名命中。
         for (const line of en.body.split("\n")) {
-          body += (q + lmbRestoreRefDisplayName(line, pdfBase, en.page)) + "\n";
+          body += (cardQ + lmbRestoreRefDisplayName(line, pdfBase, en.page)) + "\n";
         }
-        body += q + "^" + en.id + "\n";
+        const canonicalNote = existingRaw ? this._lmbFindSidebarNote(existingRaw, en.id) : "";
+        if (canonicalNote) {
+          body += cardQ + "> [!lmb-note]\n";
+          body += cardQ + "> <!-- LMB-NOTE:BEGIN -->\n";
+          for (const line of canonicalNote.replace(/\r\n/g, "\n").split("\n")) body += cardQ + "> " + line + "\n";
+          body += cardQ + "> <!-- LMB-NOTE:END -->\n";
+        }
+        body += cardQ + "^" + en.id + "\n";
         const rel = this.relatedCache ? this.relatedCache.get(en.id) : null;
-        if (rel && rel.length) body += q + "> 相关：" + rel.join(" · ") + "\n";
+        if (rel && rel.length) body += cardQ + "> 相关：" + rel.join(" · ") + "\n";
         body += "\n";
       };
       const dfs = (en, depth) => {
@@ -5080,20 +7272,27 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
 
       const head = "---\nPDF: \"[[" + pdfPath + "]]\"\ncanvas: \"[[" + cf.basename + "]]\"\n";
-      // 不含 updated 时间戳的基准内容（用于变化检测）
-      const bodyNoStamp = head + "---\n\n" + body;
+      const generated = "<!-- LMB:BEGIN -->\n" + body + "<!-- LMB:END -->";
 
-      const existing = this.app.vault.getAbstractFileByPath(mdPath);
       if (existing instanceof TFile) {
-        const cur = await this.app.vault.read(existing);
+        const cur = existingRaw || await this.app.vault.read(existing);
+        const oldRegion = cur.match(/<!--\s*LMB:BEGIN\s*-->[\s\S]*?<!--\s*LMB:END\s*-->/i);
+        // 首次迁移旧文档时完整保留旧正文；宁可暂时重复，也绝不吞掉用户手写内容。
+        const preserved = oldRegion
+          ? cur.slice((oldRegion.index || 0) + oldRegion[0].length).replace(/^\s+/, "")
+          : "## 我的补充\n\n<!-- LMB: 已保留迁移前文档内容，请按需整理。 -->\n\n"
+            + cur.replace(/^---[\s\S]*?---\s*/m, "").trim();
+        const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n"
+          + generated + "\n\n" + (preserved || "## 我的补充\n");
         const curNoStamp = cur.replace(/^updated: "[^"]*"\r?\n/m, "");
-        if (curNoStamp !== bodyNoStamp) {
-          const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n" + body;
+        const nextNoStamp = content.replace(/^updated: "[^"]*"\r?\n/m, "");
+        if (curNoStamp !== nextNoStamp) {
           await this.app.vault.process(existing, () => content);
           console.log("[lmb] excerpt doc updated:", mdPath);
         }
       } else {
-        const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n" + body;
+        const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n"
+          + generated + "\n\n## 我的补充\n";
         await this.app.vault.create(mdPath, content);
         new Notice("MarginBook: 已创建摘录文档 " + mdPath);
         console.log("[lmb] excerpt doc created:", mdPath);
@@ -5116,7 +7315,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 存在 → 直接打开；已打开的 md 视图复用（绝不重开第二个标签）。
    * 不存在 → 写入 frontmatter 模板（PDF/canvas 指回本 PDF），与 writeExcerptMd 的头格式一致。
    */
-  async lmbOpenOrCreateExcerptMd(pdfFile) {
+  /** Ensure the canonical excerpt document exists without stealing focus from a PDF. */
+  async lmbEnsureExcerptMdFile(pdfFile) {
     if (!pdfFile) return null;
     const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
     const name = pdfFile.basename + "-摘录.md";
@@ -5129,6 +7329,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       f = await this.app.vault.create(path, content);
       new Notice("MarginBook: 已创建摘录文档 " + name);
     }
+    return f;
+  },
+
+  async lmbOpenOrCreateExcerptMd(pdfFile) {
+    const f = await this.lmbEnsureExcerptMdFile(pdfFile);
+    if (!(f instanceof TFile)) return null;
     // 已打开 → 复用该标签
     try {
       const leaves = this.app.workspace.getLeavesOfType("markdown");
@@ -5223,12 +7429,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         for (const cf of canvases.slice(i, i + 10)) await this.lmbIndexCanvasFile(cf);
         if (i + 10 < canvases.length) await new Promise((r) => setTimeout(r, 10));
       }
+      // Canvas 索引此时已经完整，按 Markdown 准值做一次启动同步。
+      for (const md of cands) {
+        try {
+          const raw = await this.app.vault.cachedRead(md);
+          await this.lmbMirrorMdNotesToCanvas(md, raw, lmbParseExcerptDoc(raw, md.path));
+        } catch (_) {}
+      }
       const s = this.getIndexStats();
       if (this.settings && this.settings.debug) {
         console.log("[lmb] 摘录索引构建完成:", s, (Date.now() - t0) + "ms");
       }
       // P2：索引变了 → 重画标记
       this.lmbRefreshAllMarks();
+      // P2：索引变了 → 刷新 PDF 侧栏（若当前打开的是对应 PDF）
+      this.lmbSchedulePdfSidebarRefresh(120);
       return s;
     } catch (err) {
       console.error("[lmb] buildExcerptIndex error:", err);
@@ -5249,7 +7464,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       //   metadataCache 往往还没解析出 pdf 链接，旧闸门会把首次索引跳掉）
       if (!force && !this.lmbFileLinksPdf(f) && !this.indexMtime.has(f.path)) return;
       const prev = this.indexMtime.get(f.path);
-      if (prev != null && f.stat && f.stat.mtime <= prev) return;
+      if (!force && prev != null && f.stat && f.stat.mtime <= prev) return;
 
       this.dropFileFromIndex(f.path);
       const content = await this.app.vault.cachedRead(f);
@@ -5271,6 +7486,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (f.stat && f.stat.mtime != null) this.indexMtime.set(f.path, f.stat.mtime);
       // P2：索引变了 → 防抖重画（modify 会在每次敲键触发，所以必须防抖）
       this.lmbScheduleMarksRefresh(300);
+      this.lmbSchedulePdfSidebarRefresh(220);
+      // 用户直接在摘录 MD 中编辑备注时，立即反向镜像到关联 Canvas。
+      await this.lmbMirrorMdNotesToCanvas(f, content, entries);
     } catch (err) {
       console.warn("[lmb] reindexFile error:", f && f.path, err);
     }
@@ -5284,6 +7502,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (kept.length !== arr.length) this.excerptIndex.set(k, kept);
     }
     this.indexMtime.delete(mdPath);
+    this.lmbSchedulePdfSidebarRefresh(120);
   },
 
   /**
@@ -5303,7 +7522,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const nodes = data && Array.isArray(data.nodes) ? data.nodes : [];
       for (const n of nodes) {
         if (!n || n.type !== "text" || !n.text) continue;
-        const ids = n.text.match(/\^ex-[0-9a-z]{4,8}/g);
+        const ids = n.text.match(/\^ex-[0-9a-z]{4,16}/g);
         if (!ids) continue;
         for (const id of ids) {
           this.excerptCanvasIndex.set(id.slice(1), { canvasPath: cf.path, nodeId: n.id });
@@ -5421,8 +7640,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   ③ md 摘录文档条目 —— 按 ^ex-xxx 锚点定位块，只删该块
    *
    * 安全网（缺一不可）：
-   *   默认关闭开关 / 删除前写 .lmb-trash-log.md 备份 / 格式白名单 /
-   *   引用计数（>1 不删）/ Notice 汇总 / 全程 try-catch 不中断
+   *   默认关闭开关 / 删除前写入 .lmb-trash 可恢复副本 / 格式白名单 /
+   *   引用计数（检查失败即保留）/ Notice 汇总 / 全程 try-catch 不中断
    */
 
   /**
@@ -5507,6 +7726,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     for (const g of gone) {
       const meta = g.meta || {};
       try {
+        const trash = await this._lmbCreateTrashBundle(cf, g);
         logLines.push(`\n## ${stamp} · 卡片 ${String(g.id).slice(0, 8)}`);
         logLines.push(`- canvas: [[${cf.basename}]]`);
         if (meta.pdf) logLines.push(`- PDF: ${meta.pdf}`);
@@ -5524,7 +7744,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   → 附件永远「还有 1 处其它引用」→ 清理功能整体死锁（静默失效）。
         // ③ 清 md 摘录文档里的对应条目
         if (meta.exId && meta.pdf) {
-          const ok = await this._lmbRemoveExcerptFromMd(cf, meta);
+          const ok = await this._lmbRemoveExcerptFromMd(cf, meta, trash);
           if (ok) { removedMd++; logLines.push(`- ✅ 摘录 md 条目已移除`); }
           else { skipped++; logLines.push(`- md 条目未找到，跳过（无妨）`); }
         }
@@ -5550,9 +7770,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
                 logLines.push(`- 附件跳过：vault 内还有 ${refs} 处其它引用（删了会导致 broken image）`);
                 skipped++;
               } else {
-                await this.app.vault.delete(f);
+                const target = normalizePath(trash.dir + "/" + f.name);
+                await this.app.vault.rename(f, target);
                 removedAttach++;
-                logLines.push(`- ✅ 附件已删除`);
+                logLines.push(`- ✅ 附件已移入 [[${target}]]`);
               }
             }
           }
@@ -5577,7 +7798,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       } catch (_) { /* 日志写失败不影响清理结果 */ }
       // Notice 汇总：让用户看得见清理了什么
       try {
-        new Notice(`已清理 ${gone.length} 张已删除卡片：附件 ${removedAttach} 个 · md 条目 ${removedMd} 条${skipped ? ` · 跳过 ${skipped} 项` : ""}（详见 .lmb-trash-log.md）`, 4000);
+        new Notice(`已清理 ${gone.length} 张已删除卡片：附件 ${removedAttach} 个 · md 条目 ${removedMd} 条${skipped ? ` · 跳过 ${skipped} 项` : ""}（可从 .lmb-trash 恢复）`, 4000);
       } catch (_) {}
     }
     return { removedAttach, removedMd, skipped };
@@ -5592,6 +7813,32 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { return null; }
   },
 
+  /** 为一次卡片级联清理建立独立、不会覆盖旧备份的回收目录。 */
+  async _lmbCreateTrashBundle(cf, gone) {
+    const now = new Date();
+    const day = now.toISOString().slice(0, 10);
+    const clock = now.toISOString().slice(11, 19).replace(/:/g, "");
+    const safeId = String((gone.meta && gone.meta.exId) || gone.id || "excerpt").replace(/[^a-z0-9_-]/gi, "-");
+    const baseDir = normalizePath(`.lmb-trash/${day}/${safeId}-${clock}-${String(gone.id || "").slice(0, 8)}`);
+    const adapter = this.app.vault.adapter;
+    for (const folder of [".lmb-trash", `.lmb-trash/${day}`]) {
+      if (!(await adapter.exists(folder))) await adapter.mkdir(folder);
+    }
+    let dir = baseDir;
+    for (let suffix = 2; await adapter.exists(dir); suffix++) dir = baseDir + "-" + suffix;
+    await adapter.mkdir(dir);
+    const record = {
+      deletedAt: now.toISOString(),
+      canvasPath: cf.path,
+      canvasNodeId: gone.id,
+      excerptId: (gone.meta && gone.meta.exId) || null,
+      pdfPath: (gone.meta && gone.meta.pdf) || null,
+      attachmentPath: (gone.meta && gone.meta.attach) || null
+    };
+    await adapter.write(normalizePath(dir + "/metadata.json"), JSON.stringify(record, null, 2));
+    return { dir, record };
+  },
+
   /** 统计 vault 内除目标画布外，还有多少处引用了这个附件
    *  @param {string} name 附件路径
    *  @param {TFile} [cf] 源画布文件 —— v0.16.6 P1-5：必须传入并在统计时排除。
@@ -5600,19 +7847,23 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *    refs ≥ 1 → 走「跳过」分支 → 清理静默失效（卡片删了，截图永远留着）。 */
   async _lmbCountAttachmentRefs(name, cf) {
     let count = 0;
-    try {
-      const base = name.split("/").pop().replace(/\.(webp|png|jpe?g)$/i, "");
-      const srcPath = cf && cf.path ? cf.path : null;
-      const mdFiles = (this.app.vault.getFiles ? this.app.vault.getFiles() : [])
-        .filter((f) => f.extension === "md" || f.extension === "canvas");
-      for (const f of mdFiles) {
-        if (srcPath && f.path === srcPath) continue;
-        if (f.path === ".lmb-trash-log.md") continue;   // 日志里的提及不算引用
-        let txt = "";
-        try { txt = await this.app.vault.cachedRead(f); } catch (_) { continue; }
-        if (txt && txt.indexOf(base) >= 0) count++;
+    const base = name.split("/").pop().replace(/\.(webp|png|jpe?g)$/i, "");
+    const srcPath = cf && cf.path ? cf.path : null;
+    if (!this.app.vault.getFiles || !this.app.vault.cachedRead) {
+      throw new Error("附件引用检查不可用；为安全起见已保留附件");
+    }
+    const mdFiles = this.app.vault.getFiles()
+      .filter((f) => f.extension === "md" || f.extension === "canvas");
+    for (const f of mdFiles) {
+      if (srcPath && f.path === srcPath) continue;
+      if (f.path === ".lmb-trash-log.md" || f.path.startsWith(".lmb-trash/")) continue;
+      let txt;
+      try { txt = await this.app.vault.cachedRead(f); }
+      catch (err) {
+        throw new Error(`无法检查 ${f.path} 的附件引用；为安全起见已保留附件`, { cause: err });
       }
-    } catch (_) { /* 统计失败按 0 处理（= 可删） */ }
+      if (txt && txt.indexOf(base) >= 0) count++;
+    }
     return count;
   },
 
@@ -5621,17 +7872,20 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 策略：按空行切块，找到含锚点行的块删掉；找不到锚点就不动（保守，防误删手写内容）。
    * @returns {Promise<boolean>} 是否真的删了
    */
-  async _lmbRemoveExcerptFromMd(cf, meta) {
+  async _lmbRemoveExcerptFromMd(cf, meta, trash) {
     try {
       const pdfBase = (meta.pdf || "").split("/").pop().replace(/\.pdf$/i, "");
-      if (!pdfBase) return false;
-      const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
-      const mdPath = normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      if (!pdfBase && !meta.sourceMd) return false;
+      const folder = cf && cf.parent && cf.parent.path ? cf.parent.path : "/";
+      const mdPath = meta.sourceMd
+        ? normalizePath(meta.sourceMd)
+        : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
       let raw = null;
       try { raw = await this.app.vault.adapter.read(mdPath); } catch (_) { return false; }
       if (!raw) return false;
 
-      // 按「锚点属于哪个条目」定位：以空行分块，找含 ^exId 的块
+      // 按「锚点属于哪个条目」定位。不能再用空行分块：MANUAL-EXCERPTS
+      // 中的相邻摘录允许没有空行，按空行会把整段手动摘录一并删掉。
       const anchor = "^" + meta.exId;
       const lines = raw.split("\n");
       // 找锚点行下标
@@ -5644,18 +7898,40 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       if (aIdx < 0) return false;
 
-      // 向上找到该块起点（上一个空行之后）
-      let start = aIdx;
-      while (start > 0 && lines[start - 1].trim() !== "") start--;
-      // 向下找到该块终点（下一个空行；含后续「相关：」行）
-      let end = aIdx;
-      while (end + 1 < lines.length && lines[end + 1].trim() !== "") end++;
-      // 连一个空行一起删（保持块间分隔）
-      if (end + 1 < lines.length && lines[end + 1].trim() === "") end++;
+      const unwrap = (line) => String(line || "").replace(/^\s*(?:>\s*)+/, "").trim();
+      const isEntryStart = (line) => {
+        const text = unwrap(line);
+        return /^\[!lmb-excerpt\]/i.test(text) || /^\[\[[^\]]+\.pdf#page=/i.test(text);
+      };
+      const isRegionBoundary = (line) => /<!--\s*LMB:(?:BEGIN|END|MANUAL-EXCERPTS:BEGIN|MANUAL-EXCERPTS:END)\s*-->/i.test(line || "");
 
-      const removed = lines.slice(start, end + 1);
+      // 优先取外层 lmb-excerpt callout；旧格式没有外层时才回退到 PDF 链接行。
+      let start = aIdx;
+      let fallbackStart = -1;
+      for (let i = aIdx; i >= 0; i--) {
+        if (isRegionBoundary(lines[i])) break;
+        if (!isEntryStart(lines[i])) continue;
+        if (/^\[!lmb-excerpt\]/i.test(unwrap(lines[i]))) { start = i; break; }
+        if (fallbackStart < 0) fallbackStart = i;
+      }
+      if (start === aIdx && fallbackStart >= 0) start = fallbackStart;
+
+      // 下一条摘录的开头就是当前条目的硬边界；不存在则止于受控区域边界。
+      let end = lines.length;
+      for (let i = aIdx + 1; i < lines.length; i++) {
+        if (isEntryStart(lines[i]) || isRegionBoundary(lines[i])) { end = i; break; }
+      }
+      // 只顺带移除条目后的空行，绝不跨越下一条摘录或区域标记。
+      while (end > start && lines[end - 1].trim() === "") end--;
+
+      const removed = lines.slice(start, end);
       if (!removed.length) return false;
-      const next = lines.slice(0, start).concat(lines.slice(end + 1)).join("\n");
+      if (!trash || !trash.dir) throw new Error("未建立可恢复回收目录，拒绝修改摘录文档");
+      await this.app.vault.adapter.write(
+        normalizePath(trash.dir + "/excerpt.md"),
+        removed.join("\n") + "\n"
+      );
+      const next = lines.slice(0, start).concat(lines.slice(end)).join("\n");
       // 原子写（v0.9.1 起的标准做法）
       await this.app.vault.adapter.write(mdPath, next);
       return true;
@@ -5704,7 +7980,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 口径必须与正向一致：divs = .textLayer 的**直接子元素**。
    * 失败返回 null（由调用方走降级）。
    */
-  lmbResolveSelectionRects(pageEl, selection) {
+  lmbResolveSelectionRects(pageEl, selection, expectedText, expectedRect) {
     try {
       if (!pageEl || !selection || selection.length !== 4) return null;
       const layer = pageEl.querySelector(".textLayer");
@@ -5733,9 +8009,103 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const r = document.createRange();
       r.setStart(s.node, s.offset);
       r.setEnd(e.node, e.offset);
+      // textLayer 的子元素序号会随 PDF.js 版本、字体解析或文档重载发生漂移。
+      // 漂移后的 selection 仍可能构造出合法 Range，但会落在完全无关的文字上；
+      // 有 target 时必须核对内容，错误坐标交给文字搜索兜底，不能将错就错。
+      const expected = this._lmbNormalizePdfMatchText(expectedText);
+      const actual = this._lmbNormalizePdfMatchText(r.toString());
+      if (expected && actual && actual !== expected
+        && !actual.includes(expected) && !expected.includes(actual)) return null;
       const rects = Array.from(r.getClientRects()).filter((x) => x.width > 0.5 && x.height > 0.5);
+      if (rects.length && expectedRect && expectedRect.length === 4) {
+        const pr = pageEl.getBoundingClientRect();
+        const left = Math.min(...rects.map((x) => x.left));
+        const top = Math.min(...rects.map((x) => x.top));
+        const right = Math.max(...rects.map((x) => x.right));
+        const bottom = Math.max(...rects.map((x) => x.bottom));
+        const actualX = 100 * ((left + right) / 2 - pr.left) / pr.width;
+        const actualY = 100 * ((top + bottom) / 2 - pr.top) / pr.height;
+        const savedX = Number(expectedRect[0]) + Number(expectedRect[2]) / 2;
+        const savedY = Number(expectedRect[1]) + Number(expectedRect[3]) / 2;
+        // 同一短语可能在一页出现多次，仅文字一致仍不足以证明身份；
+        // 保存时的页面百分比位置相差过大，也必须判定 selection 已漂移。
+        if (pr.width && pr.height && (Math.abs(actualX - savedX) > 8 || Math.abs(actualY - savedY) > 8)) return null;
+      }
       return rects.length ? rects : null;
     } catch (_) { return null; }
+  },
+
+  _lmbNormalizePdfMatchText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+  },
+
+  /** 在 textLayer 中查找文字，并保留归一化字符到真实文本节点偏移的映射。 */
+  _lmbFindPdfTextMatch(layer, text, hintRect, pageEl) {
+    try {
+      const needle = this._lmbNormalizePdfMatchText(text);
+      if (!layer || !needle) return null;
+      const doc = layer.ownerDocument;
+      let haystack = "";
+      const positions = [];
+      const appendSpace = (node, offset) => {
+        if (haystack && haystack.charAt(haystack.length - 1) !== " ") {
+          haystack += " "; positions.push({ node, offset });
+        }
+      };
+      for (const div of Array.from(layer.children || [])) {
+        const walker = doc.createTreeWalker(div, 4); // NodeFilter.SHOW_TEXT
+        const nodes = []; let node;
+        while ((node = walker.nextNode())) nodes.push(node);
+        if (!nodes.length) continue;
+        appendSpace(nodes[0], 0);
+        for (const textNode of nodes) {
+          const raw = String(textNode.textContent || "");
+          for (let i = 0; i < raw.length; i++) {
+            if (/\s/.test(raw.charAt(i))) appendSpace(textNode, i);
+            else { haystack += raw.charAt(i).toLowerCase(); positions.push({ node: textNode, offset: i }); }
+          }
+        }
+      }
+      let index = haystack.indexOf(needle);
+      if (index < 0) return null;
+      let best = null, bestDistance = Infinity;
+      while (index >= 0) {
+        const start = positions[index], last = positions[index + needle.length - 1];
+        const candidate = start && last ? { start, end: { node: last.node, offset: last.offset + 1 } } : null;
+        if (candidate && hintRect && hintRect.length === 4 && pageEl && doc.createRange) {
+          const range = doc.createRange();
+          range.setStart(candidate.start.node, candidate.start.offset);
+          range.setEnd(candidate.end.node, candidate.end.offset);
+          const rr = range.getBoundingClientRect();
+          const pr = pageEl.getBoundingClientRect();
+          const x = pr.width ? 100 * ((rr.left + rr.right) / 2 - pr.left) / pr.width : 0;
+          const y = pr.height ? 100 * ((rr.top + rr.bottom) / 2 - pr.top) / pr.height : 0;
+          const hx = Number(hintRect[0]) + Number(hintRect[2]) / 2;
+          const hy = Number(hintRect[1]) + Number(hintRect[3]) / 2;
+          const distance = (x - hx) * (x - hx) + (y - hy) * (y - hy);
+          if (distance < bestDistance) { best = candidate; bestDistance = distance; }
+        } else if (candidate) return candidate;
+        index = haystack.indexOf(needle, index + 1);
+      }
+      return best;
+    } catch (_) { return null; }
+  },
+
+  /** 旧摘录没有 rect 或 selection 已漂移时，按摘录文字在当前文本层中兜底定位。 */
+  lmbResolveEntryTextRects(pageEl, text, hintRect) {
+    try {
+      const layer = pageEl && pageEl.querySelector(".textLayer");
+      const target = String(text || "").replace(/\s+/g, " ").trim().slice(0, 160);
+      if (!layer || target.length < 2) return null;
+      const match = this._lmbFindPdfTextMatch(layer, target, hintRect, pageEl);
+      if (!match) return null;
+      const range = pageEl.ownerDocument.createRange();
+      range.setStart(match.start.node, match.start.offset);
+      range.setEnd(match.end.node, match.end.offset);
+      const rects = Array.from(range.getClientRects()).filter((r) => r.width > .5 && r.height > .5);
+      return rects.length ? rects : null;
+    } catch (_) {}
+    return null;
   },
 
   /** #rrggbb → rgba()，失败返回 null */
@@ -5755,6 +8125,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    */
   lmbMarkColor(entry) {
     try {
+      const explicit = entry && entry.exId && this.settings && this.settings.excerptColors && this.settings.excerptColors[entry.exId];
+      const direct = this.lmbHexToRgba(explicit, 0.42);
+      if (direct) return direct;
       const raw = this.settings && this.settings.colorMap;
       if (raw && entry && entry.tags && entry.tags.length) {
         const map = this.parseColorMap(raw);
@@ -5774,9 +8147,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       let pcts = null;
       if (entry && entry.selection) {
-        const rects = this.lmbResolveSelectionRects(pageEl, entry.selection);
+        const rects = this.lmbResolveSelectionRects(pageEl, entry.selection, entry.target || "", entry.rect);
         if (rects) pcts = this.lmbRectsToPercents(rects, pageEl);
-      } else if (entry && entry.rect && entry.rect.length === 4) {
+      }
+      if (!pcts && entry && (entry.target || entry.text)) {
+        const textRects = this.lmbResolveEntryTextRects(pageEl, entry.target || entry.text, entry.rect);
+        if (textRects) pcts = this.lmbRectsToPercents(textRects, pageEl);
+      }
+      // 文字 selection 索引因 PDF 文本层版本变化失效时，优先使用摘录时保存的
+      // 页面百分比矩形，不再画到页面左上角的降级细条。
+      if (!pcts && entry && entry.rect && entry.rect.length === 4) {
         // 截图摘录：rect 就是页面百分比，直接用——不需要 textLayer，
         // 虚拟化（未渲染）的页也能画。这是"截图摘录在 PDF 里没标记"的修复。
         const [l, t, w, h] = entry.rect;
@@ -5786,9 +8166,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const frag = document.createDocumentFragment();
       if (pcts && pcts.length) {
         const bg = this.lmbMarkColor(entry);
-        for (const p of pcts) {
+        for (let pi = 0; pi < pcts.length; pi++) {
+          const p = pcts[pi];
           const d = document.createElement("div");
           d.className = "lmb-mark";
+          // 只有“纯图片摘录”才允许使用区域边框。文字摘录即使自动附带了截图，
+          // 仍必须按文字语义显示为荧光笔底色，不能误判成图片后画虚线框。
+          const entryText = String(entry && entry.text || "").trim();
+          const imageOnly = !!(entry && entry.imagePath
+            && (!entryText || /^（(?:矩形图像选区|图片摘录|图片)）$/.test(entryText)));
+          const imageMark = !!(imageOnly && (!this.settings || this.settings.imageExcerptMarkStyle !== "highlight"));
+          if (imageMark) d.classList.add("lmb-mark-image");
+          if (pi === 0 && entry.pageOrdinal) d.setAttribute("data-no", String(entry.pageOrdinal));
           if (entry.exId) d.setAttribute("data-ex", entry.exId);
           // 反向跳转（P3 双击）需要知道来源摘录文档
           if (entry.sourceMd) d.setAttribute("data-src", entry.sourceMd);
@@ -5797,7 +8186,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           d.style.top = p.top + "%";
           d.style.width = p.width + "%";
           d.style.height = p.height + "%";
-          d.style.background = bg;
+          d.style.background = imageMark ? "transparent" : bg;
+          if (imageMark) d.style.borderColor = this.lmbHexToRgba((this.settings && this.settings.excerptColors && this.settings.excerptColors[entry.exId]) || "#65c692", 0.95) || "rgba(101,198,146,.95)";
           frag.appendChild(d);
         }
       } else {
@@ -5806,6 +8196,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         bar.className = "lmb-mark";
         bar.setAttribute("data-fallback", "1");
         if (entry && entry.exId) bar.setAttribute("data-ex", entry.exId);
+        if (entry && entry.pageOrdinal) bar.setAttribute("data-no", String(entry.pageOrdinal));
         if (entry && entry.sourceMd) bar.setAttribute("data-src", entry.sourceMd);
         bar.style.background = "rgba(140,140,140,0.55)";
         bar.title = "此处有摘录，但无法精确定位（缺 selection 或文本层对不上）";
@@ -5851,7 +8242,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       //   只能等下一次 layout-change / 切标签碰运气补画。
       //   现在只要有文件就先挂 Observer（幂等），页面渲染/虚拟化的瞬间都会自动重画。
       this.lmbSetupObserver(view);
-      const entries = this.getExcerptsForPdf(file.path);
+      const entries = this._lmbGetPdfSidebarEntries ? this._lmbGetPdfSidebarEntries(file) : this.getExcerptsForPdf(file.path);
       if (!entries || !entries.length) { this.lmbDisconnectObserver(view); return; }
 
       const pages = container.querySelectorAll("div.page");
@@ -5872,7 +8263,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   现在按条目类型分流：rect 条目只要 .page 在就画；selection 条目才要求文本层
         //   （虚拟化页没有文本层时跳过，等它进入视口、observer 触发后自然重画）。
         const hasLayer = !!pageEl.querySelector(".textLayer");
-        for (const e of list) {
+        for (let ei = 0; ei < list.length; ei++) {
+          const e = Object.assign({}, list[ei], { pageOrdinal: ei + 1 });
           const rectOnly = !!(e.rect && e.rect.length === 4 && e.rect[2] > 0 && e.rect[3] > 0);
           if (!hasLayer && !rectOnly) continue;
           this.lmbDrawEntryMark(pageEl, e);
@@ -5892,9 +8284,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   lmbSetupObserver(view) {
     try {
       if (!view || !view.containerEl || view._ppdMarkObserver) return;
-      const target = view.containerEl.querySelector(".pdfViewer") || view.containerEl;
+      const target = LmbPdfAdapter.viewer(view);
       if (!target) return;
-      const isOwn = (n) => n && n.nodeType === 1 && n.classList && n.classList.contains("lmb-mark");
       /* v0.16.6 P1-6：防抖 timer 必须挂在 view 上，**不能**用闭包局部变量。
        *   lmbDisconnectObserver 清的是 view._ppdMarkTimer —— 若 timer 只是闭包变量，
        *   那段清理就是永远够不到的死代码：disconnect 之后 pending 的回调照样落地，
@@ -5907,8 +8298,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           const scan = (list) => {
             for (let i = 0; i < list.length; i++) {
               const n = list[i];
-              if (n.nodeType === 3) return true;                 // 文本节点（textLayer 填字）
-              if (n.nodeType === 1 && !isOwn(n)) return true;    // 非我们自己的元素
+              if (LmbPdfAdapter.isRelevantMutation(n)) return true;
             }
             return false;
           };
@@ -6117,6 +8507,502 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
 });
 
+/* 38-plugin-pdf-sidebar —— PDF 独立占位批注边页（原型混入） */
+Object.assign(LuciasMarginBookPlugin.prototype, {
+  _lmbGetActivePdfLeaf() {
+    try {
+      const active = this.app.workspace.activeLeaf || null;
+      const leaves = this.app.workspace.getLeavesOfType ? this.app.workspace.getLeavesOfType("pdf") : [];
+      if (active && active.view && active.view.getViewType && active.view.getViewType() === "pdf") return active;
+      const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
+      if (file && file.extension === "pdf") {
+        const hit = leaves.find((l) => l && l.view && l.view.file && l.view.file.path === file.path);
+        if (hit) return hit;
+      }
+      return leaves.find((l) => l && l.containerEl && l.containerEl.closest(".is-active")) || (leaves.length === 1 ? leaves[0] : null);
+    } catch (_) { return null; }
+  },
+
+  lmbSchedulePdfSidebarRefresh(delay) {
+    if (this._lmbPdfSidebarTimer) clearTimeout(this._lmbPdfSidebarTimer);
+    this._lmbPdfSidebarTimer = setTimeout(() => {
+      this._lmbPdfSidebarTimer = null;
+      this.lmbRenderActivePdfSidebar().catch((err) => console.warn("[lmb] pdf sidebar refresh failed:", err));
+    }, typeof delay === "number" ? delay : 180);
+  },
+
+  /**
+   * Padding changes do not reliably reach Obsidian's PDF.js resize handler.
+   * Notify it after the browser has committed the new content width, then once
+   * more after PDF.js' asynchronous toolbar/viewer layout has settled.
+   */
+  _lmbNotifyPdfSidebarLayout(leaf, immediate) {
+    try {
+      const host = leaf && leaf.containerEl && leaf.containerEl.querySelector(".lmb-pdf-sidebar-host");
+      if (!host) return;
+      const win = host.ownerDocument && host.ownerDocument.defaultView
+        ? host.ownerDocument.defaultView : (typeof window !== "undefined" ? window : null);
+      if (!win) return;
+      if (host._lmbSidebarLayoutFrame) win.cancelAnimationFrame(host._lmbSidebarLayoutFrame);
+      if (host._lmbSidebarLayoutTimer) win.clearTimeout(host._lmbSidebarLayoutTimer);
+      const notify = () => {
+        // Reading clientWidth commits the padding/class change before PDF.js
+        // measures .pdf-viewer-container in its resize listener.
+        void host.clientWidth;
+        try { if (this.app && this.app.workspace) this.app.workspace.trigger("resize"); } catch (_) {}
+        try { win.dispatchEvent(new win.Event("resize")); } catch (_) {}
+      };
+      const afterFrame = () => {
+        host._lmbSidebarLayoutFrame = 0;
+        notify();
+        host._lmbSidebarLayoutTimer = win.setTimeout(() => {
+          host._lmbSidebarLayoutTimer = 0;
+          notify();
+        }, 120);
+      };
+      if (immediate) afterFrame();
+      else host._lmbSidebarLayoutFrame = win.requestAnimationFrame(afterFrame);
+    } catch (_) {}
+  },
+
+  _lmbClearPdfSidebars() {
+    try {
+      document.querySelectorAll(".lmb-pdf-excerpt-sidebar").forEach((bar) => bar.remove());
+      document.querySelectorAll(".lmb-pdf-sidebar-host").forEach((host) => {
+        if (host._lmbSidebarToolbarObserver) host._lmbSidebarToolbarObserver.disconnect();
+        const win = host.ownerDocument && host.ownerDocument.defaultView;
+        if (win && host._lmbSidebarLayoutFrame) win.cancelAnimationFrame(host._lmbSidebarLayoutFrame);
+        if (win && host._lmbSidebarLayoutTimer) win.clearTimeout(host._lmbSidebarLayoutTimer);
+        host._lmbSidebarToolbarObserver = null;
+        host._lmbSidebarLayoutFrame = 0;
+        host._lmbSidebarLayoutTimer = 0;
+        host.removeClass("lmb-pdf-sidebar-host");
+        host.style.removeProperty("--lmb-pdf-sidebar-width");
+        host.style.removeProperty("--lmb-pdf-sidebar-top");
+      });
+    } catch (_) {}
+  },
+
+  lmbEnsurePdfSidebarEl(leaf) {
+    try {
+      if (!leaf || !leaf.containerEl) return null;
+      const host = leaf.containerEl.querySelector(":scope > .view-content") || leaf.containerEl.querySelector(".view-content") || leaf.containerEl;
+      host.addClass("lmb-pdf-sidebar-host");
+      const initialWidth = Math.max(260, Math.min(560, Number(this._lmbPdfSidebarWidth) || 340));
+      host.style.setProperty("--lmb-pdf-sidebar-width", initialWidth + "px");
+      const toolbar = leaf.containerEl.querySelector(".pdf-toolbar");
+      const updateTop = () => {
+        const hostTop = host.getBoundingClientRect().top;
+        const toolbarBottom = toolbar ? toolbar.getBoundingClientRect().bottom : hostTop;
+        host.style.setProperty("--lmb-pdf-sidebar-top", Math.max(0, toolbarBottom - hostTop) + "px");
+      };
+      if (host._lmbSidebarToolbarObserver) host._lmbSidebarToolbarObserver.disconnect();
+      updateTop();
+      if (toolbar && typeof ResizeObserver !== "undefined") {
+        host._lmbSidebarToolbarObserver = new ResizeObserver(updateTop);
+        host._lmbSidebarToolbarObserver.observe(toolbar);
+      }
+      let bar = host.querySelector(":scope > .lmb-pdf-excerpt-sidebar");
+      if (bar) return bar;
+      bar = host.createDiv({ cls: "lmb-pdf-excerpt-sidebar" });
+      bar.style.width = initialWidth + "px";
+      const grip = bar.createDiv({ cls: "lmb-pdf-sidebar-resizer", attr: { title: "拖动调整批注边页宽度" } });
+      grip.onpointerdown = (ev) => {
+        ev.preventDefault(); grip.addClass("is-dragging");
+        const startX = ev.clientX, startWidth = bar.getBoundingClientRect().width;
+        const move = (e) => {
+          const width = Math.max(260, Math.min(560, startWidth + startX - e.clientX));
+          this._lmbPdfSidebarWidth = width;
+          host.style.setProperty("--lmb-pdf-sidebar-width", width + "px");
+          bar.style.width = width + "px";
+          this._lmbNotifyPdfSidebarLayout(leaf);
+        };
+        const up = () => {
+          grip.removeClass("is-dragging");
+          document.removeEventListener("pointermove", move, true); document.removeEventListener("pointerup", up, true);
+          this._lmbNotifyPdfSidebarLayout(leaf, true);
+        };
+        document.addEventListener("pointermove", move, true); document.addEventListener("pointerup", up, true);
+      };
+      return bar;
+    } catch (_) { return null; }
+  },
+
+  lmbSetPdfSidebarVisible(leaf, visible) {
+    try {
+      if (!leaf || !leaf.containerEl) return false;
+      leaf._lmbPdfSidebarOpen = visible !== false;
+      const host = leaf.containerEl.querySelector(".lmb-pdf-sidebar-host");
+      if (host) host.toggleClass("lmb-pdf-sidebar-closed", !leaf._lmbPdfSidebarOpen);
+      const toggle = leaf.containerEl.querySelector(".lmb-toolbar-sidebar");
+      if (toggle) toggle.toggleClass("is-active", leaf._lmbPdfSidebarOpen);
+      if (leaf._lmbPdfSidebarOpen && !host) this.lmbRenderPdfSidebarForLeaf(leaf).catch(() => {});
+      else if (host) this._lmbNotifyPdfSidebarLayout(leaf);
+      return leaf._lmbPdfSidebarOpen;
+    } catch (_) { return false; }
+  },
+
+  _lmbSidebarEntryKey(e) {
+    return e && e.exId ? "id:" + e.exId : [e && e.pdfPath, e && e.page, e && e.selection, e && e.rect,
+      String(e && e.text || "").replace(/\s+/g, " ").trim()].join("|");
+  },
+
+  _lmbGetPdfSidebarEntries(file) {
+    try {
+      if (!file) return [];
+      const path = String(file.path || "").replace(/\\/g, "/"), candidates = [];
+      if (this.excerptIndex) {
+        candidates.push(...(this.getExcerptsForPdf(path) || []));
+        try { if (!candidates.length) candidates.push(...(this.getExcerptsForPdf(decodeURIComponent(path)) || [])); } catch (_) {}
+      }
+      // 完整路径未命中才按同名兼容旧数据，避免不同目录的同名 PDF 串批注。
+      if (!candidates.length) {
+        const name = String(file.name || "").toLowerCase();
+        for (const [p, entries] of this.excerptIndex.entries()) {
+          if (String(p || "").replace(/\\/g, "/").split("/").pop().toLowerCase() === name) candidates.push(...(entries || []));
+        }
+      }
+      const quick = this.settings && this.settings.quickExcerpts && this.settings.quickExcerpts[path];
+      if (Array.isArray(quick)) candidates.push(...quick.map((e) => Object.assign({ quick: true, pdfPath: path }, e)));
+      const seen = new Set();
+      return candidates.filter((e) => { const key = this._lmbSidebarEntryKey(e || {}); if (seen.has(key)) return false; seen.add(key); return true; });
+    } catch (_) { return []; }
+  },
+
+  async _lmbReadSidebarNotes(path) {
+    try { const f = path && this.app.vault.getAbstractFileByPath(path); return f ? await this.app.vault.cachedRead(f) : ""; } catch (_) { return ""; }
+  },
+  _lmbFindSidebarNote(raw, exId) {
+    try { const state = raw && exId ? this._lmbExcerptNoteState(raw, exId) : null; return state && state.value ? state.value : ""; } catch (_) { return ""; }
+  },
+
+  _lmbCurrentPdfPage(leaf) {
+    try {
+      const pages = Array.from(leaf.containerEl.querySelectorAll("div.page[data-page-number]"));
+      if (!pages.length) return null;
+      const viewer = leaf.containerEl.querySelector(".pdf-viewer-container") || leaf.containerEl;
+      const vr = viewer.getBoundingClientRect(), y = vr.top + Math.min(vr.height, window.innerHeight) * .42;
+      let best = null, dist = Infinity;
+      for (const page of pages) {
+        const r = page.getBoundingClientRect(), d = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
+        if (d < dist) { dist = d; best = page; }
+      }
+      return best ? parseInt(best.getAttribute("data-page-number"), 10) || null : null;
+    } catch (_) { return null; }
+  },
+
+  _lmbApplySidebarPageFilter(leaf, forcedPage) {
+    try {
+      const bar = leaf && leaf.containerEl && leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar");
+      if (!bar) return;
+      const page = forcedPage || this._lmbCurrentPdfPage(leaf) || Number(bar.dataset.page) || 1;
+      bar.dataset.page = String(page);
+      const current = this._lmbPdfSidebarView !== "all"; let shown = 0;
+      bar.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
+        const visible = !current || Number(row.dataset.page) === page;
+        row.toggleClass("is-page-hidden", !visible); if (visible) shown++;
+      });
+      const sub = bar.querySelector(".lmb-pdf-sidebar-title-sub");
+      if (sub) sub.setText(current ? `当前第 ${page} 页 · ${shown} 条` : `全部批注 · ${bar.dataset.total || 0} 条`);
+    } catch (_) {}
+  },
+
+  lmbHandlePdfSidebarScroll(ev) {
+    if (this._lmbPdfSidebarFollow === false) return;
+    const target = ev && ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    if (target && !target.closest(".workspace-leaf-content[data-type='pdf']")) return;
+    if (this._lmbPdfSidebarPageTimer) clearTimeout(this._lmbPdfSidebarPageTimer);
+    this._lmbPdfSidebarPageTimer = setTimeout(() => {
+      this._lmbPdfSidebarPageTimer = null; const leaf = this._lmbGetActivePdfLeaf(); if (leaf) this._lmbApplySidebarPageFilter(leaf);
+    }, 90);
+  },
+
+  _lmbHitPdfMark(ev) {
+    try {
+      const target = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+      const direct = target && target.closest ? target.closest(".lmb-mark[data-ex]") : null;
+      if (direct) return direct;
+      const page = target && target.closest ? target.closest("div.page") : null;
+      if (!page) return null;
+      const marks = Array.from(page.querySelectorAll(".lmb-mark[data-ex]"));
+      for (let i = marks.length - 1; i >= 0; i--) {
+        const r = marks[i].getBoundingClientRect();
+        if (ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) return marks[i];
+      }
+    } catch (_) {}
+    return null;
+  },
+
+  lmbHandlePdfSidebarClick(ev) {
+    const mark = this._lmbHitPdfMark(ev); if (!mark) return;
+    const pageEl = mark.closest("div.page[data-page-number]");
+    this.lmbRevealPdfSidebarEntry(mark.getAttribute("data-ex"), pageEl ? parseInt(pageEl.getAttribute("data-page-number"), 10) : null);
+  },
+
+  lmbRevealPdfSidebarEntry(exId, page) {
+    try {
+      const leaf = this._lmbGetActivePdfLeaf(), bar = leaf && leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar");
+      if (!bar || !exId) return false;
+      if (page) this._lmbApplySidebarPageFilter(leaf, page);
+      const row = Array.from(bar.querySelectorAll(".lmb-pdf-sidebar-item")).find((el) => el.dataset.exId === exId);
+      if (!row) return false;
+      bar.querySelectorAll(".lmb-pdf-sidebar-item.is-active").forEach((el) => el.removeClass("is-active"));
+      row.addClass("is-active"); row.scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => row.removeClass("is-active"), 1800); return true;
+    } catch (_) { return false; }
+  },
+
+  _lmbHighlightPdfSidebarTarget(exId, on) {
+    try { document.querySelectorAll(".lmb-mark[data-ex]").forEach((m) => m.toggleClass("lmb-mark-sidebar-active", !!on && m.getAttribute("data-ex") === exId)); } catch (_) {}
+  },
+
+  async lmbOpenExcerptInCanvas(exId) {
+    try {
+      if (!exId) return false;
+      let loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(exId);
+      // 索引可能刚好晚于 Canvas 落盘；未命中时定点补扫一次所有 Canvas。
+      if (!loc && this.app.vault.getFiles) {
+        const files = this.app.vault.getFiles().filter((f) => f.extension === "canvas");
+        for (const file of files) {
+          await this.lmbIndexCanvasFile(file);
+          loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(exId);
+          if (loc) break;
+        }
+      }
+      if (!loc || !loc.canvasPath || !loc.nodeId) {
+        new Notice("MarginBook: 没有找到包含该摘录的 Canvas 卡片"); return false;
+      }
+      const file = this.app.vault.getAbstractFileByPath(loc.canvasPath);
+      if (!(file instanceof TFile)) { new Notice("MarginBook: Canvas 文件已不存在"); return false; }
+      const ok = await this.lmbFocusCanvasNode(file, loc.nodeId);
+      if (!ok) new Notice("MarginBook: 已打开 Canvas，但没有找到对应卡片");
+      return ok;
+    } catch (err) { console.warn("[lmb] canvas excerpt locate failed:", err); return false; }
+  },
+
+  async lmbDeleteSidebarExcerpt(entry, leaf) {
+    const e = entry || {};
+    if (!e.exId) { new Notice("该摘录缺少稳定标识，未执行删除"); return false; }
+    const pdfFile = leaf && leaf.view && leaf.view.file;
+    if (e.quick) {
+      const path = String((pdfFile && pdfFile.path) || e.pdfPath || "").replace(/\\/g, "/");
+      const list = this.settings.quickExcerpts && this.settings.quickExcerpts[path];
+      const index = Array.isArray(list) ? list.findIndex((item) => item && item.exId === e.exId) : -1;
+      if (index < 0) { new Notice("未找到这条简洁摘录"); return false; }
+      list.splice(index, 1);
+      await this.saveSettings();
+      this.lmbRefreshAllMarks();
+      await this.lmbRenderPdfSidebarForLeaf(leaf);
+      new Notice("已删除简洁摘录");
+      return true;
+    }
+
+    let loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(e.exId);
+    if (!loc && this.app.vault.getFiles) {
+      for (const candidate of this.app.vault.getFiles().filter((f) => f.extension === "canvas")) {
+        await this.lmbIndexCanvasFile(candidate);
+        loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(e.exId);
+        if (loc) break;
+      }
+    }
+    const canvasFile = loc && this.app.vault.getAbstractFileByPath(loc.canvasPath);
+    const sourceFile = e.sourceMd && this.app.vault.getAbstractFileByPath(e.sourceMd);
+    const owner = canvasFile instanceof TFile ? canvasFile : (sourceFile instanceof TFile ? sourceFile : null);
+    if (!owner) { new Notice("找不到该摘录的 Canvas 或 Markdown 来源，未执行删除"); return false; }
+    const meta = { exId: e.exId, pdf: e.pdfPath || (pdfFile && pdfFile.path) || "", attach: e.imagePath || null, sourceMd: e.sourceMd || null };
+
+    if (canvasFile instanceof TFile && loc && loc.nodeId) {
+      const rd = await this._lmbReadCanvasData(canvasFile);
+      if (!rd || !rd.data || !Array.isArray(rd.data.nodes)) { new Notice("无法读取关联 Canvas，未执行删除"); return false; }
+      const before = rd.data.nodes.length;
+      rd.data.nodes = rd.data.nodes.filter((node) => node && node.id !== loc.nodeId);
+      if (rd.data.nodes.length === before) { new Notice("关联 Canvas 卡片已不存在，继续清理摘录记录"); }
+      if (Array.isArray(rd.data.edges)) rd.data.edges = rd.data.edges.filter((edge) => edge && edge.fromNode !== loc.nodeId && edge.toNode !== loc.nodeId);
+      if (!(await this._lmbWriteCanvasData(canvasFile, rd.data, rd.memCanvas, rd.raw))) { new Notice("无法写入 Canvas，未执行删除"); return false; }
+      const nodeMeta = this.nodeMeta && this.nodeMeta.get(canvasFile.path);
+      if (nodeMeta) nodeMeta.delete(loc.nodeId); // Prevent the observer from running the same cleanup again.
+      if (this.excerptCanvasIndex) this.excerptCanvasIndex.delete(e.exId);
+    }
+
+    // A sidebar deletion is an explicit user action, so it always uses the recoverable cascade path.
+    await this._lmbCleanupDeletedNodes(owner, [{ id: (loc && loc.nodeId) || e.exId, meta }]);
+    if (sourceFile instanceof TFile) await this.reindexFile(sourceFile, true);
+    this.lmbRefreshAllMarks();
+    await this.lmbRenderPdfSidebarForLeaf(leaf);
+    return true;
+  },
+
+  async lmbRenderActivePdfSidebar() {
+    const leaf = this._lmbGetActivePdfLeaf();
+    // 焦点切到 Markdown/Canvas 时保留 PDF 边页；只有插件卸载时才统一清理。
+    if (!leaf || !leaf.view || !leaf.view.file) return;
+    await this.lmbRenderPdfSidebarForLeaf(leaf);
+  },
+
+  async lmbRenderPdfSidebarForLeaf(leaf) {
+    try {
+      const file = leaf && leaf.view && leaf.view.file; if (!file || file.extension !== "pdf") return;
+      const bar = this.lmbEnsurePdfSidebarEl(leaf); if (!bar) return;
+      this.lmbSetPdfSidebarVisible(leaf, leaf._lmbPdfSidebarOpen !== false);
+      const grip = bar.querySelector(".lmb-pdf-sidebar-resizer");
+      Array.from(bar.children).forEach((child) => { if (child !== grip) child.remove(); });
+      // 保持索引原始顺序，与 PDF 回绘的既有编号一致。不能按来源文档的
+      // line 字段重排：不同 Markdown 文件的行号彼此不可比较，会让 PDF
+      // 上已经稳定的序号整体洗牌。
+      const entries = this._lmbGetPdfSidebarEntries(file);
+      bar.dataset.total = String(entries.length);
+      const pageOrdinals = new Map();
+      for (const e of entries) {
+        const key = String(e.page || "?");
+        const ordinal = (pageOrdinals.get(key) || 0) + 1;
+        pageOrdinals.set(key, ordinal); e._lmbSidebarOrdinal = ordinal;
+      }
+      const head = bar.createDiv({ cls: "lmb-pdf-sidebar-title" }), titleRow = head.createDiv({ cls: "lmb-pdf-sidebar-title-row" });
+      titleRow.createDiv({ cls: "lmb-pdf-sidebar-title-main", text: "PDF 批注" });
+      titleRow.createSpan({ cls: "lmb-pdf-sidebar-count", text: String(entries.length) });
+      head.createDiv({ cls: "lmb-pdf-sidebar-file", text: file.name });
+      head.createDiv({ cls: "lmb-pdf-sidebar-title-sub", text: "" });
+      const controls = head.createDiv({ cls: "lmb-pdf-sidebar-controls" });
+      const currentBtn = controls.createEl("button", { text: "当前页" }), allBtn = controls.createEl("button", { text: "全部" });
+      const followBtn = controls.createEl("button", { cls: "lmb-pdf-sidebar-follow", text: "● 跟随" });
+      const sync = () => {
+        currentBtn.toggleClass("is-active", this._lmbPdfSidebarView !== "all"); allBtn.toggleClass("is-active", this._lmbPdfSidebarView === "all");
+        followBtn.toggleClass("is-active", this._lmbPdfSidebarFollow !== false);
+      };
+      currentBtn.onclick = () => { this._lmbPdfSidebarView = "current"; sync(); this._lmbApplySidebarPageFilter(leaf); };
+      allBtn.onclick = () => { this._lmbPdfSidebarView = "all"; sync(); this._lmbApplySidebarPageFilter(leaf); };
+      followBtn.onclick = () => { this._lmbPdfSidebarFollow = this._lmbPdfSidebarFollow === false; sync(); };
+      sync();
+      const search = head.createEl("input", { cls: "lmb-pdf-sidebar-search", attr: { type: "search", placeholder: "搜索摘录或备注…" } });
+      const list = bar.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map();
+      for (const e of entries) {
+        const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
+        const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
+        // 卡片头部只呈现定位信息。摘录类型可由内容/操作判断，target 仅供
+        // 内部回绘校验使用，不再把这两项重复展示给用户。
+        header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` });
+        if (e.tags && e.tags.length) header.createDiv({ cls: "lmb-pdf-sidebar-item-tags", text: e.tags.map((t) => "#" + t).join(" ") });
+        const body = row.createDiv({ cls: "lmb-pdf-sidebar-item-body" });
+        const cleanText = String(e.text || "").trim();
+        let textEl = null;
+        if (cleanText) {
+          textEl = body.createDiv({ cls: "lmb-pdf-sidebar-item-text lmb-pdf-sidebar-item-text-excerpt markdown-rendered" });
+          try { await MarkdownRenderer.render(this.app, cleanText, textEl, e.sourceMd || "", this); }
+          catch (_) { textEl.setText(cleanText); }
+        }
+        let imageEl = null;
+        if (e.imagePath) {
+          const imageFile = this.app.vault.getAbstractFileByPath(e.imagePath)
+            || (this._lmbFindAttachmentByName ? this._lmbFindAttachmentByName(e.imagePath) : null);
+          if (imageFile instanceof TFile) {
+            imageEl = body.createDiv({ cls: "lmb-pdf-sidebar-item-image" });
+            imageEl.createEl("img", { attr: { src: this.app.vault.getResourcePath(imageFile), alt: "摘录图片" } });
+            imageEl.toggleClass("is-hidden", !!cleanText);
+          }
+        }
+        let note = e.quick ? String(e.note || "") : "";
+        if (!e.quick && e.sourceMd) {
+          if (!mdCache.has(e.sourceMd)) mdCache.set(e.sourceMd, await this._lmbReadSidebarNotes(e.sourceMd));
+          note = this._lmbFindSidebarNote(mdCache.get(e.sourceMd) || "", e.exId);
+        }
+        if (note) {
+          const noteEl = row.createDiv({ cls: "lmb-pdf-sidebar-item-note" });
+          const noteBody = noteEl.createDiv({ cls: "lmb-pdf-sidebar-item-note-body markdown-rendered" });
+          try { await MarkdownRenderer.render(this.app, note, noteBody, e.sourceMd || "", this); }
+          catch (_) { noteBody.setText(note); }
+        }
+        const actions = row.createDiv({ cls: "lmb-pdf-sidebar-item-actions" });
+        const iconButton = (icon, label) => {
+          const button = actions.createEl("button", { cls: "lmb-pdf-sidebar-icon-button", attr: { title: label, "aria-label": label } });
+          try { setIcon(button, icon); } catch (_) { button.setText(label.slice(0, 1)); }
+          return button;
+        };
+        const color = iconButton("palette", "修改摘录颜色");
+        color.onclick = (ev) => { ev.stopPropagation(); this.lmbChooseExcerptColor(e.exId, color); };
+        if (imageEl && cleanText) {
+          const persistedImage = !!(e.exId && this.settings.excerptViews
+            && this.settings.excerptViews[e.exId] === "image");
+          imageEl.toggleClass("is-hidden", !persistedImage);
+          textEl.toggleClass("is-hidden", persistedImage);
+          const view = iconButton(persistedImage ? "file-text" : "image",
+            persistedImage ? "显示文字" : "显示图片");
+          view.onclick = (ev) => {
+            ev.stopPropagation(); const showImage = imageEl.hasClass("is-hidden");
+            imageEl.toggleClass("is-hidden", !showImage); textEl.toggleClass("is-hidden", showImage);
+            view.empty(); setIcon(view, showImage ? "file-text" : "image");
+            view.setAttribute("title", showImage ? "显示文字" : "显示图片");
+            view.setAttribute("aria-label", showImage ? "显示文字" : "显示图片");
+            if (e.exId) {
+              this.settings.excerptViews = this.settings.excerptViews || {};
+              this.settings.excerptViews[e.exId] = showImage ? "image" : "text";
+              this.saveSettings().catch(() => {});
+            }
+          };
+        }
+        if (!e.quick) {
+        const jump = iconButton("book-open", "在 PDF 中定位");
+        const openMd = iconButton("notebook-pen", "在摘录文档中定位");
+        const openCanvas = iconButton("waypoints", "在 Canvas 中定位");
+        const edit = iconButton(note ? "pencil" : "message-square-plus", note ? "编辑备注" : "添加备注");
+        jump.onclick = (ev) => { ev.stopPropagation(); this.lmbJumpToSelection(e.pdfPath || file.path, e.page, e.selection, e.rect, leaf, e.text); };
+        openMd.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInMd(e.exId, e.sourceMd, leaf); };
+        openCanvas.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInCanvas(e.exId); };
+        edit.onclick = (ev) => {
+          ev.stopPropagation(); const source = e.sourceMd && this.app.vault.getAbstractFileByPath(e.sourceMd);
+          if (!(source instanceof TFile) || !e.exId) { new Notice("该摘录缺少可编辑的来源文档"); return; }
+          new LMBExcerptNoteModal(this.app, { title: "PDF 摘录备注", value: note || "", sourcePath: source.path,
+            onSubmit: async (value) => {
+              const ok = await this.lmbSaveExcerptNote(source, e.exId, value);
+              if (ok) { await this.reindexFile(source, true); await this.lmbRenderPdfSidebarForLeaf(leaf); new Notice("备注已同步"); }
+              else new Notice("未找到对应摘录，未修改文档");
+            } }).open();
+        };
+        }
+        if (e.quick) {
+          const editQuick = iconButton(note ? "pencil" : "message-square-plus", note ? "编辑备注" : "添加备注");
+          editQuick.onclick = (ev) => {
+            ev.stopPropagation();
+            new LMBExcerptNoteModal(this.app, { title: "简洁摘录备注", value: note || "", sourcePath: "",
+              onSubmit: async (value) => {
+                const path = String(file.path || "").replace(/\\/g, "/");
+                const list = this.settings.quickExcerpts && this.settings.quickExcerpts[path];
+                const item = Array.isArray(list) && list.find((x) => x && x.exId === e.exId);
+                if (!item) { new Notice("未找到这条简洁摘录"); return; }
+                item.note = String(value || "");
+                await this.saveSettings(); await this.lmbRenderPdfSidebarForLeaf(leaf);
+                new Notice("备注已保存");
+              }
+            }).open();
+          };
+        }
+        const remove = iconButton("trash-2", "删除摘录");
+        remove.onclick = (ev) => {
+          ev.stopPropagation();
+          const message = e.quick
+            ? "将删除这条仅保存在 PDF 侧栏的简洁摘录。"
+            : "将删除关联的 Canvas 卡片及连线、Markdown 摘录记录和插件管理的截图。它们会先移入 .lmb-trash，方便恢复。";
+          new LMBConfirmModal(this.app, {
+            title: "删除摘录？", message, confirmText: "删除摘录",
+            onConfirm: () => this.lmbDeleteSidebarExcerpt(e, leaf).catch((err) => {
+              console.warn("[lmb] sidebar excerpt deletion failed:", err);
+              new Notice("删除摘录失败，详情见控制台");
+            })
+          }).open();
+        };
+        row.onmouseenter = () => this._lmbHighlightPdfSidebarTarget(e.exId, true);
+        row.onmouseleave = () => this._lmbHighlightPdfSidebarTarget(e.exId, false);
+        row.onclick = () => this.lmbJumpToSelection(e.pdfPath || file.path, e.page, e.selection, e.rect, leaf, e.text);
+      }
+      search.oninput = () => {
+        const query = String(search.value || "").trim().toLowerCase();
+        list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => row.toggleClass("is-search-hidden", !!query && !row.textContent.toLowerCase().includes(query)));
+      };
+      if (!entries.length) list.createDiv({ cls: "lmb-pdf-sidebar-empty", text: "当前 PDF 暂无可用批注" });
+      this._lmbApplySidebarPageFilter(leaf);
+    } catch (err) { console.warn("[lmb] render pdf sidebar failed:", err); }
+  }
+});
+
 /* 36-plugin-jump —— 双向跳转/链接接管/相关笔记（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
@@ -6137,7 +9023,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /**
    * 解析 pdf 回跳链接。**不依赖 this**（只读模块常量），可离线测。
    * 输入：`x.pdf#page=21&selection=0,0,655,478` 或 `x.pdf#page=21&rect=1,2,3,4`
-   * 返回：{ filePath, page, selection, rect }；非 pdf#page= 链接返回 null。
+   * 返回：{ filePath, page, selection, rect, target }；非 pdf#page= 链接返回 null。
    *
    * v0.9.1 起【接管所有 pdf#page= 链接】（不再要求必须带 selection=）：
    *   原因是用户启用了 PDF++ 后，PDF++ 也劫持 openLinkText 并尝试解析"该 PDF
@@ -6169,11 +9055,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!page || isNaN(page)) return null;
       const sm = LMB_SEL_RE.exec((params.get("selection") || "").trim());
       const rm = LMB_RECT_RE.exec((params.get("rect") || "").trim());
+      const target = params.get("target") || null;
       return {
         filePath: path,
         page: page,
         selection: sm ? [+sm[1], +sm[2], +sm[3], +sm[4]] : null,
-        rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null
+        rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null,
+        target: target
       };
     } catch (_) { return null; }
   },
@@ -6214,7 +9102,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           ev.preventDefault();
           ev.stopPropagation();
           ev.stopImmediatePropagation();                     // Obsidian / 其他插件都别想碰
-          this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect);
+          this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
         } catch (err) {
           console.warn("[lmb] pdf 链接拦截出错:", err);
         }
@@ -6252,7 +9140,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         try {
           const hit = this.lmbParsePdfLink(linktext);
           if (hit) {
-            this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect);
+            this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
             return;                                       // 接管
           }
         } catch (err) {
@@ -6302,22 +9190,26 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   两者都没有 → 只滚到页
    * 只匹配「真正渲染了」的 leaf（view.file 有值）——僵尸 leaf 一律绕开重开。
    */
-  async lmbJumpToSelection(filePath, pageNum, selection, rect) {
+  async lmbJumpToSelection(filePath, pageNum, selection, rect, preferredLeaf, entryText) {
     try {
       if (!filePath || !pageNum) return;
-      let leaf = null;
+      let leaf = null, resolvedFile = this.app.vault.getAbstractFileByPath(filePath);
+      if (!resolvedFile) {
+        try { resolvedFile = this.app.metadataCache.getFirstLinkpathDest(filePath, ""); } catch (_) { resolvedFile = null; }
+      }
+      const resolvedPath = resolvedFile && resolvedFile.path ? resolvedFile.path : filePath;
+      if (preferredLeaf && preferredLeaf.view && preferredLeaf.view.file
+        && preferredLeaf.view.file.path === resolvedPath) leaf = preferredLeaf;
       const leaves = this.app.workspace.getLeavesOfType("pdf");
       for (const l of leaves) {
+        if (leaf) break;
         const v = l && l.view;
-        if (v && v.file && v.file.path === filePath) { leaf = l; break; }
+        if (v && v.file && v.file.path === resolvedPath) { leaf = l; break; }
       }
       if (!leaf) {
         // v0.16.5 R5：路径解析兜底 —— 直接路径取不到（相对名 / 编码残留）时走
         //   metadataCache 的链接解析，与摘录索引层（reindexFile）用的是同一套规则
-        let f = this.app.vault.getAbstractFileByPath(filePath);
-        if (!f) {
-          try { f = this.app.metadataCache.getFirstLinkpathDest(filePath, ""); } catch (_) { f = null; }
-        }
+        const f = resolvedFile;
         if (!f) { new Notice("MarginBook: 找不到 PDF " + filePath); return; }
         leaf = this.app.workspace.getLeaf("tab");        // 新标签页，不打乱现有布局
         await leaf.openFile(f);
@@ -6348,10 +9240,57 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           return;
         }
         this.lmbFlashRects(pageEl, rects, null);
+      } else if (entryText) {
+        const rects = this.lmbResolveEntryTextRects(pageEl, entryText);
+        if (rects) this.lmbFlashRects(pageEl, rects, null);
       }
     } catch (err) {
       console.warn("[lmb] lmbJumpToSelection error:", err);
     }
+  },
+
+  /**
+   * 在 Markdown 摘录文档中定位：已打开则复用；存在左右分区时选择离 PDF 最远的
+   * 现有 leaf；只有一个分区时才开新标签。绝不重复打开同一文档。
+   */
+  async lmbOpenExcerptInMd(exId, sourceMd, pdfLeaf) {
+    try {
+      if (!exId || !sourceMd) { new Notice("MarginBook: 该摘录缺少 Markdown 来源"); return false; }
+      const file = this.app.vault.getAbstractFileByPath(sourceMd);
+      if (!(file instanceof TFile)) { new Notice("MarginBook: 找不到摘录文档 " + sourceMd); return false; }
+      const mdLeaves = this.app.workspace.getLeavesOfType("markdown") || [];
+      let leaf = mdLeaves.find((l) => l && l.view && l.view.file && l.view.file.path === file.path) || null;
+      if (!leaf) {
+        const all = [];
+        try { this.app.workspace.iterateAllLeaves((l) => { if (l && l !== pdfLeaf && l.containerEl) all.push(l); }); } catch (_) {}
+        if (all.length) {
+          const pr = pdfLeaf && pdfLeaf.containerEl ? pdfLeaf.containerEl.getBoundingClientRect() : null;
+          all.sort((a, b) => {
+            if (!pr) return 0;
+            const ar = a.containerEl.getBoundingClientRect(), br = b.containerEl.getBoundingClientRect();
+            return Math.abs((br.left + br.right) / 2 - (pr.left + pr.right) / 2)
+              - Math.abs((ar.left + ar.right) / 2 - (pr.left + pr.right) / 2);
+          });
+          leaf = all[0];
+        }
+        if (!leaf) leaf = this.app.workspace.getLeaf("tab");
+        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
+      } else {
+        this.app.workspace.setActiveLeaf(leaf, { focus: true });
+      }
+      const editor = leaf.view && leaf.view.editor;
+      const cache = this.app.metadataCache.getFileCache(file);
+      const block = cache && cache.blocks && cache.blocks[exId];
+      if (editor && block && block.position && block.position.start) {
+        const line = block.position.start.line;
+        editor.setCursor({ line, ch: 0 });
+        editor.scrollIntoView({ from: { line: Math.max(0, line - 3), ch: 0 }, to: { line: line + 3, ch: 0 } }, true);
+      } else {
+        // 阅读模式或缓存尚未就绪：在同一个 leaf 上重设 subpath，仍不会新开标签。
+        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
+      }
+      return true;
+    } catch (err) { console.warn("[lmb] lmbOpenExcerptInMd error:", err); return false; }
   },
 
   /** 闪烁定位：覆盖 accent 色矩形，闪 3 次后自清理。
@@ -6361,6 +9300,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       let pcts = rectPcts || null;
       if (!pcts && rects) pcts = this.lmbRectsToPercents(rects, pageEl);
       if (!pcts || !pcts.length) return;
+      const focusHost = pageEl.closest && pageEl.closest(".workspace-leaf-content");
+      if (focusHost && focusHost.classList) focusHost.classList.add("lmb-focus-mode");
       const frag = document.createDocumentFragment();
       for (const p of pcts) {
         const d = document.createElement("div");
@@ -6379,6 +9320,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             const n = old[i];
             if (n.parentNode) n.parentNode.removeChild(n);
           }
+          if (focusHost && focusHost.classList) focusHost.classList.remove("lmb-focus-mode");
         } catch (_) { /* noop */ }
       }, 2200);
     } catch (_) { /* noop */ }
@@ -6407,7 +9349,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }
       if (!path) { new Notice("MarginBook: 找不到该摘录的来源（canvas 和 md 都没查到）"); return; }
-      await this.app.workspace.openLinkText(path + "#^" + exId, "", false);
+      await this.lmbOpenExcerptInMd(exId, path, this._lmbGetActivePdfLeaf());
     } catch (err) {
       console.warn("[lmb] lmbOpenExcerptAt error:", err);
     }
@@ -6417,8 +9359,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /**
    * P1-4：相关笔记检索（MarginNote 4「标题链接」平替，纯本地零 AI）。
-   * 只查 metadataCache 元数据（basename / headings / tags / frontmatter 别名），
-   * 不读任何文件正文（性能红线）。同一 entryId 用 relatedCache 只检索一次。
+   * v0.19：元数据给予高权重，同时读取正文做本地 BM25 风格评分；结果仍按 entryId 缓存。
    * 返回 wikilink 字符串数组（如 ["[[路径|显示名]]"]），无结果返回 []。
    */
   async findRelatedNotes(entryId, bodyText) {
@@ -6459,8 +9400,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
               }
             }
             const haystack = bag.join("\n");
+            let body = "";
+            try { body = (await this.app.vault.cachedRead(file)).toLowerCase(); } catch (_) {}
             let score = 0;
-            for (const tk of tokens) if (haystack.includes(tk)) score++;
+            for (const tk of tokens) {
+              if (haystack.includes(tk)) score += 3;
+              if (body) {
+                const hits = body.split(tk).length - 1;
+                if (hits) score += Math.min(2, hits) / (1 + body.length / 6000);
+              }
+            }
             if (score >= 2) scored.push({ file, score });
           } catch (_) { /* 单个文件元数据异常不影响整体 */ }
         }
@@ -6496,7 +9445,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       ]);
       const src = String(text || "")
         .replace(/\[\[[^\]]*\]\]/g, " ")
-        .replace(/\^ex-[0-9a-z]{4,8}/g, " ")
+        .replace(/\^ex-[0-9a-z]{4,16}/g, " ")
         .toLowerCase();
       const out = [];
       const seen = new Set();
@@ -6605,6 +9554,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             this.lmbCanvasBarAction(cls === "lmb-bar-comment" ? "comment"
               : cls === "lmb-bar-jump" ? "jump"
               : cls === "lmb-bar-view" ? "view"
+              : cls === "lmb-bar-color" ? "color"
+              : cls === "lmb-bar-follow" ? "follow"
               : cls === "lmb-bar-disconnect" ? "disconnect" : "fit");
           } catch (_) { /* noop */ }
         });
@@ -6615,7 +9566,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       bar.appendChild(mk("lmb-bar-comment", "message-square", "添加或编辑评论", "评论"));
       bar.appendChild(mk("lmb-bar-jump", "book-open", "跳回 PDF 原位置", "跳转"));
       bar.appendChild(mk("lmb-bar-view", "image", "切换文字或图片视图", "视图"));
+      bar.appendChild(mk("lmb-bar-color", "palette", "修改摘录颜色", "颜色"));
       bar.appendChild(mk("lmb-bar-fit", "move-vertical", "根据内容自动调整卡片高度", "高度"));
+      bar.appendChild(mk("lmb-bar-follow", "git-branch", "移动父卡时带上全部子卡", "联动"));
       bar.appendChild(mk("lmb-bar-disconnect", "unlink", "断开卡片连线", "断开"));
 
       wrapperEl.appendChild(bar);
@@ -6639,6 +9592,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   用户视角就是"点了没反应、连 Notice 都不弹"（v0.13.6 用户反馈）。
         //   这里不依赖轮询，直接从当前选中即时重建一次。
         c = this._lmbRebuildBarCtx();
+      }
+
+      if (kind === "color") {
+        const ex = String(c.node && c.node.text || "").match(EX_ID_RE);
+        if (ex) this.lmbChooseExcerptColor(ex[0].slice(1), document.querySelector(".lmb-canvas-bar .lmb-bar-color"));
+        return;
       }
       if (!c) {
         // 真的没选中卡片 —— 也要告诉用户，绝不静默失败
@@ -6676,7 +9635,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           ? (el.querySelector(".canvas-node-content") || el.querySelector(".markdown-rendered") || el)
           : null;
         if (host) {
-          this.toggleCardViewByHost(host);
+          const toImg = this.toggleCardViewByHost(host);
+          if (toImg !== null) {
+            this.settings.nodeViews = this.settings.nodeViews || {};
+            this.settings.nodeViews[c.file.path + "::" + c.nodeId] = toImg ? "image" : "text";
+            const ex = String(c.node && c.node.text || "").match(EX_ID_RE);
+            if (ex) {
+              this.settings.excerptViews = this.settings.excerptViews || {};
+              this.settings.excerptViews[ex[0].slice(1)] = toImg ? "image" : "text";
+            }
+            this.saveSettings().catch(() => {});
+            setTimeout(() => {
+              this._lmbAutoFitCard(c.file, c.nodeId, c.node, { allowViewShrink: true })
+                .then(() => { try { this.lmbCanvasBarTick(); } catch (_) {} })
+                .catch((err) => console.warn("[lmb] view auto-fit failed:", err));
+            }, 0);
+          }
         } else {
           // 真的拿不到容器 —— 也要告诉用户，绝不静默失败（v0.13.7 定下的规矩）
           try { new Notice("找不到卡片内容容器，视图未能切换", 2500); } catch (_) {}
@@ -6717,6 +9691,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
               try { new Notice("断开连线失败：" + (err && err.message ? err.message : err), 3200); } catch (_) {}
             });
         }
+      }
+      if (kind === "follow") {
+        const enabled = !(this.settings && this.settings.moveDescendantsWithParent === true);
+        if (this.settings) this.settings.moveDescendantsWithParent = enabled;
+        const p = this.saveSettings();
+        if (p && typeof p.catch === "function") p.catch((err) => console.warn("[lmb] save follow setting failed:", err));
+        this._barSig = "";
+        try { this.lmbCanvasBarTick(); } catch (_) {}
+        try { new Notice(enabled ? "已开启：移动父卡时子卡会一起移动" : "已关闭子卡联动移动", 2200); } catch (_) {}
       }
     } catch (_) { /* noop：按钮回调绝不能抛错破坏 canvas */ }
   },
@@ -6972,7 +9955,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (!node || typeof node.text !== "string" || !node.text) continue;
         const hash = this.simpleHash(node.text);
         const c = cache.get(id);
-        if (c && c.hash === hash) continue;              // 文本没变 → 标记已在 DOM 上
         const isDual = !!lmbPickBarActions(node.text).view;
         const el = node.nodeEl || node.contentEl;
         // host 只用来确认内容容器已渲染；class 本身打 nodeEl（抗 markdown 重渲染）
@@ -6980,8 +9962,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           ? (el.querySelector(".canvas-node-content") || el.querySelector(".markdown-rendered"))
           : null;
         if (!host) continue;                             // 未就绪 → 不写缓存，下轮重试
+        // Markdown 重渲染会替换 host；即使文本 hash 没变，也必须在新 host 上恢复视图。
+        const ex = String(node.text || "").match(EX_ID_RE);
+        const exId = ex ? ex[0].slice(1) : "";
+        const saved = (exId && this.settings.excerptViews && this.settings.excerptViews[exId])
+          || (this.settings.nodeViews && this.settings.nodeViews[(canvas.view && canvas.view.file
+            ? canvas.view.file.path : "") + "::" + id]);
         if (el.classList) el.classList.toggle("lmb-dual", isDual);
-        cache.set(id, { hash: hash, dual: isDual });
+        if (isDual) host.classList.toggle("lmb-view-img", saved === "image");
+        cache.set(id, { hash: hash, dual: isDual, host: host });
       }
       // 缓存里已删除节点的条目顺手清掉（防长期使用内存缓慢增长）
       const has = (typeof nodes.has === "function") ? (k) => nodes.has(k) : (k) => (k in nodes);
@@ -7012,9 +10001,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!canvas || !canvas.nodes) return null;
       let arr = [];
       try {
-        const sel = typeof canvas.getSelection === "function"
-          ? canvas.getSelection() : canvas.selection;
-        arr = sel ? Array.from(sel) : [];
+        arr = LmbCanvasAdapter.selection(canvas);
       } catch (_) { arr = []; }
       const nodes = arr.filter((n) => n && typeof n.text === "string" && n.type !== "group");
       if (nodes.length !== 1) return null;
@@ -7023,7 +10010,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!nodeEl) return null;
       const acts = lmbPickBarActions(node.text);
       try {
-        const data = typeof canvas.getData === "function" ? canvas.getData() : null;
+        const data = LmbCanvasAdapter.data(canvas);
         const sidecar = (this.autoEdges && this.autoEdges.get(ctx.file.path)) || new Set();
         acts.disconnect = lmbPlanDisconnect(node.id, data && data.edges, sidecar).kind !== "none";
       } catch (_) { acts.disconnect = false; }
@@ -7051,9 +10038,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     return { data: cloned, node };
   },
 
-  lmbFitNodeById(file, nodeId, nodeHint) {
+  lmbFitNodeById(file, nodeId, nodeHint, opts) {
     return (async () => {
       try {
+        const quiet = !!(opts && opts.quiet);
         // v0.14.1：每个 early return 都带编号探针。上一版只探了分支入口（「开始调整…」
         //   弹了），但函数内部的 4 个无声 early return 仍然在静默退出 —— 用户看到的
         //   还是"只有探针没下文"。编号探针弹哪个，断点就在哪，一步定位不用再猜。
@@ -7146,7 +10134,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             // 至少等待三次一致（而不是旧版两次），并取稳定样本；每次都是全新的自然布局副本。
             let previous = 0, best = 0, stable = 0;
             for (let sample = 0; sample < 6; sample++) {
-              const measured = lmbMeasureNaturalCard(wrapperEl, contentEl, scale);
+              const measured = lmbMeasureNaturalCard(wrapperEl, contentEl, scale, {
+                ignoreLiveHeight: !!(opts && opts.allowViewShrink)
+              });
               if (measured > 0) {
                 best = Math.max(best, measured);
                 if (previous > 0 && Math.abs(measured - previous) < 1) stable++;
@@ -7164,22 +10154,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         let usedEstimate = false;
         if (naturalH <= 0) {
           try {
-            const size = this.estimateSizeFor(node.text);
+            const size = this.estimateSizeFor(node.text, { width: node.width, view: opts && opts.view });
             naturalH = Math.round(size.h);
             usedEstimate = naturalH > 0;
-            try { new Notice("内容未就绪，使用估算高度", 1600); } catch (_) {}
+            if (!quiet) { try { new Notice("内容未就绪，使用估算高度", 1600); } catch (_) {} }
           } catch (_) {}
         }
         // v0.14.6：合理性校验 —— 实测值若明显小于估算（< 60%）则采用估算值。
         //   目的：防止测量异常时把卡片压得**比内容还矮**（内容会被裁剪，比"留白"
         //   糟糕得多）。估算走 v0.13.3 修过 lmbRenderedText 的 estimateSizeFor。
         try {
-          const est = this.estimateSizeFor(node.text);
+          const est = this.estimateSizeFor(node.text, { width: node.width, view: opts && opts.view });
           const estH = Math.round((est && est.h) || 0);
-          if (estH > 0 && naturalH > 0 && naturalH < estH * 0.6) {
+          if (!(opts && opts.allowViewShrink) && estH > 0 && naturalH > 0 && naturalH < estH * 0.6) {
             const measuredH = Math.round(naturalH);
             naturalH = estH;
-            try {
+            if (!quiet) try {
               new Notice(`实测 ${measuredH}px 明显小于估算 ${estH}px，已采用估算值（防止内容被裁）`, 3000);
             } catch (_) {}
           }
@@ -7398,7 +10388,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (!store) { store = new Map(); if (this.autoSize) this.autoSize.set(file.path, store); }
         store.set(nodeId, { hash: this.simpleHash(node.text), w: node.width, h: finalH, locked: true });
         // 操作反馈：测量值 + 文件回读 + canvas 内存回读（双保险：哪条通道生效都显示）
-        try {
+        if (!quiet) try {
           const tag = usedEstimate ? "（估算：子元素未就绪）" : "";
           const overflowTag = overflowCorrected > 0 ? `（溢出校正 +${overflowCorrected}px）` : "";
           const tail = reloaded ? "（已强制重载画布）" : "";
@@ -7474,14 +10464,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       const map = {
         comment: ".lmb-bar-comment", jump: ".lmb-bar-jump", view: ".lmb-bar-view",
-        fit: ".lmb-bar-fit", disconnect: ".lmb-bar-disconnect"
+        fit: ".lmb-bar-fit", follow: ".lmb-bar-follow", disconnect: ".lmb-bar-disconnect"
       };
       for (const k of Object.keys(map)) {
         const b = bar.querySelector(map[k]);
         if (!b) continue;
         // jump 的可用性看 acts.jump 是否为字符串，其余看布尔位
-        const ok = k === "jump" ? !!(acts && acts.jump) : !!(acts && acts[k]);
+        const ok = k === "follow" ? true : (k === "jump" ? !!(acts && acts.jump) : !!(acts && acts[k]));
         lmbSetToolbarVisibility(b, ok ? "show" : "hideRemove");
+        if (k === "follow" && b.classList) b.classList.toggle("is-active",
+          !!(this.settings && this.settings.moveDescendantsWithParent));
       }
     } catch (_) { /* noop */ }
   },
@@ -7510,6 +10502,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    */
   lmbCanvasBarTick() {
     try {
+      if (this._barDragging) {
+        document.querySelectorAll(LMB_BAR_SEL).forEach((b) => lmbSetToolbarVisibility(b, "hideRemove"));
+        return;
+      }
       const ctx = this.activeCanvasContext();
       if (!ctx) { this._lmbHideBar(); return; }
 
@@ -7544,20 +10540,26 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
       const nodeEl = node.nodeEl || node.contentEl;
       if (!nodeEl || typeof nodeEl.getBoundingClientRect !== "function") { this._lmbHideBar(); return; }
+      // v0.18：首次遇到节点时从 data.json 恢复用户上次选择的文字/图片视图。
+      try {
+        const host = nodeEl.querySelector && (nodeEl.querySelector(".canvas-node-content") || nodeEl.querySelector(".markdown-rendered"));
+        const ex = String(node.text || "").match(EX_ID_RE);
+        const exId = ex ? ex[0].slice(1) : "";
+        const saved = (exId && this.settings && this.settings.excerptViews
+          && this.settings.excerptViews[exId])
+          || (this.settings && this.settings.nodeViews
+            && this.settings.nodeViews[ctx.file.path + "::" + node.id]);
+        if (host && saved) host.classList.toggle("lmb-view-img", saved === "image");
+      } catch (_) {}
 
       const bar = this.lmbEnsureCanvasBarEl(wrapperEl);
       if (!bar) return;
+      // _lmbHideBar() 会把复用浮栏设成 display:none；display:none 的元素宽高恒为 0。
+      // 首次恢复时先进入“参与布局但不可见”的测量态，随后完成按钮筛选与定位，最后
+      // 才 show。整个过程发生在同一帧，用户只会看到卡片外侧的最终位置。
+      lmbSetToolbarVisibility(bar, "hideKeepSpace");
 
-      // ① 位置（每轮重算）
-      const p = lmbCalcBarPos(
-        nodeEl.getBoundingClientRect(),
-        wrapperEl.getBoundingClientRect(),
-        { width: bar.offsetWidth, height: bar.offsetHeight }
-      );
-      bar.style.left = p.left + "px";
-      bar.style.top = p.top + "px";
-
-      // ② 按钮可用性（指纹变了 **或上下文丢了** 才重算）
+      // ① 按钮可用性（指纹变了 **或上下文丢了** 才重算）
       //    ⚠ 必须带 `|| !this._barCtx`：_lmbHideBar() 会清掉 _barCtx 但**不**重置 _barSig。
       //      若只看指纹，选中恢复后 sig 与上次完全相同 → 永远不再重建 _barCtx →
       //      浮层照样显示，但按钮点了没反应（正是「点过一次就失效」的根因）。
@@ -7571,7 +10573,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           .map((e) => e.id).sort().join(",");
       } catch (_) {}
       const sig = lmbBarSignature([node.id], { x: canvas.x, y: canvas.y, zoom: canvas.zoom })
-        + "|edges:" + edgeSig;
+        + "|edges:" + edgeSig + "|follow:" + !!(this.settings && this.settings.moveDescendantsWithParent);
       if (sig !== this._barSig || !this._barCtx) {
         this._barSig = sig;
         const acts = lmbPickBarActions(node.text);
@@ -7582,6 +10584,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         this._barCtx = { file: ctx.file, nodeId: node.id, node, acts, nodeEl };
         this._lmbApplyBarActions(bar, acts);
       }
+
+      // ② 按钮显隐确定后，才读取浮栏的最终尺寸并定位。新建浮栏默认 visibility:hidden，
+      //    所以用户只会看到已经放好的最终位置，不会看到“先在卡内、再跳到卡外”。
+      const barRect = bar.getBoundingClientRect ? bar.getBoundingClientRect() : null;
+      const barWidth = (barRect && barRect.width) || bar.offsetWidth;
+      const barHeight = (barRect && barRect.height) || bar.offsetHeight;
+      const p = lmbCalcBarPos(
+        nodeEl.getBoundingClientRect(),
+        wrapperEl.getBoundingClientRect(),
+        { width: barWidth, height: barHeight },
+        { mobile: !!this.isMobile }
+      );
+      bar.style.left = p.left + "px";
+      bar.style.top = p.top + "px";
+      if (bar.dataset) bar.dataset.lmbPlacement = p.placement;
 
       lmbSetToolbarVisibility(bar, "show");
     } catch (_) { /* noop：轮询回调绝不抛异常 */ }
@@ -7631,17 +10648,111 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { this._barGuard = null; }
   },
 
+  /**
+   * 拖动 Canvas 卡片时隐藏侧栏。只有指针移动超过 4px 才进入拖动态，普通单击不会
+   * 造成可见闪烁；松开后按卡片最终位置重新计算并显示。
+   */
+  _lmbInstallBarDragWatch() {
+    try {
+      if (this._barDragHandlers) return;
+      const down = (ev) => {
+        try {
+          const target = ev.target;
+          if (!target || !target.closest || target.closest(LMB_BAR_SEL)) return;
+          if (!target.closest(".canvas-wrapper")) return;
+          if (this.isMobile) {
+            if (!this._barGesturePointers) this._barGesturePointers = new Set();
+            this._barGesturePointers.add(ev.pointerId);
+            this._barDragging = true;
+            this._lmbHideBar();
+          }
+          this._barDragArm = {
+            pointerId: ev.pointerId, x: ev.clientX, y: ev.clientY,
+            viewport: !target.closest(".canvas-node")
+          };
+          if (!this.isMobile) this._barDragging = false;
+          // iPad 双指缩放/背景平移开始就隐藏工具栏，避免每次合成都带一个独立浮层。
+          if (this._barDragArm.viewport && this.isMobile) {
+            this._barDragging = true;
+            this._lmbHideBar();
+          }
+        } catch (_) {}
+      };
+      const move = (ev) => {
+        try {
+          const arm = this._barDragArm;
+          if (!arm || (arm.pointerId != null && ev.pointerId !== arm.pointerId)) return;
+          if (!this._barDragging && Math.hypot(ev.clientX - arm.x, ev.clientY - arm.y) >= 4) {
+            this._barDragging = true;
+            this._lmbHideBar();
+          }
+        } catch (_) {}
+      };
+      const end = (ev) => {
+        try {
+          if (this.isMobile) {
+            if (this._barGesturePointers) this._barGesturePointers.delete(ev.pointerId);
+            if (this._barGesturePointers && this._barGesturePointers.size) return;
+            this._barDragArm = null;
+            this._barDragging = false;
+            clearTimeout(this._barGestureEndTimer);
+            this._barGestureEndTimer = setTimeout(() => {
+              try { this.lmbCanvasBarTick(); } catch (_) {}
+            }, 160);
+            return;
+          }
+          const arm = this._barDragArm;
+          if (!arm || (arm.pointerId != null && ev.pointerId !== arm.pointerId)) return;
+          const wasDragging = this._barDragging;
+          this._barDragArm = null;
+          this._barDragging = false;
+          if (wasDragging) setTimeout(() => { try { this.lmbCanvasBarTick(); } catch (_) {} }, 0);
+        } catch (_) {
+          this._barDragArm = null;
+          this._barDragging = false;
+        }
+      };
+      document.addEventListener("pointerdown", down, true);
+      document.addEventListener("pointermove", move, true);
+      document.addEventListener("pointerup", end, true);
+      document.addEventListener("pointercancel", end, true);
+      this._barDragHandlers = { down, move, end };
+    } catch (_) {}
+  },
+
+  _lmbUninstallBarDragWatch() {
+    try {
+      const h = this._barDragHandlers;
+      if (h) {
+        document.removeEventListener("pointerdown", h.down, true);
+        document.removeEventListener("pointermove", h.move, true);
+        document.removeEventListener("pointerup", h.end, true);
+        document.removeEventListener("pointercancel", h.end, true);
+      }
+      this._barDragHandlers = null;
+      this._barDragArm = null;
+      this._barDragging = false;
+      if (this._barGesturePointers) this._barGesturePointers.clear();
+      this._barGesturePointers = null;
+      clearTimeout(this._barGestureEndTimer);
+      this._barGestureEndTimer = null;
+    } catch (_) {}
+  },
+
   /** 启动悬浮栏轮询（onLayoutReady 调用；幂等） */
   lmbStartCanvasBarWatch() {
     try {
       if (this._barTimer) return;             // 防重入：重复启动会叠加 interval
       this._lmbInstallBarGuard();             // v0.13.1：先装守卫，再开始轮询
+      this._lmbInstallBarDragWatch();
       // v0.13.8：启动时先全局清掉所有**版本不匹配**的旧浮层。
       //   canvas leaf 的 DOM 不随插件重载而重建，旧浮层会一直挂在 DOM 里，
       //   光靠 lmbEnsureCanvasBarEl 只能修好「当前这个 wrapperEl」的那一颗，
       //   其他 canvas leaf 上残留的旧浮层（旧版回调）还得靠这里兜底。
       this._lmbPurgeStaleBars();
-      this._barTimer = setInterval(() => this.lmbCanvasBarTick(), LMB_BAR_POLL_MS);
+      // iPad 完全采用 pointerup / workspace 事件驱动。持续轮询会在双指缩放期间
+      // 反复读取 Canvas 布局并扫描节点，直接参与每一轮合成，造成明显掉帧。
+      this._barTimer = this.isMobile ? null : setInterval(() => this.lmbCanvasBarTick(), LMB_BAR_POLL_MS);
       this.lmbCanvasBarTick();                // 先跑一次，避免刚进 canvas 要等 120ms 才出现
     } catch (_) { /* noop */ }
   },
@@ -7666,6 +10777,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       this._lmbExitDisconnectMode(true);
       if (this._barTimer) { clearInterval(this._barTimer); this._barTimer = null; }
       this._lmbUninstallBarGuard();           // v0.13.1：守卫是 document 级的，不拆会一直拦事件
+      this._lmbUninstallBarDragWatch();
       this._barSig = null;
       this._barCtx = null;
       // 这里必须 remove 而不是隐藏：插件都卸载了，不该在 DOM 里留残留节点
@@ -7747,6 +10859,54 @@ class LMBNodeSuggester extends FuzzySuggestModal {
   onClose() { if (!this.done && this.onCancel) this.onCancel(); }
 }
 
+/** v0.21：摘录卡追加笔记编辑器，输入与 Markdown 预览实时同步。 */
+class LMBExcerptNoteModal extends Modal {
+  constructor(app, opts) { super(app); this.opts = opts || {}; this.value = this.opts.value || ""; }
+  onOpen() {
+    const { contentEl } = this; contentEl.empty(); contentEl.addClass("lmb-note-editor");
+    contentEl.createEl("h3", { text: this.opts.title || "摘录笔记" });
+    const grid = contentEl.createDiv({ cls: "lmb-note-editor-grid" });
+    const ta = grid.createEl("textarea", { cls: "lmb-note-editor-input" });
+    const preview = grid.createDiv({ cls: "lmb-note-editor-preview markdown-rendered" });
+    ta.value = this.value; ta.placeholder = "写下理解、疑问、联想；支持 Markdown、公式和链接……";
+    const render = async () => {
+      preview.empty();
+      if (!ta.value.trim()) { preview.createEl("span", { text: "实时预览", cls: "lmb-note-preview-empty" }); return; }
+      try { await MarkdownRenderer.render(this.app, ta.value, preview, this.opts.sourcePath || "", this); }
+      catch (_) { preview.setText(ta.value); }
+    };
+    ta.addEventListener("input", () => { clearTimeout(this._renderTimer); this._renderTimer = setTimeout(render, 80); });
+    ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); this.submit(); } });
+    this.ta = ta; render();
+    const bar = contentEl.createDiv({ cls: "lmb-note-editor-actions" });
+    const remove = bar.createEl("button", { text: "删除笔记" });
+    const cancel = bar.createEl("button", { text: "取消" });
+    const save = bar.createEl("button", { text: "保存", cls: "mod-cta" });
+    remove.onclick = () => { ta.value = ""; this.submit(); };
+    cancel.onclick = () => this.close(); save.onclick = () => this.submit();
+    setTimeout(() => ta.focus(), 30);
+  }
+  submit() { const value = this.ta ? this.ta.value : ""; this.close(); if (this.opts.onSubmit) this.opts.onSubmit(value); }
+  onClose() { clearTimeout(this._renderTimer); this.contentEl.empty(); }
+}
+
+/** A deliberate confirmation step for destructive sidebar actions. */
+class LMBConfirmModal extends Modal {
+  constructor(app, opts) { super(app); this.opts = opts || {}; }
+  onOpen() {
+    const { contentEl } = this; contentEl.empty();
+    contentEl.createEl("h3", { text: this.opts.title || "确认操作" });
+    contentEl.createEl("p", { text: this.opts.message || "此操作无法直接撤销。" });
+    const bar = contentEl.createDiv({ cls: "lmb-note-editor-actions" });
+    const cancel = bar.createEl("button", { text: "取消" });
+    const confirm = bar.createEl("button", { text: this.opts.confirmText || "删除", cls: "mod-warning" });
+    cancel.onclick = () => this.close();
+    confirm.onclick = () => { this.close(); if (this.opts.onConfirm) this.opts.onConfirm(); };
+    setTimeout(() => confirm.focus(), 30);
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 /* 41-settings-tab —— 设置页 */
 
 /* ==================== 设置页 ==================== */
@@ -7756,6 +10916,9 @@ class LMBSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    new Setting(containerEl)
+      .setName("当前运行版本")
+      .setDesc("0.24.1 · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -7787,8 +10950,42 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(!!this.plugin.settings.recallDefault)
         .onChange(async (v) => { this.plugin.settings.recallDefault = v; await this.plugin.saveSettings(); }));
 
+    containerEl.createEl("h2", { text: "PDF 手写批注" });
+    new Setting(containerEl)
+      .setName("书写输入")
+      .setDesc("“触控笔和鼠标”适合桌面；“仅触控笔”可防止鼠标误画。手指始终交给 PDF 滚动和双指缩放。")
+      .addDropdown((d) => d
+        .addOption("pen-mouse", "触控笔和鼠标")
+        .addOption("pen-only", "仅触控笔")
+        .setValue(this.plugin.settings.inkInputMode === "pen-only" ? "pen-only" : "pen-mouse")
+        .onChange(async (v) => { this.plugin.settings.inkInputMode = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName("笔压效果")
+      .setDesc("自然压感适合普通书写；钢笔效果的粗细变化较克制；固定宽度适合画图。")
+      .addDropdown((d) => d
+        .addOption("natural", "自然压感")
+        .addOption("fountain", "钢笔效果")
+        .addOption("fixed", "固定宽度")
+        .setValue(this.plugin.settings.inkPressureMode || "natural")
+        .onChange(async (v) => { this.plugin.settings.inkPressureMode = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName("橡皮命中范围")
+      .setDesc("整笔橡皮与触控笔橡皮端的命中范围。")
+      .addSlider((s) => s.setLimits(8, 48, 2).setDynamicTooltip()
+        .setValue(Number(this.plugin.settings.inkEraserSize) || 18)
+        .onChange(async (v) => { this.plugin.settings.inkEraserSize = v; await this.plugin.saveSettings(); }));
+
     /* ---- v0.14.8 / v0.15.0：摘录附件与删除清理 ---- */
-    containerEl.createEl("h2", { text: "摘录附件与删除清理（v0.14.8 / v0.15.0）" });
+    containerEl.createEl("h2", { text: "摘录卡片与附件" });
+
+    new Setting(containerEl)
+      .setName("Canvas 摘录卡统一宽度")
+      .setDesc("新拖入 Canvas 的摘录卡统一使用该宽度；之后手动调整的宽度会被保留。")
+      .addSlider((s) => s
+        .setLimits(320, 800, 20)
+        .setDynamicTooltip()
+        .setValue(Math.max(320, Math.min(800, Number(this.plugin.settings.excerptCardWidth) || 560)))
+        .onChange(async (v) => { this.plugin.settings.excerptCardWidth = v; await this.plugin.saveSettings(); }));
 
     new Setting(containerEl)
       .setName("新摘录自动附截图")
@@ -7799,6 +10996,30 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.autoAttachScreenshot !== false)
         .onChange(async (v) => { this.plugin.settings.autoAttachScreenshot = v; await this.plugin.saveSettings(); }));
 
+    new Setting(containerEl)
+      .setName("摘录截图保存目录")
+      .setDesc("相对于 Vault 根目录；{pdf} 会替换为 PDF 文件名。默认：附件/{pdf}")
+      .addText((t) => t
+        .setPlaceholder("附件/{pdf}")
+        .setValue(this.plugin.settings.excerptImageFolder || "附件/{pdf}")
+        .onChange(async (v) => {
+          this.plugin.settings.excerptImageFolder = String(v || "").trim().replace(/^\/+|\/+$/g, "") || "附件/{pdf}";
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("图片摘录的 PDF 标记")
+      .setDesc("仅控制纯图片摘录在原 PDF 上的定位方式；带自动附图的文字摘录始终使用荧光笔底色。")
+      .addDropdown((d) => d
+        .addOption("dashed", "虚线边框（默认）")
+        .addOption("highlight", "半透明高亮")
+        .setValue(this.plugin.settings.imageExcerptMarkStyle === "highlight" ? "highlight" : "dashed")
+        .onChange(async (v) => {
+          this.plugin.settings.imageExcerptMarkStyle = v === "highlight" ? "highlight" : "dashed";
+          await this.plugin.saveSettings();
+          this.plugin.lmbRefreshAllMarks();
+        }));
+
     const cleanIntro = containerEl.createEl("p", {
       text: "删除画布上的摘录卡时，一并清理它留下的残留（截图附件 + md 摘录文档里的对应条目）。"
         + "⚠ 这是数据级操作，默认关闭 —— 请确认理解风险后再开启。"
@@ -7807,11 +11028,12 @@ class LMBSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("删除卡片时级联清理")
-      .setDesc("开启后：删除画布摘录卡 → 自动删除它引用的截图附件 + 从 md 摘录文档移除该条目。"
+      .setDesc("开启后：删除画布摘录卡 → 自动把截图附件移入回收目录 + 从 md 摘录文档移除该条目。"
         + "安全策略：① 只删插件自己命名的附件（xxx-P<页>-<戳>.webp），你的图片不碰；"
         + "② 全 vault 扫描，其他笔记还在引用就不删（避免 broken image）；"
-        + "③ 每次清理先写 .lmb-trash-log.md 备份，可追溯恢复；"
-        + "④ 底部弹提示告知清理了几项。")
+        + "③ Markdown 原块与截图会先移入 .lmb-trash，可真正恢复；"
+        + "④ 引用检查只要有一个文件读取失败，就保留截图；"
+        + "⑤ 底部弹提示告知清理了几项。")
       .addToggle((t) => t
         .setValue(this.plugin.settings.autoCleanOnDelete === true)
         .onChange(async (v) => {
@@ -7888,11 +11110,19 @@ module.exports.__test = {
   lmbRectsOverlapRatio, lmbPickDropParent, lmbSnapChildPosition, lmbBuildTree,
   lmbDiffCanvasNodes, lmbSideOf, lmbSideEnds, lmbLayoutGroup, lmbGroupBySide,
   lmbAutoEdgeAlive, lmbAutoParentEdgeOf,
+  lmbMoveDescendants,
+  lmbLayoutTree,
+  // PDF 手写：采样、命中、套索与版本化存储文件名
+  LMB_INK_SCHEMA_VERSION, LMB_INK_HISTORY_LIMIT,
+  lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso,
+  lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
+  lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
   // v0.8.0：卡片补充描述
   lmbSplitNote, lmbJoinNote, lmbStripNote, lmbRenderedText,
   LMB_NOTE_START, LMB_NOTE_END,
   // P1：摘录索引层
   lmbParseExcerptDoc, LMB_LINK_RE, LMB_SEL_RE,
+  lmbUnwrapExcerptCard,
   // v0.12.0：引用行 📖 化
   lmbBookLink, lmbRestoreRefDisplayName,
   // v0.11.0：首连锁定 / 改挂侧 / 尺寸重居中 + 独立评论

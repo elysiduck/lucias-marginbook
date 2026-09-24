@@ -108,7 +108,7 @@ function lmbHeightAfterOverflow(currentHeight, overflow) {
 // 第一次 fit 后滚动条消失、可用宽度变化，文字会重新换行，于是相同内容第二次测出不同高度。
 // 这里克隆整张卡片到同一个 Canvas 容器中，保留主题/祖先选择器和最终外框宽度，但解除
 // 高度与 overflow 约束，让浏览器按“无滚动条的自然布局”计算整卡高度。
-function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
+function lmbMeasureNaturalCard(wrapperEl, contentEl, scale, opts) {
   let clone = null;
   try {
     if (!wrapperEl || !contentEl || typeof wrapperEl.cloneNode !== "function") return 0;
@@ -173,7 +173,7 @@ function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
     // Obsidian Markdown 预览层有时自己承担滚动；一并解除这些纯容器的约束。
     if (cloneContent.querySelectorAll) {
       const layoutLayers = cloneContent.querySelectorAll(
-        ".markdown-preview-view, .markdown-preview-sizer, .markdown-preview-section, .markdown-rendered"
+        ".canvas-node-content, .canvas-node-container, .markdown-preview-view, .markdown-preview-sizer, .markdown-preview-section, .markdown-rendered"
       );
       for (const el of Array.from(layoutLayers)) {
         if (!el || !el.style) continue;
@@ -181,6 +181,11 @@ function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
         el.style.setProperty("min-height", "0", "important");
         el.style.setProperty("max-height", "none", "important");
         el.style.setProperty("overflow", "visible", "important");
+        // 窄卡片最容易触发 Obsidian 的 flex 拉伸：旧节点高度会被写进中间容器的
+        // flex-basis/min-block-size，单清 height 仍会把离屏副本撑到旧高度。
+        el.style.setProperty("flex", "none", "important");
+        el.style.setProperty("block-size", "auto", "important");
+        el.style.setProperty("min-block-size", "0", "important");
       }
     }
 
@@ -198,7 +203,12 @@ function lmbMeasureNaturalCard(wrapperEl, contentEl, scale) {
     const liveOverflow = lmbVerticalOverflow(contentEl);
     const liveOverflowFloor = liveOverflow > 0
       ? lmbHeightAfterOverflow(liveOuterHeight, liveOverflow) : 0;
-    const natural = Math.max(cloneHeight, contentHeight + measuredChrome, liveOverflowFloor);
+    // 切换文字/图片视图时，liveOuterHeight 仍是切换前的固定卡片高度，不能把它
+    // 作为新视图的下限，否则从高图片切回短文字时永远缩不下来。
+    const ignoreLiveHeight = !!(opts && opts.ignoreLiveHeight);
+    const natural = ignoreLiveHeight
+      ? Math.max(cloneHeight, contentHeight)
+      : Math.max(cloneHeight, contentHeight + measuredChrome, liveOverflowFloor);
     // 仅保留 4px 给小数像素取整/边框抗锯齿，不再按内容类型叠加大块经验余量。
     return natural > 0 ? Math.max(60, Math.min(4000, Math.ceil(natural + 4))) : 0;
   } catch (_) {
@@ -249,7 +259,6 @@ const LMB_NOTE_TYPE_DEFAULT = "ppd-note";
  * lmb-comment 是保留类型字面量（不做成设置项），解析器按字面量识别。 */
 const LMB_COMMENT_TYPE = "lmb-comment";
 const LMB_COMMENT_EMPTY_TITLE = "添加评论";
-const LMB_COMMENT_TITLE = "评论";
 const LMB_COMMENT_CALLOUT_RE = /^\s*>\s*\[!lmb-comment\]\s*([+-]?)\s*(.*)$/;
 /* ==================== v0.11.3：双重摘录（文字+截图）卡片视图切换 ====================
  * 双重摘录卡 = 引用块（文字）+ 截图 embed 同时在卡里，卡上挂一个 lmb-view callout
@@ -279,9 +288,15 @@ const LMB_VIEW_CALLOUT_RE = /^\s*>\s*\[!lmb-view\]\s*([+-]?)\s*(.*)$/;
 const LMB_STYLES = [
   ".lmb-chip{position:fixed;z-index:1000;",
   "background:var(--interactive-accent,#7c6cf0);color:var(--text-on-accent,#fff);",
-  "font-size:12px;padding:6px 12px;border-radius:16px;cursor:grab;",
+  "font-size:12px;padding:5px 7px 5px 12px;border-radius:16px;cursor:grab;display:flex;align-items:center;gap:8px;",
   "box-shadow:0 4px 14px rgba(0,0,0,.5);user-select:none;white-space:nowrap;}",
   ".lmb-chip:active{cursor:grabbing}",
+  ".lmb-chip-action{border:0;border-radius:9px;width:27px;height:27px;padding:5px;background:rgba(255,255,255,.16);color:inherit;cursor:pointer;display:grid;place-items:center;}",
+  ".lmb-chip-action:hover{background:rgba(255,255,255,.34)}",
+  "body.lmb-mobile .lmb-chip{max-width:calc(100vw - 20px);white-space:normal;font-size:13px;padding:7px 8px 7px 12px;gap:6px;}",
+  "body.lmb-mobile .lmb-chip-action{width:40px;height:40px;min-width:40px;border-radius:12px;touch-action:manipulation;}",
+  "body.lmb-mobile.lmb-rect-mode .pdf-viewer-container,body.lmb-mobile.lmb-rect-mode .page{touch-action:none!important;}",
+  "body.lmb-mobile .lmb-pdf-sidebar-host{padding-right:var(--lmb-pdf-sidebar-width,340px)!important;}",
   ".lmb-rect{position:fixed;z-index:999;",
   "border:2px dashed var(--interactive-accent,#7c6cf0);",
   "background:rgba(124,108,240,.15);pointer-events:none;}",
@@ -308,6 +323,38 @@ const LMB_STYLES = [
   //       而"在 PDF 上划选拖拽"是本插件的主工作流，不能破坏。
   ".lmb-mark{position:absolute;pointer-events:none;border-radius:2px;",
   "mix-blend-mode:multiply;box-sizing:border-box;}",
+  '.lmb-mark.lmb-mark-image{border:2px dashed currentColor;outline:1px solid rgba(255,255,255,.5);outline-offset:-4px;mix-blend-mode:normal;background:transparent!important;}',
+  '.lmb-color-palette{position:fixed;z-index:10001;display:flex!important;flex-flow:row nowrap!important;align-items:center!important;gap:6px;padding:7px;border:1px solid var(--background-modifier-border);border-radius:12px;background:var(--background-primary);box-shadow:0 5px 18px rgba(0,0,0,.32);}',
+  '.lmb-color-palette button{appearance:none!important;display:block!important;flex:0 0 26px!important;width:26px!important;min-width:26px!important;max-width:26px!important;height:26px!important;min-height:26px!important;max-height:26px!important;padding:0!important;margin:0!important;border:2px solid rgba(255,255,255,.72)!important;border-radius:50%!important;line-height:0!important;cursor:pointer;box-shadow:0 0 0 1px rgba(0,0,0,.18);}.lmb-color-palette button:hover{transform:scale(1.08);}',
+  '.lmb-mark[data-no]::after{content:attr(data-no);position:absolute;left:-9px;top:-9px;',
+  'min-width:18px;height:18px;padding:0 3px;border-radius:9px;background:var(--interactive-accent);',
+  'color:var(--text-on-accent);font:700 11px/18px sans-serif;text-align:center;mix-blend-mode:normal;box-sizing:border-box;}',
+  '.lmb-focus-mode .lmb-mark{opacity:.12;transition:opacity .18s ease;}',
+  '.lmb-focus-mode .lmb-flash{opacity:1!important;z-index:30;}',
+  '.callout[data-callout="lmb-excerpt"]{--callout-color:91,155,213;border-left-width:3px;',
+  'background:color-mix(in srgb,var(--background-secondary) 92%,rgb(var(--callout-color)));margin:12px 0;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-title{font-size:12px;letter-spacing:.02em;color:var(--text-muted);}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content{padding-top:6px!important;padding-bottom:6px!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>p:has(>.lmb-excerpt-id){display:none!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>p:empty,.callout[data-callout="lmb-excerpt"]>.callout-content>blockquote:empty{display:none!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>blockquote{margin-top:4px!important;margin-bottom:6px!important;}',
+  '.callout[data-callout="lmb-excerpt"]>.callout-content>p{margin-top:6px;margin-bottom:6px;}',
+  '.lmb-excerpt-note-action{display:flex;justify-content:flex-end;gap:12px;border-top:1px solid var(--background-modifier-border);margin-top:10px;padding-top:8px;}',
+  '.lmb-excerpt-note-action button{font-size:12px;color:var(--text-accent);background:transparent;border:0;cursor:pointer;}',
+  '.lmb-excerpt-note-action .lmb-excerpt-view-toggle{margin-right:auto;}',
+  '.lmb-md-dual-excerpt:not(.lmb-show-image) .lmb-excerpt-image-view{display:none!important;}',
+  '.lmb-md-dual-excerpt.lmb-show-image .lmb-excerpt-text-view{display:none!important;}',
+  '.lmb-md-dual-excerpt.lmb-show-image .lmb-excerpt-image-view{display:block!important;}',
+  '.lmb-excerpt-note-live{margin-top:6px;padding:10px 12px;border-left:4px solid rgb(112,196,157);border-radius:7px;background:var(--background-secondary);}',
+  '.lmb-excerpt-note-live-title{font-size:13px;font-weight:600;color:var(--text-muted);margin-bottom:6px;}',
+  '.lmb-excerpt-note-live-body>:first-child{margin-top:0;}.lmb-excerpt-note-live-body>:last-child{margin-bottom:0;}',
+  '.lmb-excerpt-id{display:none!important;}',
+  '.modal:has(.lmb-note-editor){width:min(900px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:hidden;}.modal:has(.lmb-note-editor) .modal-content{display:flex;flex-direction:column;min-height:0;max-width:none;overflow:hidden;}',
+  '.lmb-note-editor{width:100%;max-width:none;box-sizing:border-box;min-width:0;}.lmb-note-editor-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;height:min(420px,calc(100vh - 240px));min-height:240px;}',
+  '.lmb-note-editor-input,.lmb-note-editor-preview{min-width:0;min-height:0;height:100%;box-sizing:border-box;padding:12px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-primary);color:var(--text-normal);overflow:auto;}',
+  '.lmb-note-editor-input{resize:vertical;font:14px/1.6 var(--font-text);}.lmb-note-preview-empty{color:var(--text-faint);}',
+  '.lmb-note-editor-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;}',
+  '@media(max-width:700px){.modal:has(.lmb-note-editor){max-height:calc(100vh - 16px);}.lmb-note-editor-grid{grid-template-columns:1fr;height:auto;min-height:0;}.lmb-note-editor-input,.lmb-note-editor-preview{height:190px;}.lmb-note-editor-actions{flex-wrap:wrap;}}',
   // 降级标记：selection 缺失或 span 对不上时画页顶细条，宁可不准也不消失
   '.lmb-mark[data-fallback="1"]{left:0 !important;right:0 !important;',
   "top:0 !important;height:3px !important;width:auto !important;opacity:.75;}",
@@ -327,6 +374,19 @@ const LMB_STYLES = [
   "border-radius:0 !important;box-shadow:none !important;padding:4px 8px !important;margin-top:2px;}",
   '.callout[data-callout="lmb-comment"] .callout-title{gap:6px;}',
   '.callout[data-callout="lmb-comment"] .callout-title-inner{color:var(--text-muted);font-weight:400;font-size:12.5px;}',
+  // v0.21.5：Canvas 评论与 Markdown 摘录笔记统一视觉语言。只改渲染，不改评论数据，
+  // 已有卡片无需迁移；仍可点击整个评论框打开原来的编辑窗口。
+  '.canvas-node .callout[data-callout="lmb-comment"]{--callout-icon:pencil;',
+  'margin:10px 8px 4px!important;padding:8px 10px!important;border:0!important;',
+  'border-left:4px solid rgb(112,196,157)!important;border-radius:7px!important;',
+  'background:var(--background-secondary)!important;box-shadow:none!important;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-title{display:none!important;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-content{padding-top:0;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-content>:first-child{margin-top:0;}',
+  '.canvas-node .callout[data-callout="lmb-comment"] .callout-content>:last-child{margin-bottom:0;}',
+  '.canvas-node .callout[data-callout="lmb-excerpt"]{margin-top:4px!important;margin-bottom:4px!important;}',
+  '.canvas-node .callout[data-callout="lmb-excerpt"]>.callout-content{padding-top:2px!important;padding-bottom:2px!important;}',
+  '.canvas-node .callout[data-callout="lmb-comment"]{margin-top:6px!important;}',
   '.callout[data-callout="lmb-comment"] .callout-icon{color:var(--text-faint);}',
   // 折叠箭头推到最右（PDF Flow 的「›」位置）；lmb-comment-clickable 供 JS/测试识别
   '.callout[data-callout="lmb-comment"] .callout-fold{margin-left:auto;}',
@@ -337,9 +397,27 @@ const LMB_STYLES = [
   "padding:2px 8px !important;}",
   '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar .clickable-icon{',
   "margin:0 1px !important;padding:3px 5px !important;}",
+  '.workspace-leaf-content[data-type="pdf"] .pdf-toolbar .lmb-toolbar-group{display:flex;align-items:center;',
+  'justify-content:flex-end;gap:1px;margin-left:auto!important;padding:0!important;flex:0 0 auto;}',
+  '.lmb-toolbar-ink.is-active{color:var(--text-on-accent)!important;background:var(--interactive-accent)!important;}',
+  '.lmb-ink-layer,.lmb-ink-live-layer{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;z-index:50!important;display:block;touch-action:auto!important;pointer-events:none!important;}',
+  '.lmb-ink-live-layer{z-index:51!important;}',
+  'body.lmb-ink-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair;}',
+  '.workspace-leaf-content[data-type="pdf"]{position:relative;}',
+  '.lmb-ink-tools{position:absolute;z-index:1000;top:44px;right:12px;display:flex;align-items:center;gap:4px;padding:6px;border:1px solid var(--background-modifier-border);border-radius:11px;background:color-mix(in srgb,var(--background-primary) 94%,transparent);backdrop-filter:blur(8px);box-shadow:var(--shadow-s,0 4px 16px rgba(0,0,0,.25));}',
+  '.lmb-ink-tools-content{display:flex;align-items:center;gap:4px;}.lmb-ink-tools.is-collapsed .lmb-ink-tools-content{display:none;}',
+  '.lmb-ink-tools button{min-width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);padding:4px 7px;cursor:pointer;font-size:14px;}.lmb-ink-tools button:hover{background:var(--background-modifier-hover);}.lmb-ink-tools button.is-active{background:var(--interactive-accent);color:var(--text-on-accent);}',
+  '.lmb-ink-tools .lmb-ink-collapse{min-width:24px;width:24px;padding:2px;}.lmb-ink-swatches{display:flex;gap:3px;padding:0 2px;}.lmb-ink-tools .lmb-ink-swatch{min-width:18px;width:18px;height:18px;padding:0;border:2px solid var(--background-primary);box-shadow:0 0 0 1px var(--background-modifier-border);border-radius:50%;}.lmb-ink-tools .lmb-ink-swatch.is-active{box-shadow:0 0 0 2px var(--interactive-accent);}',
+  '.lmb-ink-tools input[type="color"]{width:26px;height:26px;padding:1px;border:0;background:transparent;cursor:pointer;}.lmb-ink-tools input[type="range"]{width:82px;cursor:pointer;}.lmb-ink-save-status{min-width:42px;color:var(--text-faint);font-size:10px;white-space:nowrap;}.lmb-ink-save-status[data-state="error"]{color:var(--text-error);}',
+  '@media(max-width:700px){.lmb-ink-tools{top:48px;right:6px;max-width:calc(100% - 12px);overflow-x:auto;}.lmb-ink-tools button{min-width:42px;height:42px;font-size:17px;}.lmb-ink-tools .lmb-ink-collapse{min-width:36px;width:36px}.lmb-ink-tools input[type="range"]{width:100px}.lmb-ink-save-status{display:none;}}',
+  '.lmb-ink-text-editor{position:absolute;z-index:60;min-width:130px;min-height:44px;resize:both;padding:5px 7px;border:1px solid var(--interactive-accent);border-radius:4px;background:var(--background-primary);font:16px/1.35 var(--font-text);box-shadow:var(--shadow-s,0 2px 8px rgba(0,0,0,.18));}',
+  '.workspace-leaf-content[data-type="pdf"] .lmb-toolbar-group .clickable-icon{margin:0!important;',
+  'padding:3px!important;width:28px!important;height:28px!important;min-width:28px!important;max-width:28px!important;display:inline-flex;align-items:center;justify-content:center;flex:0 0 28px!important;}',
+  '.workspace-leaf-content[data-type="pdf"] .lmb-toolbar-group svg{display:block!important;width:17px!important;height:17px!important;min-width:17px!important;max-width:17px!important;stroke:currentColor!important;flex:0 0 17px!important;}',
   // 注入的框选按钮：激活态高亮（与 ribbon is-active 同一套主题色语义）
   ".lmb-toolbar-crop.is-active{color:var(--text-on-accent)!important;",
   "background:var(--interactive-accent)!important;}",
+  '.lmb-toolbar-sidebar.is-active{color:var(--text-on-accent)!important;background:var(--interactive-accent)!important;}',
   // 框选模式开启时，PDF 页面光标换十字，给「正在框选」的即时视觉反馈
   'body.lmb-rect-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair !important;}',
   // ===== v0.11.3：双重摘录卡（文字+截图）视图切换 =====
@@ -404,7 +482,8 @@ const LMB_STYLES = [
   //   （比如缓存命中后按钮被挂到了错误的宿主），至少视觉上不会炸。
   '.pdf-embed .lmb-toolbar-crop,',
   '.pdf-embed .lmb-toolbar-md,',
-  '.pdf-embed .lmb-toolbar-canvas{display:none !important;}',
+  '.pdf-embed .lmb-toolbar-canvas,',
+  '.pdf-embed .lmb-toolbar-sidebar{display:none !important;}',
 
   // ---- 2. 非 PDF 视图里不显示注入的按钮 ----
   // 理由：用 :not() 白名单式限定，而不是黑名单式排除 —— 默认「任何非 PDF 的 leaf 都隐藏」，
@@ -412,14 +491,15 @@ const LMB_STYLES = [
   //   （这条是对并行改动 30-plugin-core.js 的防御：那边正在调整注入宿主的选择策略。）
   '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-crop,',
   '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-md,',
-  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-canvas{display:none !important;}',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-canvas,',
+  '.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-sidebar{display:none !important;}',
 
   // ---- 3. 三个注入按钮的通用视觉基线 ----
   // 理由：给后续所有 per-view-type 覆写提供一个稳定的基类（cursor + opacity 过渡），
   //   将来针对某视图做 hover / 显隐动画时，从这个基线继承即可，不用每个视图重抄一遍。
   //   刻意**只加不影响现有外观的属性**：cursor 是交互语义、transition 只声明过渡曲线，
   //   不指定初始 opacity，所以当前渲染结果与加这条之前完全一致。
-  ".lmb-toolbar-crop,.lmb-toolbar-md,.lmb-toolbar-canvas{cursor:pointer;transition:opacity .15s ease;}",
+  ".lmb-toolbar-crop,.lmb-toolbar-md,.lmb-toolbar-canvas,.lmb-toolbar-sidebar{cursor:pointer;transition:opacity .15s ease;}",
 
   // ===== v0.13.0 / v0.13.2：canvas 卡片悬浮操作栏（.lmb-canvas-bar）=====
   // 定位逻辑全在 JS（lmbCalcBarPos 每轮写内联 left/top），CSS 只管呈现，别在这儿改定位。
@@ -439,20 +519,27 @@ const LMB_STYLES = [
   '.lmb-canvas-bar .lmb-bar-comment,',
   '.lmb-canvas-bar .lmb-bar-jump,',
   '.lmb-canvas-bar .lmb-bar-view,',
+  '.lmb-canvas-bar .lmb-bar-color,',
   '.lmb-canvas-bar .lmb-bar-fit,',
+  '.lmb-canvas-bar .lmb-bar-follow,',
   '.lmb-canvas-bar .lmb-bar-disconnect{display:inline-flex;align-items:center;justify-content:center;gap:4px;width:auto;height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;transition:background .12s ease,color .12s ease;}',
   '.lmb-canvas-bar .lmb-bar-text{font-size:11px;line-height:1;letter-spacing:0.5px;font-weight:500;}',
   '.lmb-canvas-bar .lmb-bar-comment:hover,',
   '.lmb-canvas-bar .lmb-bar-jump:hover,',
   '.lmb-canvas-bar .lmb-bar-view:hover,',
+  '.lmb-canvas-bar .lmb-bar-color:hover,',
   '.lmb-canvas-bar .lmb-bar-fit:hover,',
+  '.lmb-canvas-bar .lmb-bar-follow:hover,',
   '.lmb-canvas-bar .lmb-bar-disconnect:hover{background:var(--background-modifier-hover);color:var(--text-normal);}',
+  '.lmb-canvas-bar .lmb-bar-follow.is-active{background:var(--interactive-accent);color:var(--text-on-accent);}',
 
   '.lmb-disconnect-candidate{cursor:pointer!important;filter:drop-shadow(0 0 3px var(--interactive-accent));}',
   '.lmb-disconnect-candidate path{stroke:var(--interactive-accent)!important;stroke-width:6px!important;pointer-events:stroke!important;cursor:pointer!important;}',
 
   // setIcon 注入的 svg 默认会撑成 100% 把按钮顶变形，这里统一尺寸
-  '.lmb-canvas-bar svg{width:14px;height:14px;display:block;}',
+  '.lmb-canvas-bar svg{width:14px!important;height:14px!important;min-width:14px!important;max-width:14px!important;display:block!important;flex:0 0 14px!important;}',
+  'body.lmb-mobile .lmb-canvas-bar{display:grid!important;grid-template-columns:repeat(4,max-content);align-items:center!important;gap:3px;padding:4px;max-width:calc(100% - 8px);}',
+  'body.lmb-mobile .lmb-canvas-bar>div{height:34px!important;min-height:34px!important;padding:0 9px!important;white-space:nowrap;touch-action:manipulation;}',
 
   // 不适用的按钮由 JS 走 hideRemove（display:none），这里不给额外样式，避免和 JS 打架
 
@@ -468,7 +555,73 @@ const LMB_STYLES = [
   //   不移除元素，querySelector 找得到）。卡片 markdown 文本一字未改。
   //   只作用于 canvas 节点内；md 阅读视图保持原样。
   '.canvas-node-content .callout[data-callout="lmb-comment"]:not(:has(.callout-content)),',
-  '.canvas-node-content .callout[data-callout="lmb-view"]{display:none !important;}'
+  '.canvas-node-content .callout[data-callout="lmb-view"]{display:none !important;}',
+
+  // ===== PDF 批注边页：与 PDF 并排占位，不覆盖阅读区 =====
+  // 保留 PDF.js 原生 block/absolute 布局；用 padding 划出边页空间，绝不能把宿主改成 flex。
+  '.lmb-pdf-sidebar-host{position:relative!important;padding-right:var(--lmb-pdf-sidebar-width,340px)!important;',
+  'box-sizing:border-box!important;overflow:hidden!important;}',
+  '.lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed{padding-right:0!important;}',
+  '.lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed>.lmb-pdf-excerpt-sidebar{display:none!important;}',
+  '.lmb-pdf-excerpt-sidebar{position:absolute;z-index:15;right:0;top:var(--lmb-pdf-sidebar-top,0px);bottom:0;min-width:260px;max-width:min(50vw,560px);height:auto;',
+  'padding:0 10px 28px 13px;overflow:auto;box-sizing:border-box;background:var(--background-primary);',
+  'border-left:1px solid var(--background-modifier-border);scroll-behavior:smooth;}',
+  '.lmb-pdf-sidebar-resizer{position:absolute;z-index:5;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize;}',
+  '.lmb-pdf-sidebar-resizer:hover,.lmb-pdf-sidebar-resizer.is-dragging{background:var(--interactive-accent);opacity:.75;}',
+  '.lmb-pdf-sidebar-title{position:sticky;top:0;padding:12px 3px 10px;margin-bottom:9px;',
+  'background:var(--background-primary);border-bottom:1px solid var(--background-modifier-border);z-index:2;}',
+  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;}',
+  '.lmb-pdf-sidebar-title-main{font-size:14px;font-weight:700;line-height:1.4;}',
+  '.lmb-pdf-sidebar-count{font-size:10px;color:var(--text-on-accent);background:var(--interactive-accent);padding:1px 6px;border-radius:99px;}',
+  '.lmb-pdf-sidebar-file{font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}',
+  '.lmb-pdf-sidebar-title-sub{font-size:11px;color:var(--text-muted);margin-top:2px;}',
+  '.lmb-pdf-sidebar-controls{display:flex;align-items:center;gap:6px;margin-top:8px;height:34px;}',
+  '.lmb-pdf-sidebar-controls button,.lmb-pdf-sidebar-item-actions button{border:1px solid var(--background-modifier-border);',
+  'appearance:none!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;flex:0 0 auto!important;height:30px!important;min-height:30px!important;max-height:30px!important;line-height:1!important;border-radius:7px;background:var(--background-secondary);color:var(--text-muted);font-size:11px;padding:0 10px!important;margin:0!important;cursor:pointer;}',
+  '.lmb-pdf-sidebar-controls button.is-active{background:var(--interactive-accent);color:var(--text-on-accent);border-color:transparent;}',
+  '.lmb-pdf-sidebar-follow{margin-left:auto!important;}',
+  '.lmb-pdf-sidebar-search{width:100%;box-sizing:border-box;margin-top:8px;padding:6px 8px;border-radius:7px;',
+  'border:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-normal);}',
+  '.lmb-pdf-sidebar-list{display:flex;flex-direction:column;gap:8px;}',
+  '.lmb-pdf-sidebar-item{border:1px solid var(--background-modifier-border);border-radius:9px;padding:9px;',
+  'background:var(--background-secondary);box-sizing:border-box;cursor:pointer;transition:border-color .15s,background .15s;}',
+  '.lmb-pdf-sidebar-item:hover{border-color:var(--background-modifier-border-hover);}',
+  '.lmb-pdf-sidebar-item.is-active{border-color:var(--interactive-accent);background:color-mix(in srgb,var(--background-secondary) 82%,var(--interactive-accent));}',
+  '.lmb-pdf-sidebar-item.is-page-hidden,.lmb-pdf-sidebar-item.is-search-hidden{display:none;}',
+  '.lmb-pdf-sidebar-item-header{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:5px;}',
+  '.lmb-pdf-sidebar-item-title{font-size:11px;font-weight:700;color:var(--text-accent);}',
+  '.lmb-pdf-sidebar-item-tags{font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.lmb-pdf-sidebar-item-text{font-size:12px;line-height:1.5;white-space:normal;word-break:break-word;}',
+  '.lmb-pdf-sidebar-item-text>p:first-child{margin-top:0;}.lmb-pdf-sidebar-item-text>p:last-child{margin-bottom:0;}',
+  '.lmb-pdf-sidebar-item-image{margin-top:6px;}.lmb-pdf-sidebar-item-image img{display:block;width:100%;height:auto;',
+  'max-height:360px;object-fit:contain;border-radius:6px;background:var(--background-primary);}',
+  '.lmb-pdf-sidebar-item-text.is-hidden,.lmb-pdf-sidebar-item-image.is-hidden{display:none!important;}',
+  '.lmb-pdf-sidebar-item-note{font-size:12px;line-height:1.4;margin-top:6px;padding:6px 8px;border-left:3px solid rgb(112,196,157);',
+  'background:var(--background-primary);border-radius:5px;}',
+  '.lmb-pdf-sidebar-item-note-title{font-weight:600;font-size:10px;color:var(--text-muted);margin-bottom:2px;}',
+  '.lmb-pdf-sidebar-item-note-body{white-space:normal;word-break:break-word;line-height:1.4;}',
+  '.lmb-pdf-sidebar-item-note-body table{font-size:12px!important;line-height:1.35!important;width:100%;table-layout:fixed;}',
+  '.lmb-pdf-sidebar-item-note-body th,.lmb-pdf-sidebar-item-note-body td{font-size:inherit!important;line-height:inherit!important;padding:4px 6px!important;min-width:0!important;overflow-wrap:anywhere;vertical-align:top;}',
+  '.lmb-pdf-sidebar-item-note-body p{margin:2px 0!important;min-height:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body>p:first-child{margin-top:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body>p:last-child{margin-bottom:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body ul,.lmb-pdf-sidebar-item-note-body ol{margin:2px 0!important;padding-left:18px!important;}',
+  '.lmb-pdf-sidebar-item-note-body li{margin:0!important;padding:0!important;line-height:1.4!important;}',
+  '.lmb-pdf-sidebar-item-note-body li>p{display:inline;margin:0!important;padding:0!important;}',
+  '.lmb-pdf-sidebar-item-note-body li+li{margin-top:1px!important;}',
+  '.lmb-pdf-sidebar-item-actions{display:flex;flex-wrap:wrap;align-items:center;gap:5px;justify-content:flex-end;margin-top:8px;}',
+  '.lmb-pdf-sidebar-item-actions.is-empty{display:none;}',
+  '.lmb-pdf-sidebar-item-text-excerpt{font-weight:700;letter-spacing:.01em;}',
+  '.lmb-pdf-sidebar-item-actions .lmb-pdf-sidebar-icon-button{display:inline-flex;align-items:center;justify-content:center;',
+  'width:30px;height:30px;min-width:30px;padding:0;color:var(--text-muted);}',
+  '.lmb-pdf-sidebar-item-actions .lmb-pdf-sidebar-icon-button:hover{color:var(--text-accent);border-color:var(--interactive-accent);}',
+  '.lmb-pdf-sidebar-icon-button{color:var(--text-normal)!important;opacity:1!important;}',
+  '.lmb-pdf-sidebar-icon-button svg{display:block!important;width:16px!important;height:16px!important;min-width:16px!important;max-width:16px!important;flex:0 0 16px!important;stroke:currentColor!important;stroke-width:2!important;opacity:1!important;}',
+  '.lmb-pdf-sidebar-empty{text-align:center;color:var(--text-muted);padding:42px 10px;}',
+  '.lmb-mark-sidebar-active{outline:2px solid var(--interactive-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--interactive-accent) 25%,transparent);}',
+  'body.lmb-mobile .lmb-pdf-excerpt-sidebar{min-width:280px!important;max-width:min(38vw,420px)!important;box-shadow:none!important;}',
+  'body.lmb-mobile .lmb-pdf-sidebar-resizer{display:none;}',
+  '@media(max-width:700px){body.lmb-mobile .lmb-pdf-sidebar-host{padding-right:min(46vw,320px)!important;}body.lmb-mobile .lmb-pdf-excerpt-sidebar{width:min(46vw,320px)!important;min-width:240px!important;max-width:min(46vw,320px)!important;}}'
 ];
 
 if (typeof module !== "undefined" && module.exports) {

@@ -2,6 +2,17 @@
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
 
+  async lmbApplyTreeLayout(direction) {
+    const ctx = this.activeCanvasContext();
+    if (!ctx) { new Notice("请先打开一个 Canvas"); return; }
+    const rd = await this._lmbReadCanvasData(ctx.file);
+    if (!rd || !rd.data) return;
+    const moved = lmbLayoutTree(rd.data.nodes || [], rd.data.edges || [], direction);
+    if (!moved) { new Notice("没有可布局的卡片"); return; }
+    await this._lmbWriteCanvasData(ctx.file, rd.data, rd.memCanvas, rd.raw);
+    new Notice(`已按${direction === "down" ? "自上而下" : "从左到右"}树形布局 ${moved} 个根节点`);
+  },
+
   scheduleCanvasSync(file) {
     const old = this.syncTimers.get(file.path);
     if (old) clearTimeout(old);
@@ -117,6 +128,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     let changed = false;
     let store = this.autoSize.get(cf.path);
     if (!store) { store = new Map(); this.autoSize.set(cf.path, store); }
+
+    // 新拖入的摘录卡统一宽度。canvasPositions 是持久化的“已见节点”账本，因此不会
+    // 覆盖用户后来手动调整过的存量卡宽度。
+    const lastPosForWidth = this.canvasPositions.get(cf.path) || new Map();
+    const excerptWidth = Math.max(320, Math.min(800, Number(this.settings.excerptCardWidth) || 560));
+    for (const node of nodes) {
+      if (node.type !== "text" || !node.text || !EX_ID_RE.test(node.text)) continue;
+      if (lastPosForWidth.has(node.id)) continue;
+      if (Math.abs((Number(node.width) || 0) - excerptWidth) >= 1) {
+        node.width = excerptWidth;
+        changed = true;
+      }
+    }
 
     /* v0.8.2：新出现的摘录卡自动挂一个「空的补充描述框」。
      *   放在 fitNode 之前，这样尺寸估算会基于「已加框」的文本一次算准，不用二次修正。
@@ -347,6 +371,20 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           "(" + ends.fromSide + "→" + ends.toSide + ", 相交" + Math.round(hit.ratio * 100) + "%, 组" + group.length + ")");
       }
 
+      if (this.settings && this.settings.moveDescendantsWithParent === true) {
+        const movements = movedOrNew.filter((n) => lastPos.has(n.id)).map((n) => {
+          const prev = lastPos.get(n.id);
+          return { id: n.id, dx: n.x - prev.x, dy: n.y - prev.y };
+        });
+        const count = lmbMoveDescendants(nodes, data.edges, movements);
+        if (count) {
+          changed = true;
+          this.canvasPositions.set(cf.path, new Map(nodes.filter((n) => n && n.type !== "group")
+            .map((n) => [n.id, { x: n.x, y: n.y, width: n.width || 0, height: n.height || 0 }])));
+          console.log("[lmb] 文件通道子卡联动移动:", count, "张");
+        }
+      }
+
       if (changed) {
         // 持续持久化 sidecar 的兜底补登条目（含本次循环内所有 recenter/reside 补的）
         this.autoEdges.set(cf.path, sidecar2);
@@ -371,12 +409,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       seenIds.add(id);
       // v0.8.0：除非设置里明确要同步，否则补充描述不进摘录文档（保持摘录文档是「原文」的镜像）
       // v0.16.6 P1-4：传 note 类型白名单 —— 旧版会把用户自有的 [!warning]/[!quote] 整段删掉
+      // Canvas 的 lmb-comment 只是 Markdown 真相备注的显示镜像，绝不能再写回
+      // 摘录正文，否则会形成 `[!lmb-comment]` 源码 + lmb-note 备注的双份污染。
+      const withoutMirrorComment = lmbSplitComment(node.text).body;
       const srcText = this.settings.noteIntoSync
-        ? node.text
-        : lmbStripNote(node.text, this.settings.noteCalloutType || "ppd-note");
-      const body = srcText
+        ? withoutMirrorComment
+        : lmbStripNote(withoutMirrorComment, this.settings.noteCalloutType || "ppd-note");
+      const body = lmbUnwrapExcerptCard(srcText)
         .split("\n")
-        .filter((l) => !/^\s*\^ex-[0-9a-z]{4,8}\s*$/.test(l))
+        .filter((l) => !/^\s*\^ex-[0-9a-z]{4,16}\s*$/.test(l))
         // v0.11.3：lmb-view 是卡片上的视图切换按钮（UI 开关），不属于摘录内容，剥掉
         .filter((l) => !LMB_VIEW_CALLOUT_RE.test(l))
         .join("\n")
@@ -476,11 +517,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           if (!this._fitRetryImg) this._fitRetryImg = {};
           const k = cf.path;
           const cnt = (this._fitRetryImg[k] || 0) + 1;
-          if (cnt <= 3) {
+          if (cnt <= 6) {
             this._fitRetryImg[k] = cnt;
             setTimeout(() => {
               try { this._actualFitRetryForFile(cf).catch(() => {}); } catch (_) {}
-            }, 800 * cnt);
+            }, Math.min(2400, 500 * cnt));
             return;                       // 本轮不测（测了也是偏小值）
           }
           try { delete this._fitRetryImg[k]; } catch (_) {}   // 放弃：按现状测
@@ -504,6 +545,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       if (!data || !Array.isArray(data.nodes)) return;
       const sizeUpdates = new Map();
+      let unresolvedActual = false;
       for (const n of data.nodes) {
         if (n.type !== "text" || !n.text || !EX_ID_RE.test(n.text)) continue;
         const cached = store.get(n.id);
@@ -513,7 +555,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (cached && cached.hash === textHash && !cached.pendingActual
           && (outerWidth <= 0 || Math.abs((Number(cached.w) || 0) - outerWidth) < 2)) continue;
         const live = canvas.nodes.get ? canvas.nodes.get(n.id) : canvas.nodes[n.id];
-        if (!live) continue;
+        if (!live) { unresolvedActual = true; continue; }
         // v0.13.5：actual 可能拿不到（markdown 异步渲染还没 layout）—— 200ms 后多试一次
         //   仍拿不到就用 estimate（保证至少有值可写，否则 retry 永远静默失败）
         let actual = this.lmbFitNodeActual(live, store);
@@ -521,6 +563,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           await new Promise((r) => setTimeout(r, 200));
           actual = this.lmbFitNodeActual(live, store);
         }
+        if (!actual) unresolvedActual = true;
         if (actual && !actual.unchanged) {
           sizeUpdates.set(n.id, { width: Math.round(actual.w), height: Math.round(actual.h) });
         }
@@ -560,6 +603,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           await this.app.vault.adapter.write(cf.path, JSON.stringify(fresh, null, indent));
         }
         this.persistAutoSizeSoon();
+      }
+      // iPad 的 Markdown/图片布局可能晚于首轮 250+200ms。只要仍有待实测卡，继续
+      // 低频重试，成功后 pendingActual 会被清掉并自然停止，不再出现“时好时坏”。
+      if (unresolvedActual && !this._unloaded) {
+        if (!this._fitRetryActual) this._fitRetryActual = {};
+        const key = cf.path;
+        const count = (this._fitRetryActual[key] || 0) + 1;
+        if (count <= 6) {
+          this._fitRetryActual[key] = count;
+          setTimeout(() => {
+            try { this._actualFitRetryForFile(cf).catch(() => {}); } catch (_) {}
+          }, Math.min(2400, 400 * count));
+        } else delete this._fitRetryActual[key];
+      } else if (this._fitRetryActual) {
+        delete this._fitRetryActual[cf.path];
       }
     } catch (_) {}
   },
@@ -714,7 +772,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // 估算回退（节点未渲染或 DOM 拿不到）
     const prev = store.get(node.id);
     if (prev && prev.hash === hash) return null;
-    const size = this.estimateSizeFor(node.text);
+    const size = this.estimateSizeFor(node.text, { width: currentWidth });
+    size.w = currentWidth > 0 ? currentWidth : Math.max(320, Math.min(800,
+      Number(this.settings && this.settings.excerptCardWidth) || 560));
     // DOM/图片尚未就绪时只估算一次，并明确标记供延迟重测定点处理。
     store.set(node.id, { hash, w: size.w, h: size.h, pendingActual: true });
     this.persistAutoSizeSoon();
@@ -816,11 +876,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   /** 图片卡：按截图真实宽高比；文本卡：按行宽/行数估算；v0.11.3 双重卡：取文字/图片布局的较大高 */
-  estimateSizeFor(text) {
+  estimateSizeFor(text, opts) {
+    opts = opts || {};
     const em = text.match(/!\[\[([^\]|]+?)\]\]/);   // em[1] = 完整附件名（含 .webp）
     if (em) {
       const dims = this.imgDims.get(em[1]);
-      const w = 380;
+      const requestedWidth = Number(opts.width) || 0;
+      const w = requestedWidth > 0 ? Math.max(80, requestedWidth)
+        : Math.max(320, Math.min(800, Number(this.settings && this.settings.excerptCardWidth) || 560));
       // v0.11.3 双重卡判定：卡里同时有 embed 和 PDF 引用块行（文字+截图并存，
       //   靠 lmb-view 切换视图）。两种视图共用同一张卡 → 高取两者较大值，
       //   宽度固定不随切换变化（用户要求：切换内容显示方式时固定卡片宽度）。
@@ -832,8 +895,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           : 460;                                    // 尺寸档案缺失时的兜底
         // v0.16.6：note 类型白名单随设置走（estimateSizeFor 里的两处调用同源）
         const nt = (this.settings && this.settings.noteCalloutType) || "ppd-note";
-        const textH = this.estimateTextSize(lmbRenderedText(text, nt)).h;
-        return this.addNoteChrome({ w, h: Math.max(imgH, textH) }, text);
+        const textH = this.estimateTextSize(lmbRenderedText(text, nt), w).h;
+        // 同一时刻只显示一种视图，不能再取二者最大值，否则短文字视图会永久
+        // 保留图片高度。未指定时按默认文字视图估算。
+        const visibleH = opts.view === "image" ? imgH : textH;
+        return this.addCommentChrome(this.addNoteChrome({ w, h: visibleH }, text), text);
       }
       if (dims && dims.w > 0) {
         // 图片高（按卡片宽等比）+ 回跳引用行（约 2 行）+ 内边距
@@ -846,7 +912,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     //   addNoteChrome 加 ppd-note 高度，新增 addCommentChrome 加 lmb-comment 展开态高度
     return this.addCommentChrome(
       this.addNoteChrome(
-        this.estimateTextSize(lmbRenderedText(text, (this.settings && this.settings.noteCalloutType) || "ppd-note")),
+        this.estimateTextSize(lmbRenderedText(text, (this.settings && this.settings.noteCalloutType) || "ppd-note"), opts.width),
         text
       ),
       text
@@ -886,7 +952,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     return { w: size.w, h: Math.ceil(Math.min(2000, size.h + extra)) };
   },
 
-  estimateTextSize(text) {
+  estimateTextSize(text, widthOverride) {
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
     const meas = doc.createElement("span");
     meas.style.cssText = "position:fixed;left:-9999px;top:0;white-space:pre;visibility:hidden;" +
@@ -903,7 +969,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
     const padX = 28, padY = 40, lineH = 25, quoteIndent = 22;
     const natural = Math.max.apply(null, lines.map((l) => l.w + (l.quote ? quoteIndent : 0)));
-    const w = Math.ceil(Math.min(560, Math.max(260, natural + padX)));
+    const forced = Number(widthOverride) || 0;
+    const w = forced > 0 ? Math.max(80, forced)
+      : Math.ceil(Math.min(560, Math.max(260, natural + padX)));
     const innerW = Math.max(80, w - padX - quoteIndent);
     let h = padY;
     for (const l of lines) {

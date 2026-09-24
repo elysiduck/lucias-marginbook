@@ -18,7 +18,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /**
    * 解析 pdf 回跳链接。**不依赖 this**（只读模块常量），可离线测。
    * 输入：`x.pdf#page=21&selection=0,0,655,478` 或 `x.pdf#page=21&rect=1,2,3,4`
-   * 返回：{ filePath, page, selection, rect }；非 pdf#page= 链接返回 null。
+   * 返回：{ filePath, page, selection, rect, target }；非 pdf#page= 链接返回 null。
    *
    * v0.9.1 起【接管所有 pdf#page= 链接】（不再要求必须带 selection=）：
    *   原因是用户启用了 PDF++ 后，PDF++ 也劫持 openLinkText 并尝试解析"该 PDF
@@ -50,11 +50,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!page || isNaN(page)) return null;
       const sm = LMB_SEL_RE.exec((params.get("selection") || "").trim());
       const rm = LMB_RECT_RE.exec((params.get("rect") || "").trim());
+      const target = params.get("target") || null;
       return {
         filePath: path,
         page: page,
         selection: sm ? [+sm[1], +sm[2], +sm[3], +sm[4]] : null,
-        rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null
+        rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null,
+        target: target
       };
     } catch (_) { return null; }
   },
@@ -95,7 +97,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           ev.preventDefault();
           ev.stopPropagation();
           ev.stopImmediatePropagation();                     // Obsidian / 其他插件都别想碰
-          this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect);
+          this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
         } catch (err) {
           console.warn("[lmb] pdf 链接拦截出错:", err);
         }
@@ -133,7 +135,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         try {
           const hit = this.lmbParsePdfLink(linktext);
           if (hit) {
-            this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect);
+            this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
             return;                                       // 接管
           }
         } catch (err) {
@@ -183,22 +185,26 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   两者都没有 → 只滚到页
    * 只匹配「真正渲染了」的 leaf（view.file 有值）——僵尸 leaf 一律绕开重开。
    */
-  async lmbJumpToSelection(filePath, pageNum, selection, rect) {
+  async lmbJumpToSelection(filePath, pageNum, selection, rect, preferredLeaf, entryText) {
     try {
       if (!filePath || !pageNum) return;
-      let leaf = null;
+      let leaf = null, resolvedFile = this.app.vault.getAbstractFileByPath(filePath);
+      if (!resolvedFile) {
+        try { resolvedFile = this.app.metadataCache.getFirstLinkpathDest(filePath, ""); } catch (_) { resolvedFile = null; }
+      }
+      const resolvedPath = resolvedFile && resolvedFile.path ? resolvedFile.path : filePath;
+      if (preferredLeaf && preferredLeaf.view && preferredLeaf.view.file
+        && preferredLeaf.view.file.path === resolvedPath) leaf = preferredLeaf;
       const leaves = this.app.workspace.getLeavesOfType("pdf");
       for (const l of leaves) {
+        if (leaf) break;
         const v = l && l.view;
-        if (v && v.file && v.file.path === filePath) { leaf = l; break; }
+        if (v && v.file && v.file.path === resolvedPath) { leaf = l; break; }
       }
       if (!leaf) {
         // v0.16.5 R5：路径解析兜底 —— 直接路径取不到（相对名 / 编码残留）时走
         //   metadataCache 的链接解析，与摘录索引层（reindexFile）用的是同一套规则
-        let f = this.app.vault.getAbstractFileByPath(filePath);
-        if (!f) {
-          try { f = this.app.metadataCache.getFirstLinkpathDest(filePath, ""); } catch (_) { f = null; }
-        }
+        const f = resolvedFile;
         if (!f) { new Notice("MarginBook: 找不到 PDF " + filePath); return; }
         leaf = this.app.workspace.getLeaf("tab");        // 新标签页，不打乱现有布局
         await leaf.openFile(f);
@@ -229,10 +235,57 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           return;
         }
         this.lmbFlashRects(pageEl, rects, null);
+      } else if (entryText) {
+        const rects = this.lmbResolveEntryTextRects(pageEl, entryText);
+        if (rects) this.lmbFlashRects(pageEl, rects, null);
       }
     } catch (err) {
       console.warn("[lmb] lmbJumpToSelection error:", err);
     }
+  },
+
+  /**
+   * 在 Markdown 摘录文档中定位：已打开则复用；存在左右分区时选择离 PDF 最远的
+   * 现有 leaf；只有一个分区时才开新标签。绝不重复打开同一文档。
+   */
+  async lmbOpenExcerptInMd(exId, sourceMd, pdfLeaf) {
+    try {
+      if (!exId || !sourceMd) { new Notice("MarginBook: 该摘录缺少 Markdown 来源"); return false; }
+      const file = this.app.vault.getAbstractFileByPath(sourceMd);
+      if (!(file instanceof TFile)) { new Notice("MarginBook: 找不到摘录文档 " + sourceMd); return false; }
+      const mdLeaves = this.app.workspace.getLeavesOfType("markdown") || [];
+      let leaf = mdLeaves.find((l) => l && l.view && l.view.file && l.view.file.path === file.path) || null;
+      if (!leaf) {
+        const all = [];
+        try { this.app.workspace.iterateAllLeaves((l) => { if (l && l !== pdfLeaf && l.containerEl) all.push(l); }); } catch (_) {}
+        if (all.length) {
+          const pr = pdfLeaf && pdfLeaf.containerEl ? pdfLeaf.containerEl.getBoundingClientRect() : null;
+          all.sort((a, b) => {
+            if (!pr) return 0;
+            const ar = a.containerEl.getBoundingClientRect(), br = b.containerEl.getBoundingClientRect();
+            return Math.abs((br.left + br.right) / 2 - (pr.left + pr.right) / 2)
+              - Math.abs((ar.left + ar.right) / 2 - (pr.left + pr.right) / 2);
+          });
+          leaf = all[0];
+        }
+        if (!leaf) leaf = this.app.workspace.getLeaf("tab");
+        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
+      } else {
+        this.app.workspace.setActiveLeaf(leaf, { focus: true });
+      }
+      const editor = leaf.view && leaf.view.editor;
+      const cache = this.app.metadataCache.getFileCache(file);
+      const block = cache && cache.blocks && cache.blocks[exId];
+      if (editor && block && block.position && block.position.start) {
+        const line = block.position.start.line;
+        editor.setCursor({ line, ch: 0 });
+        editor.scrollIntoView({ from: { line: Math.max(0, line - 3), ch: 0 }, to: { line: line + 3, ch: 0 } }, true);
+      } else {
+        // 阅读模式或缓存尚未就绪：在同一个 leaf 上重设 subpath，仍不会新开标签。
+        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
+      }
+      return true;
+    } catch (err) { console.warn("[lmb] lmbOpenExcerptInMd error:", err); return false; }
   },
 
   /** 闪烁定位：覆盖 accent 色矩形，闪 3 次后自清理。
@@ -242,6 +295,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       let pcts = rectPcts || null;
       if (!pcts && rects) pcts = this.lmbRectsToPercents(rects, pageEl);
       if (!pcts || !pcts.length) return;
+      const focusHost = pageEl.closest && pageEl.closest(".workspace-leaf-content");
+      if (focusHost && focusHost.classList) focusHost.classList.add("lmb-focus-mode");
       const frag = document.createDocumentFragment();
       for (const p of pcts) {
         const d = document.createElement("div");
@@ -260,6 +315,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             const n = old[i];
             if (n.parentNode) n.parentNode.removeChild(n);
           }
+          if (focusHost && focusHost.classList) focusHost.classList.remove("lmb-focus-mode");
         } catch (_) { /* noop */ }
       }, 2200);
     } catch (_) { /* noop */ }
@@ -288,7 +344,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }
       if (!path) { new Notice("MarginBook: 找不到该摘录的来源（canvas 和 md 都没查到）"); return; }
-      await this.app.workspace.openLinkText(path + "#^" + exId, "", false);
+      await this.lmbOpenExcerptInMd(exId, path, this._lmbGetActivePdfLeaf());
     } catch (err) {
       console.warn("[lmb] lmbOpenExcerptAt error:", err);
     }
@@ -298,8 +354,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /**
    * P1-4：相关笔记检索（MarginNote 4「标题链接」平替，纯本地零 AI）。
-   * 只查 metadataCache 元数据（basename / headings / tags / frontmatter 别名），
-   * 不读任何文件正文（性能红线）。同一 entryId 用 relatedCache 只检索一次。
+   * v0.19：元数据给予高权重，同时读取正文做本地 BM25 风格评分；结果仍按 entryId 缓存。
    * 返回 wikilink 字符串数组（如 ["[[路径|显示名]]"]），无结果返回 []。
    */
   async findRelatedNotes(entryId, bodyText) {
@@ -340,8 +395,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
               }
             }
             const haystack = bag.join("\n");
+            let body = "";
+            try { body = (await this.app.vault.cachedRead(file)).toLowerCase(); } catch (_) {}
             let score = 0;
-            for (const tk of tokens) if (haystack.includes(tk)) score++;
+            for (const tk of tokens) {
+              if (haystack.includes(tk)) score += 3;
+              if (body) {
+                const hits = body.split(tk).length - 1;
+                if (hits) score += Math.min(2, hits) / (1 + body.length / 6000);
+              }
+            }
             if (score >= 2) scored.push({ file, score });
           } catch (_) { /* 单个文件元数据异常不影响整体 */ }
         }
@@ -377,7 +440,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       ]);
       const src = String(text || "")
         .replace(/\[\[[^\]]*\]\]/g, " ")
-        .replace(/\^ex-[0-9a-z]{4,8}/g, " ")
+        .replace(/\^ex-[0-9a-z]{4,16}/g, " ")
         .toLowerCase();
       const out = [];
       const seen = new Set();

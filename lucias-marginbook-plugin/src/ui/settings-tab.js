@@ -8,6 +8,9 @@ class LMBSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new Setting(containerEl)
+      .setName("当前运行版本")
+      .setDesc("0.24.1 · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+    new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
       .addToggle((t) => t
@@ -38,8 +41,42 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(!!this.plugin.settings.recallDefault)
         .onChange(async (v) => { this.plugin.settings.recallDefault = v; await this.plugin.saveSettings(); }));
 
+    containerEl.createEl("h2", { text: "PDF 手写批注" });
+    new Setting(containerEl)
+      .setName("书写输入")
+      .setDesc("“触控笔和鼠标”适合桌面；“仅触控笔”可防止鼠标误画。手指始终交给 PDF 滚动和双指缩放。")
+      .addDropdown((d) => d
+        .addOption("pen-mouse", "触控笔和鼠标")
+        .addOption("pen-only", "仅触控笔")
+        .setValue(this.plugin.settings.inkInputMode === "pen-only" ? "pen-only" : "pen-mouse")
+        .onChange(async (v) => { this.plugin.settings.inkInputMode = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName("笔压效果")
+      .setDesc("自然压感适合普通书写；钢笔效果的粗细变化较克制；固定宽度适合画图。")
+      .addDropdown((d) => d
+        .addOption("natural", "自然压感")
+        .addOption("fountain", "钢笔效果")
+        .addOption("fixed", "固定宽度")
+        .setValue(this.plugin.settings.inkPressureMode || "natural")
+        .onChange(async (v) => { this.plugin.settings.inkPressureMode = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName("橡皮命中范围")
+      .setDesc("整笔橡皮与触控笔橡皮端的命中范围。")
+      .addSlider((s) => s.setLimits(8, 48, 2).setDynamicTooltip()
+        .setValue(Number(this.plugin.settings.inkEraserSize) || 18)
+        .onChange(async (v) => { this.plugin.settings.inkEraserSize = v; await this.plugin.saveSettings(); }));
+
     /* ---- v0.14.8 / v0.15.0：摘录附件与删除清理 ---- */
-    containerEl.createEl("h2", { text: "摘录附件与删除清理（v0.14.8 / v0.15.0）" });
+    containerEl.createEl("h2", { text: "摘录卡片与附件" });
+
+    new Setting(containerEl)
+      .setName("Canvas 摘录卡统一宽度")
+      .setDesc("新拖入 Canvas 的摘录卡统一使用该宽度；之后手动调整的宽度会被保留。")
+      .addSlider((s) => s
+        .setLimits(320, 800, 20)
+        .setDynamicTooltip()
+        .setValue(Math.max(320, Math.min(800, Number(this.plugin.settings.excerptCardWidth) || 560)))
+        .onChange(async (v) => { this.plugin.settings.excerptCardWidth = v; await this.plugin.saveSettings(); }));
 
     new Setting(containerEl)
       .setName("新摘录自动附截图")
@@ -50,6 +87,30 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.autoAttachScreenshot !== false)
         .onChange(async (v) => { this.plugin.settings.autoAttachScreenshot = v; await this.plugin.saveSettings(); }));
 
+    new Setting(containerEl)
+      .setName("摘录截图保存目录")
+      .setDesc("相对于 Vault 根目录；{pdf} 会替换为 PDF 文件名。默认：附件/{pdf}")
+      .addText((t) => t
+        .setPlaceholder("附件/{pdf}")
+        .setValue(this.plugin.settings.excerptImageFolder || "附件/{pdf}")
+        .onChange(async (v) => {
+          this.plugin.settings.excerptImageFolder = String(v || "").trim().replace(/^\/+|\/+$/g, "") || "附件/{pdf}";
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("图片摘录的 PDF 标记")
+      .setDesc("仅控制纯图片摘录在原 PDF 上的定位方式；带自动附图的文字摘录始终使用荧光笔底色。")
+      .addDropdown((d) => d
+        .addOption("dashed", "虚线边框（默认）")
+        .addOption("highlight", "半透明高亮")
+        .setValue(this.plugin.settings.imageExcerptMarkStyle === "highlight" ? "highlight" : "dashed")
+        .onChange(async (v) => {
+          this.plugin.settings.imageExcerptMarkStyle = v === "highlight" ? "highlight" : "dashed";
+          await this.plugin.saveSettings();
+          this.plugin.lmbRefreshAllMarks();
+        }));
+
     const cleanIntro = containerEl.createEl("p", {
       text: "删除画布上的摘录卡时，一并清理它留下的残留（截图附件 + md 摘录文档里的对应条目）。"
         + "⚠ 这是数据级操作，默认关闭 —— 请确认理解风险后再开启。"
@@ -58,11 +119,12 @@ class LMBSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("删除卡片时级联清理")
-      .setDesc("开启后：删除画布摘录卡 → 自动删除它引用的截图附件 + 从 md 摘录文档移除该条目。"
+      .setDesc("开启后：删除画布摘录卡 → 自动把截图附件移入回收目录 + 从 md 摘录文档移除该条目。"
         + "安全策略：① 只删插件自己命名的附件（xxx-P<页>-<戳>.webp），你的图片不碰；"
         + "② 全 vault 扫描，其他笔记还在引用就不删（避免 broken image）；"
-        + "③ 每次清理先写 .lmb-trash-log.md 备份，可追溯恢复；"
-        + "④ 底部弹提示告知清理了几项。")
+        + "③ Markdown 原块与截图会先移入 .lmb-trash，可真正恢复；"
+        + "④ 引用检查只要有一个文件读取失败，就保留截图；"
+        + "⑤ 底部弹提示告知清理了几项。")
       .addToggle((t) => t
         .setValue(this.plugin.settings.autoCleanOnDelete === true)
         .onChange(async (v) => {
