@@ -335,12 +335,30 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const file = leaf && leaf.view && leaf.view.file; if (!file || file.extension !== "pdf") return;
       const bar = this.lmbEnsurePdfSidebarEl(leaf); if (!bar) return;
       this.lmbSetPdfSidebarVisible(leaf, leaf._lmbPdfSidebarOpen !== false);
+      const entries = this._lmbGetPdfSidebarEntries(file);
+      const sourceVersions = new Map();
+      for (const e of entries) if (e && e.sourceMd && !sourceVersions.has(e.sourceMd)) {
+        const source = this.app.vault.getAbstractFileByPath(e.sourceMd);
+        sourceVersions.set(e.sourceMd, source && source.stat ? source.stat.mtime : 0);
+      }
+      const renderSig = JSON.stringify({
+        file: file.path,
+        entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags]),
+        sources: Array.from(sourceVersions),
+        views: this.settings && this.settings.excerptViews,
+        colors: this.settings && this.settings.excerptColors
+      });
+      if (bar._lmbRenderSig === renderSig && bar.querySelector(".lmb-pdf-sidebar-list")) {
+        this._lmbApplySidebarPageFilter(leaf);
+        return;
+      }
+      const renderToken = {};
+      bar._lmbRenderToken = renderToken;
       const grip = bar.querySelector(".lmb-pdf-sidebar-resizer");
       Array.from(bar.children).forEach((child) => { if (child !== grip) child.remove(); });
       // 保持索引原始顺序，与 PDF 回绘的既有编号一致。不能按来源文档的
       // line 字段重排：不同 Markdown 文件的行号彼此不可比较，会让 PDF
       // 上已经稳定的序号整体洗牌。
-      const entries = this._lmbGetPdfSidebarEntries(file);
       bar.dataset.total = String(entries.length);
       const pageOrdinals = new Map();
       for (const e of entries) {
@@ -365,7 +383,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       followBtn.onclick = () => { this._lmbPdfSidebarFollow = this._lmbPdfSidebarFollow === false; sync(); };
       sync();
       const search = head.createEl("input", { cls: "lmb-pdf-sidebar-search", attr: { type: "search", placeholder: "搜索摘录或备注…" } });
-      const list = bar.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map();
+      const list = bar.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
       for (const e of entries) {
         const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
@@ -378,8 +396,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         let textEl = null;
         if (cleanText) {
           textEl = body.createDiv({ cls: "lmb-pdf-sidebar-item-text lmb-pdf-sidebar-item-text-excerpt markdown-rendered" });
-          try { await MarkdownRenderer.render(this.app, cleanText, textEl, e.sourceMd || "", this); }
-          catch (_) { textEl.setText(cleanText); }
+          renderJobs.push(async () => {
+            try { await MarkdownRenderer.render(this.app, cleanText, textEl, e.sourceMd || "", this); }
+            catch (_) { textEl.setText(cleanText); }
+          });
         }
         let imageEl = null;
         if (e.imagePath) {
@@ -393,14 +413,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
         let note = e.quick ? String(e.note || "") : "";
         if (!e.quick && e.sourceMd) {
-          if (!mdCache.has(e.sourceMd)) mdCache.set(e.sourceMd, await this._lmbReadSidebarNotes(e.sourceMd));
-          note = this._lmbFindSidebarNote(mdCache.get(e.sourceMd) || "", e.exId);
+          if (!mdCache.has(e.sourceMd)) {
+            const raw = await this._lmbReadSidebarNotes(e.sourceMd);
+            mdCache.set(e.sourceMd, this._lmbBuildExcerptNoteMap(raw));
+          }
+          note = mdCache.get(e.sourceMd).get(e.exId) || "";
         }
         if (note) {
           const noteEl = row.createDiv({ cls: "lmb-pdf-sidebar-item-note" });
           const noteBody = noteEl.createDiv({ cls: "lmb-pdf-sidebar-item-note-body markdown-rendered" });
-          try { await MarkdownRenderer.render(this.app, note, noteBody, e.sourceMd || "", this); }
-          catch (_) { noteBody.setText(note); }
+          renderJobs.push(async () => {
+            try { await MarkdownRenderer.render(this.app, note, noteBody, e.sourceMd || "", this); }
+            catch (_) { noteBody.setText(note); }
+          });
         }
         const actions = row.createDiv({ cls: "lmb-pdf-sidebar-item-actions" });
         const iconButton = (icon, label) => {
@@ -484,11 +509,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         row.onmouseleave = () => this._lmbHighlightPdfSidebarTarget(e.exId, false);
         row.onclick = () => this.lmbJumpToSelection(e.pdfPath || file.path, e.page, e.selection, e.rect, leaf, e.text);
       }
+      for (let i = 0; i < renderJobs.length; i += 8) {
+        await Promise.all(renderJobs.slice(i, i + 8).map((job) => job()));
+        if (bar._lmbRenderToken !== renderToken) return;
+        if (i + 8 < renderJobs.length) await new Promise((resolve) => setTimeout(resolve, 0));
+      }
       search.oninput = () => {
         const query = String(search.value || "").trim().toLowerCase();
         list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => row.toggleClass("is-search-hidden", !!query && !row.textContent.toLowerCase().includes(query)));
       };
       if (!entries.length) list.createDiv({ cls: "lmb-pdf-sidebar-empty", text: "当前 PDF 暂无可用批注" });
+      bar._lmbRenderSig = renderSig;
       this._lmbApplySidebarPageFilter(leaf);
     } catch (err) { console.warn("[lmb] render pdf sidebar failed:", err); }
   }

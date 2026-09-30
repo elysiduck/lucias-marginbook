@@ -25,6 +25,7 @@ LuciasMarginBookPlugin.prototype.lmbInitializeInkStorage = async function () {
   this._lmbInkLoadPromises = new Map();
   this._lmbInkLoadErrors = new Set();
   this._lmbInkRetryCount = 0;
+  this._lmbInkLastBackup = new Map();
   this._lmbInkSaveState = "saved";
   try {
     const adapter = this.app.vault.adapter, dir = this.lmbInkStorageDir();
@@ -87,8 +88,9 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkDocument = function (path) {
       this._lmbInkDocs[path] = doc ? doc.pages : {};
       this._lmbInkLoadedPaths.add(path);
       document.querySelectorAll(".lmb-ink-layer").forEach((canvas) => {
-        if (canvas.dataset.lmbInkPath === path) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLayer(canvas); }
+        if (canvas.dataset.lmbInkPath === path) canvas.dataset.lmbInkDrawn = "0";
       });
+      this.lmbScheduleInkRefresh(0);
       return true;
     } catch (error) {
       console.warn("[lmb] lazy ink load failed", path, error);
@@ -175,11 +177,14 @@ LuciasMarginBookPlugin.prototype.lmbMarkInkDirty = function (path) {
   this._lmbInkSaveState = "saving";
   this.lmbUpdateInkSaveStatus();
   clearTimeout(this._lmbInkSaveTimer);
-  this._lmbInkSaveTimer = setTimeout(() => this.lmbFlushInkStorage().catch(() => {}), 350);
+  // Coalesce short pen lifts into one durable snapshot. 350ms caused a full
+  // sidecar rewrite between normal handwriting strokes.
+  this._lmbInkSaveTimer = setTimeout(() => this.lmbFlushInkStorage().catch(() => {}), 800);
 };
 
 LuciasMarginBookPlugin.prototype.lmbFlushInkStorage = async function () {
   if (this._lmbInkFlushPromise) return this._lmbInkFlushPromise;
+  if (!this._lmbInkLastBackup) this._lmbInkLastBackup = new Map();
   this._lmbInkFlushPromise = (async () => {
     const paths = Array.from(this._lmbInkDirtyPaths || []).map((path) => [path, this._lmbInkDirtyRevisions && this._lmbInkDirtyRevisions.get(path) || 0]);
     if (!paths.length) { this._lmbInkSaveState = "saved"; this.lmbUpdateInkSaveStatus(); return true; }
@@ -193,9 +198,15 @@ LuciasMarginBookPlugin.prototype.lmbFlushInkStorage = async function () {
           const target = normalizePath(`${dir}/${lmbInkFileKey(path)}`), temp = target + ".tmp", backup = target + ".bak";
           const body = JSON.stringify({ version: LMB_INK_SCHEMA_VERSION, pdfPath: path, revision: this._lmbInkDirtyRevisions.get(path) || 0, savedAt: Date.now(), pages: this.lmbInkStore()[path] || {} });
           await adapter.write(temp, body);
-          JSON.parse(await adapter.read(temp));
-          if (await adapter.exists(target)) {
-            try { await adapter.write(backup, await adapter.read(target)); } catch (_) {}
+          // Keep recovery guarantees without six I/O operations per stroke:
+          // the temp file is already a complete recoverable copy, and the
+          // older target only needs refreshing into .bak occasionally.
+          const lastBackup = this._lmbInkLastBackup && this._lmbInkLastBackup.get(path) || 0;
+          if (Date.now() - lastBackup > 30000 && await adapter.exists(target)) {
+            try {
+              await adapter.write(backup, await adapter.read(target));
+              this._lmbInkLastBackup.set(path, Date.now());
+            } catch (_) {}
           }
           await adapter.write(target, body);
           const written = await adapter.read(target);
@@ -241,6 +252,7 @@ LuciasMarginBookPlugin.prototype.lmbSetInkMode = function (on) {
   if (this.inkMode && this.rectMode && typeof this.setRectMode === "function") this.setRectMode(false);
   try {
     document.body.toggleClass("lmb-ink-mode", this.inkMode);
+    document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand");
     document.querySelectorAll(".lmb-toolbar-ink").forEach((el) => el.toggleClass("is-active", this.inkMode));
   } catch (_) {}
   this.lmbRefreshInkLayers();
@@ -260,7 +272,14 @@ LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
       const file = leaf && leaf.view && leaf.view.file, root = leaf && leaf.containerEl;
       if (!file || !root) continue;
       this.lmbEnsureInkDocument(file.path).catch(() => {});
-      root.querySelectorAll(".page").forEach((pageEl, index) => this.lmbEnsureInkLayer(pageEl, file.path, index));
+      root.querySelectorAll(".page").forEach((pageEl, index) => {
+        pageEl._lmbInkPageContext = { path: file.path, index };
+        if (this._lmbInkVisibilityObserver && !this._lmbInkObservedPages.has(pageEl)) {
+          this._lmbInkObservedPages.add(pageEl);
+          this._lmbInkVisibilityObserver.observe(pageEl);
+        }
+        this.lmbEnsureInkLayer(pageEl, file.path, index);
+      });
     }
     if (this.inkMode && document.querySelectorAll(".lmb-ink-tools").length !== leaves.length) this.lmbRenderInkTools();
   } catch (error) { console.warn("[lmb] ink refresh failed", error); }
@@ -268,7 +287,18 @@ LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
 
 LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
   if (!pageEl || !pdfPath) return;
+  this.lmbUpdateInkPageCapture(pageEl);
   const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
+  // IntersectionObserver includes the PDF scroller's clipping, not just the window.
+  if (this._lmbInkVisibilityObserver && pageEl._lmbInkNearViewport !== true) return;
+  if (!this.inkMode && !this.lmbInkObjects(pdfPath, pageNumber).length) {
+    for (const layer of pageEl.querySelectorAll(":scope > .lmb-ink-layer, :scope > .lmb-ink-live-layer")) {
+      layer.style.display = "none";
+      if (layer.width !== 1 || layer.height !== 1) { layer.width = 1; layer.height = 1; }
+      layer.dataset.lmbInkDrawn = "0";
+    }
+    return;
+  }
   let canvas = pageEl.querySelector(":scope > .lmb-ink-layer");
   let live = pageEl.querySelector(":scope > .lmb-ink-live-layer");
   if (!canvas) { canvas = document.createElement("canvas"); canvas.className = "lmb-ink-layer"; pageEl.appendChild(canvas); }
@@ -291,19 +321,48 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   if (!pageEl.dataset.lmbInkBound) {
     pageEl.dataset.lmbInkBound = "1";
     this.lmbBindInkPage(pageEl, canvas, live);
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(() => this.lmbScheduleInkRefresh(30));
+  }
+    if (!pageEl._lmbInkResizeObserver && typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => {
+        clearTimeout(pageEl._lmbInkResizeTimer);
+        pageEl._lmbInkResizeTimer = setTimeout(() => {
+          const context = pageEl._lmbInkPageContext;
+          if (!this._unloaded && pageEl.isConnected && context) this.lmbEnsureInkLayer(pageEl, context.path, context.index);
+        }, 100);
+      });
       observer.observe(pageEl); pageEl._lmbInkResizeObserver = observer;
     }
-  }
   if (identityChanged) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLiveLayer(live, null); }
   if (identityChanged || resized || canvas.dataset.lmbInkDrawn !== "1") this.lmbDrawInkLayer(canvas);
+};
+
+LuciasMarginBookPlugin.prototype.lmbUpdateInkPageCapture = function (pageEl, forceOff) {
+  if (!pageEl || !pageEl.style) return;
+  const capture = !forceOff && this.inkMode && this.inkTool !== "hand" && !this._lmbInkSpacePan;
+  if (capture) {
+    if (!pageEl._lmbInkTouchActionBefore) pageEl._lmbInkTouchActionBefore = {
+      value: pageEl.style.getPropertyValue("touch-action"),
+      priority: pageEl.style.getPropertyPriority("touch-action"),
+      callout: pageEl.style.getPropertyValue("-webkit-touch-callout")
+    };
+    pageEl.style.setProperty("touch-action", "none", "important");
+    pageEl.style.setProperty("-webkit-touch-callout", "none", "important");
+    return;
+  }
+  const before = pageEl._lmbInkTouchActionBefore;
+  if (!before) return;
+  if (before.value) pageEl.style.setProperty("touch-action", before.value, before.priority || "");
+  else pageEl.style.removeProperty("touch-action");
+  if (before.callout) pageEl.style.setProperty("-webkit-touch-callout", before.callout);
+  else pageEl.style.removeProperty("-webkit-touch-callout");
+  pageEl._lmbInkTouchActionBefore = null;
 };
 
 LuciasMarginBookPlugin.prototype.lmbInkPoint = function (pageEl, event) {
   const rect = pageEl.getBoundingClientRect();
   const rawTime = Number(event.timeStamp);
-  return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: Number(event.pressure) > 0 ? Number(event.pressure) : .5, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
+  const pressure = Number(event.pressure) > 0 ? Number(event.pressure) : Number(event.force) > 0 ? Number(event.force) : .5;
+  return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: pressure, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
 };
 
 LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
@@ -323,16 +382,36 @@ LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
 
 LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
   if (!this.inkMode || this._lmbInkSpacePan || this.inkTool === "hand") return false;
-  if (event.pointerType === "touch") return false;
+  if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) return false;
   if (event.pointerType === "mouse" && this.settings.inkInputMode === "pen-only") return false;
   return event.pointerType !== "mouse" || event.button === 0;
 };
 
 LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live) {
   let active = null;
+  const touchPoints = new Map();
+  const stylusTouchIds = new Set();
+  let touchPan = null;
   const path = () => canvas.dataset.lmbInkPath, page = () => canvas.dataset.lmbInkPage;
+  const scrollHost = () => pageEl.closest && (pageEl.closest(".pdf-viewer-container") || pageEl.closest(".view-content"));
+  const resetTouchPan = () => {
+    if (touchPoints.size !== 1) { touchPan = null; return; }
+    const entry = touchPoints.values().next().value, host = scrollHost();
+    touchPan = entry && host ? { id: entry.id, x: entry.x, y: entry.y, left: host.scrollLeft, top: host.scrollTop, host } : null;
+  };
   const redrawLive = () => this.lmbRequestInkLiveDraw(live, active);
   const down = (event) => {
+    const stylus = lmbInkIsStylusInput(event);
+    if (stylus && stylusTouchIds.size && !String(event.pointerId || "").startsWith("stylus-touch-")) {
+      event.preventDefault(); event.stopPropagation(); return;
+    }
+    if (event.pointerType === "touch" && !stylus) {
+      if (active) { event.preventDefault(); event.stopPropagation(); return; }
+      touchPoints.set(event.pointerId, { id: event.pointerId, x: event.clientX, y: event.clientY });
+      try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
+      resetTouchPan();
+      return;
+    }
     if (active) return;
     if (!this.lmbInkShouldDraw(event)) return;
     if (!this.lmbInkDocumentReady(path())) {
@@ -341,7 +420,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     }
     const objects = this.lmbInkObjects(path(), page(), true), point = this.lmbInkPoint(pageEl, event);
     let tool = this.inkTool;
-    if (event.pointerType === "pen" && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
+    if (stylus && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
     event.preventDefault(); event.stopPropagation();
     try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
     const before = lmbInkClone(objects);
@@ -366,6 +445,18 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     active = { kind: "draw", object, before, pointerId: event.pointerId }; redrawLive();
   };
   const move = (event) => {
+    if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
+      if (active) { event.preventDefault(); event.stopPropagation(); return; }
+      const point = touchPoints.get(event.pointerId);
+      if (!point) return;
+      point.x = event.clientX; point.y = event.clientY;
+      if (touchPoints.size === 1 && touchPan && touchPan.id === event.pointerId) {
+        event.preventDefault(); event.stopPropagation();
+        touchPan.host.scrollLeft = touchPan.left - (event.clientX - touchPan.x);
+        touchPan.host.scrollTop = touchPan.top - (event.clientY - touchPan.y);
+      }
+      return;
+    }
     if (!active || active.pointerId != null && event.pointerId !== active.pointerId) return;
     event.preventDefault(); event.stopPropagation();
     const points = this.lmbInkEventPoints(pageEl, event), point = points[points.length - 1];
@@ -379,6 +470,12 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     redrawLive();
   };
   const finish = (event, cancelled) => {
+    if (event && event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
+      touchPoints.delete(event.pointerId);
+      if (active) { event.preventDefault(); event.stopPropagation(); }
+      resetTouchPan();
+      return;
+    }
     if (!active || event && active.pointerId != null && event.pointerId !== active.pointerId) return;
     if (event) { event.preventDefault(); event.stopPropagation(); }
     if (!cancelled && event) {
@@ -392,7 +489,10 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     }
     const current = active; active = null;
     const objects = this.lmbInkObjects(path(), page(), true);
-    if (cancelled) this.lmbReplaceInkObjects(path(), page(), current.beforePage || current.before || objects);
+    const salvageCancelledStroke = cancelled && current.kind === "draw"
+      && (current.object.type === "pen" || current.object.type === "highlighter")
+      && Array.isArray(current.object.points) && current.object.points.length > 1;
+    if (cancelled && !salvageCancelledStroke) this.lmbReplaceInkObjects(path(), page(), current.beforePage || current.before || objects);
     else if (current.kind === "draw") {
       const object = current.object;
       if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, .00018, .055);
@@ -410,11 +510,31 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     this._lmbInkHiddenIds = null;
     this.lmbDrawInkLayer(canvas); this.lmbDrawInkLiveLayer(live, null);
   };
-  pageEl.addEventListener("pointerdown", down, true);
-  pageEl.addEventListener("pointermove", move, true);
-  pageEl.addEventListener("pointerup", (event) => finish(event, false), true);
-  pageEl.addEventListener("pointercancel", (event) => finish(event, true), true);
-  pageEl.addEventListener("lostpointercapture", (event) => finish(event, true), true);
+  const captureActive = { capture: true, passive: false };
+  pageEl.addEventListener("pointerdown", down, captureActive);
+  pageEl.addEventListener("pointermove", move, captureActive);
+  pageEl.addEventListener("pointerup", (event) => finish(event, false), captureActive);
+  pageEl.addEventListener("pointercancel", (event) => finish(event, true), captureActive);
+  pageEl.addEventListener("lostpointercapture", (event) => finish(event, true), captureActive);
+  const stylusTouches = (event) => Array.from(event.changedTouches || []).filter((touch) => lmbInkIsStylusInput(touch));
+  pageEl.addEventListener("touchstart", (event) => {
+    const touches = stylusTouches(event); if (!touches.length) return;
+    event.preventDefault(); event.stopPropagation();
+    if (active) return;
+    const touch = touches[0]; stylusTouchIds.add(touch.identifier);
+    down(lmbInkTouchPointEvent(touch, event, false));
+  }, captureActive);
+  pageEl.addEventListener("touchmove", (event) => {
+    const touches = stylusTouches(event).filter((touch) => stylusTouchIds.has(touch.identifier)); if (!touches.length) return;
+    event.preventDefault(); event.stopPropagation(); move(lmbInkTouchPointEvent(touches[0], event, false));
+  }, captureActive);
+  const finishStylusTouch = (event, cancelled) => {
+    const touches = stylusTouches(event).filter((touch) => stylusTouchIds.has(touch.identifier)); if (!touches.length) return;
+    event.preventDefault(); event.stopPropagation();
+    const touch = touches[0]; finish(lmbInkTouchPointEvent(touch, event, true), cancelled); stylusTouchIds.delete(touch.identifier);
+  };
+  pageEl.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
+  pageEl.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
   pageEl.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
 };
 
@@ -694,9 +814,10 @@ LuciasMarginBookPlugin.prototype.lmbApplyInkStyleToSelection = function (propert
 LuciasMarginBookPlugin.prototype.lmbSetInkTool = function (tool) {
   if (!LMB_INK_TOOLS.includes(tool)) return;
   this.inkTool = tool; this.settings.inkLastTool = tool;
+  try { document.body.toggleClass("lmb-ink-capture", this.inkMode && tool !== "hand"); } catch (_) {}
   if (tool === "highlighter") { this.inkColor = this.settings.inkHighlighterColor || "#ffd84d"; this.inkWidth = Number(this.settings.inkHighlighterWidth) || 12; }
   else if (["pen", "text", "line", "rect"].includes(tool)) { this.inkColor = this.settings.inkPenColor || "#e05252"; this.inkWidth = Number(this.settings.inkPenWidth) || 3; }
-  this.lmbPersistInkPreferences(); this.lmbRenderInkTools();
+  this.lmbPersistInkPreferences(); this.lmbRefreshInkLayers(); this.lmbRenderInkTools();
 };
 
 LuciasMarginBookPlugin.prototype.lmbPersistInkPreferences = function () {
@@ -712,42 +833,68 @@ LuciasMarginBookPlugin.prototype.lmbUpdateInkSaveStatus = function () {
 LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
   document.querySelectorAll(".lmb-ink-tools").forEach((bar) => bar.remove());
   if (!this.inkMode) return;
-  const specs = [["hand", "✋", "抓手（空格临时启用）"], ["select", "⌁", "选择 / 套索"], ["pen", "✎", "钢笔"], ["highlighter", "▰", "荧光笔"], ["eraser", "◇", "整笔橡皮"], ["text", "T", "文字"], ["line", "╱", "直线"], ["rect", "□", "矩形"]];
+  const specs = [["hand", "hand", "抓手（空格临时启用）", "手"], ["select", "mouse-pointer-2", "选择 / 套索", "选"], ["pen", "pencil", "钢笔", "笔"], ["highlighter", "highlighter", "荧光笔", "荧"], ["eraser", "eraser", "整笔橡皮", "擦"], ["text", "type", "文字", "字"], ["line", "minus", "直线", "线"], ["rect", "square", "矩形", "框"]];
+  const applyIcon = (element, icon, fallback) => { try { setIcon(element, icon); } catch (_) { element.textContent = fallback || "•"; } };
   for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
-    const host = leaf && leaf.containerEl; if (!host) continue;
+    const leafRoot = leaf && leaf.containerEl; if (!leafRoot) continue;
+    const host = leafRoot.querySelector(":scope > .view-content") || leafRoot.querySelector(".view-content") || leafRoot;
     const bar = document.createElement("div"); bar.className = "lmb-ink-tools"; if (this.settings.inkToolbarCollapsed) bar.classList.add("is-collapsed");
-    const toggle = document.createElement("button"); toggle.className = "lmb-ink-collapse"; toggle.textContent = this.settings.inkToolbarCollapsed ? "✎" : "‹"; toggle.title = "收起 / 展开手写工具栏";
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "lmb-ink-collapse"; toggle.title = "收起 / 展开手写工具栏"; toggle.setAttribute("aria-label", toggle.title); applyIcon(toggle, this.settings.inkToolbarCollapsed ? "pencil" : "chevron-left", this.settings.inkToolbarCollapsed ? "笔" : "‹");
     toggle.addEventListener("click", () => { this.settings.inkToolbarCollapsed = !this.settings.inkToolbarCollapsed; this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); bar.appendChild(toggle);
     const content = document.createElement("div"); content.className = "lmb-ink-tools-content"; bar.appendChild(content);
-    for (const [tool, label, title] of specs) {
-      const button = document.createElement("button"); button.textContent = label; button.title = title; button.dataset.tool = tool; button.classList.toggle("is-active", this.inkTool === tool);
-      button.addEventListener("click", () => this.lmbSetInkTool(tool)); content.appendChild(button);
+    const toolButtons = document.createElement("div"); toolButtons.className = "lmb-ink-tool-buttons"; content.appendChild(toolButtons);
+    for (const [tool, icon, title, fallback] of specs) {
+      const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); button.dataset.tool = tool; button.classList.toggle("is-active", this.inkTool === tool); applyIcon(button, icon, fallback);
+      button.addEventListener("click", () => this.lmbSetInkTool(tool)); toolButtons.appendChild(button);
     }
     const colors = this.inkTool === "highlighter" ? ["#ffd84d", "#7ee787", "#70b7ff"] : ["#e05252", "#222222", "#2d8cff"];
     const swatches = document.createElement("div"); swatches.className = "lmb-ink-swatches";
     for (const value of colors) {
-      const swatch = document.createElement("button"); swatch.className = "lmb-ink-swatch"; swatch.style.backgroundColor = value; swatch.title = value; swatch.classList.toggle("is-active", (this.inkColor || "").toLowerCase() === value);
+      const swatch = document.createElement("button"); swatch.type = "button"; swatch.className = "lmb-ink-swatch"; swatch.style.backgroundColor = value; swatch.title = value; swatch.setAttribute("aria-label", `颜色 ${value}`); swatch.classList.toggle("is-active", (this.inkColor || "").toLowerCase() === value);
       swatch.addEventListener("click", () => { this.inkColor = value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = value; else this.settings.inkPenColor = value; this.lmbApplyInkStyleToSelection("color", value, host); this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); swatches.appendChild(swatch);
     }
     content.appendChild(swatches);
-    const color = document.createElement("input"); color.type = "color"; color.value = this.inkColor || "#e05252"; color.title = "自定义颜色";
-    color.addEventListener("change", () => { this.inkColor = color.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = color.value; else this.settings.inkPenColor = color.value; this.lmbApplyInkStyleToSelection("color", color.value, host); this.lmbPersistInkPreferences(); }); content.appendChild(color);
-    const width = document.createElement("input"); width.type = "range"; width.min = "1"; width.max = this.inkTool === "highlighter" ? "30" : "14"; width.step = "1"; width.value = String(this.inkWidth || 3); width.title = `粗细 ${width.value}`;
-    width.addEventListener("input", () => { this.inkWidth = Number(width.value); width.title = `粗细 ${width.value}`; if (this.inkTool === "highlighter") this.settings.inkHighlighterWidth = this.inkWidth; else this.settings.inkPenWidth = this.inkWidth; });
-    width.addEventListener("change", () => { this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); content.appendChild(width);
+    const colorPicker = document.createElement("label"); colorPicker.className = "lmb-ink-color-picker"; colorPicker.title = "自定义颜色";
+    const colorIcon = document.createElement("span"); colorIcon.className = "lmb-ink-color-icon"; applyIcon(colorIcon, "palette", "色"); colorPicker.appendChild(colorIcon);
+    const colorPreview = document.createElement("span"); colorPreview.className = "lmb-ink-color-preview"; colorPreview.style.backgroundColor = this.inkColor || "#e05252"; colorPicker.appendChild(colorPreview);
+    const color = document.createElement("input"); color.type = "color"; color.className = "lmb-ink-color-input"; color.value = this.inkColor || "#e05252"; color.setAttribute("aria-label", "自定义颜色");
+    color.addEventListener("change", () => { this.inkColor = color.value; colorPreview.style.backgroundColor = color.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = color.value; else this.settings.inkPenColor = color.value; this.lmbApplyInkStyleToSelection("color", color.value, host); this.lmbPersistInkPreferences(); }); colorPicker.appendChild(color); content.appendChild(colorPicker);
+    const widthControl = document.createElement("div"); widthControl.className = "lmb-ink-width-control";
+    const widthIcon = document.createElement("span"); widthIcon.className = "lmb-ink-width-icon"; applyIcon(widthIcon, "minus", "—"); widthControl.appendChild(widthIcon);
+    const width = document.createElement("input"); width.type = "range"; width.min = "1"; width.max = this.inkTool === "highlighter" ? "30" : "14"; width.step = "1"; width.value = String(this.inkWidth || 3); width.title = `粗细 ${width.value}`; width.setAttribute("aria-label", width.title);
+    const widthValue = document.createElement("span"); widthValue.className = "lmb-ink-width-value"; widthValue.textContent = width.value;
+    width.addEventListener("input", () => { this.inkWidth = Number(width.value); width.title = `粗细 ${width.value}`; width.setAttribute("aria-label", width.title); widthValue.textContent = width.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterWidth = this.inkWidth; else this.settings.inkPenWidth = this.inkWidth; });
+    width.addEventListener("change", () => { this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); widthControl.appendChild(width); widthControl.appendChild(widthValue); content.appendChild(widthControl);
     const leafCanvas = () => this.lmbActiveInkCanvas(host, leaf.view && leaf.view.file && leaf.view.file.path);
-    const undo = document.createElement("button"); undo.textContent = "↶"; undo.title = "撤销"; undo.addEventListener("click", () => this.lmbUndoInk(leafCanvas())); content.appendChild(undo);
-    const redo = document.createElement("button"); redo.textContent = "↷"; redo.title = "重做"; redo.addEventListener("click", () => this.lmbRedoInk(leafCanvas())); content.appendChild(redo);
-    const del = document.createElement("button"); del.textContent = "⌫"; del.title = "删除所选"; del.addEventListener("click", () => this.lmbDeleteInkSelection(leafCanvas())); content.appendChild(del);
+    const actions = document.createElement("div"); actions.className = "lmb-ink-actions"; content.appendChild(actions);
+    const action = (icon, title, handler, fallback) => { const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); applyIcon(button, icon, fallback); button.addEventListener("click", handler); actions.appendChild(button); };
+    action("undo-2", "撤销", () => this.lmbUndoInk(leafCanvas()), "↶");
+    action("redo-2", "重做", () => this.lmbRedoInk(leafCanvas()), "↷");
+    action("trash-2", "删除所选", () => this.lmbDeleteInkSelection(leafCanvas()), "删");
     const status = document.createElement("span"); status.className = "lmb-ink-save-status"; content.appendChild(status); host.appendChild(bar);
   }
   this.lmbUpdateInkSaveStatus();
 };
 
 LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
+  this._lmbInkObservedPages = new Set();
+  if (typeof IntersectionObserver !== "undefined") {
+    this._lmbInkVisibilityObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const pageEl = entry.target, context = pageEl._lmbInkPageContext;
+        pageEl._lmbInkNearViewport = entry.isIntersecting;
+        if (!this._unloaded && entry.isIntersecting && pageEl.isConnected && context) this.lmbEnsureInkLayer(pageEl, context.path, context.index);
+      }
+    }, { rootMargin: "300px" });
+  }
   this.inkTool = this.settings.inkLastTool || "pen"; this.inkColor = this.settings.inkPenColor || "#e05252"; this.inkWidth = Number(this.settings.inkPenWidth) || 3; this._lmbInkSelection = [];
+  try { document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand"); } catch (_) {}
   this.registerDomEvent(document, "keydown", (event) => {
-    if (event.code === "Space" && this.inkMode && !/INPUT|TEXTAREA/.test(event.target && event.target.tagName || "")) this._lmbInkSpacePan = true;
+    if (event.code === "Space" && this.inkMode && !/INPUT|TEXTAREA/.test(event.target && event.target.tagName || "")) {
+      this._lmbInkSpacePan = true;
+      try { document.body.removeClass("lmb-ink-capture"); } catch (_) {}
+      this.lmbRefreshInkLayers();
+    }
     if (event.target && event.target.classList && event.target.classList.contains("lmb-ink-text-editor")) return;
     if (event.key === "Escape" && this.inkMode) { this.lmbSetInkMode(false); return; }
     if (!this.inkMode) return;
@@ -755,15 +902,20 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
     else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y" && this.lmbRedoInk()) event.preventDefault();
     else if ((event.key === "Delete" || event.key === "Backspace") && this.lmbDeleteInkSelection(this.lmbActiveInkCanvas())) event.preventDefault();
   }, true);
-  this.registerDomEvent(document, "keyup", (event) => { if (event.code === "Space") this._lmbInkSpacePan = false; }, true);
-  this.registerDomEvent(window, "blur", () => { this._lmbInkSpacePan = false; }, true);
+  this.registerDomEvent(document, "keyup", (event) => { if (event.code === "Space") { this._lmbInkSpacePan = false; try { document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand"); } catch (_) {} this.lmbRefreshInkLayers(); } }, true);
+  this.registerDomEvent(window, "blur", () => { this._lmbInkSpacePan = false; try { document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand"); } catch (_) {} this.lmbRefreshInkLayers(); }, true);
   const observer = new MutationObserver((records) => {
     for (const record of records) for (const node of Array.from(record.removedNodes || [])) {
       if (!node || node.nodeType !== 1) continue;
       const pages = [];
-      if (node.matches && node.matches(".page[data-lmb-ink-bound]")) pages.push(node);
-      if (node.querySelectorAll) pages.push(...node.querySelectorAll(".page[data-lmb-ink-bound]"));
+      if (node.matches && node.matches(".page")) pages.push(node);
+      if (node.querySelectorAll) pages.push(...node.querySelectorAll(".page"));
       for (const pageEl of pages) {
+        if (pageEl.isConnected) continue;
+        clearTimeout(pageEl._lmbInkResizeTimer);
+        if (this._lmbInkVisibilityObserver) this._lmbInkVisibilityObserver.unobserve(pageEl);
+        this._lmbInkObservedPages.delete(pageEl);
+        delete pageEl._lmbInkNearViewport;
         if (pageEl._lmbInkResizeObserver) { pageEl._lmbInkResizeObserver.disconnect(); pageEl._lmbInkResizeObserver = null; }
         if (this._lmbInkSelectionContext && pageEl.contains && pageEl.contains(this._lmbInkSelectionContext.canvas)) { this._lmbInkSelection = []; this._lmbInkSelectionContext = null; }
       }
@@ -773,8 +925,11 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
   });
   observer.observe(document.body, { childList: true, subtree: true });
   this.register(() => {
+    if (this._lmbInkVisibilityObserver) this._lmbInkVisibilityObserver.disconnect();
+    for (const pageEl of this._lmbInkObservedPages) clearTimeout(pageEl._lmbInkResizeTimer);
+    this._lmbInkObservedPages.clear();
     observer.disconnect(); clearTimeout(this._lmbInkSaveTimer); clearTimeout(this._lmbInkPrefsTimer); this.lmbFlushInkStorage().catch(() => {});
     document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
-    document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => { if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect(); });
+    document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => { this.lmbUpdateInkPageCapture(pageEl, true); if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect(); });
   });
 };

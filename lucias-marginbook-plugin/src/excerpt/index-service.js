@@ -27,6 +27,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (existing instanceof TFile) {
         try { existingRaw = await this.app.vault.read(existing); } catch (_) { existingRaw = ""; }
       }
+      const existingNotes = this._lmbBuildExcerptNoteMap(existingRaw);
 
       // —— 补丁 B：P1-4 相关笔记预取（只算缓存中没有的 id；单个失败不阻断写入）——
       for (const en of entries) {
@@ -75,7 +76,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         for (const line of en.body.split("\n")) {
           body += (cardQ + lmbRestoreRefDisplayName(line, pdfBase, en.page)) + "\n";
         }
-        const canonicalNote = existingRaw ? this._lmbFindSidebarNote(existingRaw, en.id) : "";
+        const canonicalNote = existingNotes.get(en.id) || "";
         if (canonicalNote) {
           body += cardQ + "> [!lmb-note]\n";
           body += cardQ + "> <!-- LMB-NOTE:BEGIN -->\n";
@@ -255,22 +256,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       this.excerptIndex.clear();
       this.indexMtime.clear();
       const cands = this.lmbIndexCandidates();
-      for (let i = 0; i < cands.length; i += 20) {
-        for (const f of cands.slice(i, i + 20)) await this.reindexFile(f);
-        if (i + 20 < cands.length) await new Promise((r) => setTimeout(r, 10));
-      }
-      // P3.5：canvas 索引（exId → canvas 卡片），供反向跳转优先进画布
+      // Build the Canvas reverse index first.  reindexFile also mirrors notes,
+      // so doing Markdown first forced every candidate to be read and parsed a
+      // second time after Canvas indexing completed.
       const canvases = this.app.vault.getFiles().filter((f) => f.extension === "canvas");
       for (let i = 0; i < canvases.length; i += 10) {
         for (const cf of canvases.slice(i, i + 10)) await this.lmbIndexCanvasFile(cf);
         if (i + 10 < canvases.length) await new Promise((r) => setTimeout(r, 10));
       }
-      // Canvas 索引此时已经完整，按 Markdown 准值做一次启动同步。
-      for (const md of cands) {
-        try {
-          const raw = await this.app.vault.cachedRead(md);
-          await this.lmbMirrorMdNotesToCanvas(md, raw, lmbParseExcerptDoc(raw, md.path));
-        } catch (_) {}
+      for (let i = 0; i < cands.length; i += 20) {
+        for (const f of cands.slice(i, i + 20)) await this.reindexFile(f);
+        if (i + 20 < cands.length) await new Promise((r) => setTimeout(r, 10));
       }
       const s = this.getIndexStats();
       if (this.settings && this.settings.debug) {

@@ -50,6 +50,10 @@ async function main() {
   assert.equal(pure.lmbInkSegmentWidth({ type: "pen", width: .004, widthUnit: "page", pressureMode: "fixed" }, { p: .1 }, null, 1000), 4);
   assert.equal(pure.lmbInkFileKey("books/a.pdf"), pure.lmbInkFileKey("books/a.pdf"));
   assert.notEqual(pure.lmbInkFileKey("books/a.pdf"), pure.lmbInkFileKey("books/b.pdf"));
+  assert.equal(pure.lmbInkIsStylusInput({ pointerType: "pen" }), true);
+  assert.equal(pure.lmbInkIsStylusInput({ pointerType: "touch", touchType: "stylus" }), true);
+  assert.equal(pure.lmbInkIsStylusInput({ touchType: "direct", altitudeAngle: .8 }), true);
+  assert.equal(pure.lmbInkIsStylusInput({ pointerType: "touch", touchType: "direct", altitudeAngle: 0 }), false);
 
   const historyCtx = Object.create(proto);
   Object.assign(historyCtx, {
@@ -75,14 +79,17 @@ async function main() {
   assert.equal(proto.lmbInkShouldDraw.call({ inkMode: true, inkTool: "pen", settings: { inkInputMode: "pen-mouse" } }, { pointerType: "touch", button: 0 }), false);
   assert.equal(proto.lmbInkShouldDraw.call({ inkMode: true, inkTool: "pen", settings: { inkInputMode: "pen-only" } }, { pointerType: "mouse", button: 0 }), false);
   assert.equal(proto.lmbInkShouldDraw.call({ inkMode: true, inkTool: "pen", settings: { inkInputMode: "pen-only" } }, { pointerType: "pen", button: 0 }), true);
+  assert.equal(proto.lmbInkShouldDraw.call({ inkMode: true, inkTool: "pen", settings: { inkInputMode: "pen-only" } }, { pointerType: "touch", touchType: "stylus", button: 0 }), true);
 
   global.requestAnimationFrame = (callback) => { callback(); return 0; };
   global.window = { devicePixelRatio: 1 };
   const listeners = new Map();
+  const pdfScroller = { scrollLeft: 20, scrollTop: 100 };
   const pageEl = {
     addEventListener: (name, callback) => listeners.set(name, callback),
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 1400 }),
-    setPointerCapture: () => {}
+    setPointerCapture: () => {},
+    closest: (selector) => selector === ".pdf-viewer-container" ? pdfScroller : null
   };
   const context2d = new Proxy({}, { get: (target, key) => target[key] || (() => {}) });
   const canvas = { dataset: { lmbInkPath: "flow.pdf", lmbInkPage: "1" }, clientWidth: 1000, clientHeight: 1400, getContext: () => context2d };
@@ -96,8 +103,13 @@ async function main() {
   });
   flowCtx.lmbBindInkPage(pageEl, canvas, live);
   let touchPrevented = false;
-  listeners.get("pointerdown")({ pointerType: "touch", button: 0, clientX: 100, clientY: 100, preventDefault: () => { touchPrevented = true; }, stopPropagation: () => {} });
-  assert.equal(touchPrevented, false, "finger input must pass through to PDF navigation");
+  const touchEvent = (name, x, y) => ({ pointerType: "touch", pointerId: 1, button: 0, clientX: x, clientY: y, preventDefault: () => { touchPrevented = true; }, stopPropagation: () => {} });
+  listeners.get("pointerdown")(touchEvent("down", 100, 100));
+  assert.equal(touchPrevented, false, "finger down must remain available for a later pinch gesture");
+  listeners.get("pointermove")(touchEvent("move", 120, 140));
+  assert.equal(touchPrevented, true, "one-finger movement must be handled as PDF panning while ink capture is active");
+  assert.equal(pdfScroller.scrollLeft, 0); assert.equal(pdfScroller.scrollTop, 60);
+  listeners.get("pointerup")(touchEvent("up", 120, 140));
   const event = (x, y, pressure, extra) => Object.assign({
     pointerType: "pen", pointerId: 7, button: 0, buttons: 1, clientX: x, clientY: y, pressure,
     timeStamp: x, preventDefault: () => {}, stopPropagation: () => {}, getCoalescedEvents: () => []
@@ -106,7 +118,7 @@ async function main() {
   let palmPrevented = false;
   listeners.get("pointermove")({ pointerType: "touch", pointerId: 9, clientX: 800, clientY: 900, pressure: .5, timeStamp: 150, preventDefault: () => { palmPrevented = true; }, stopPropagation: () => {} });
   listeners.get("pointerup")({ pointerType: "touch", pointerId: 9, clientX: 800, clientY: 900, pressure: .5, timeStamp: 151, preventDefault: () => { palmPrevented = true; }, stopPropagation: () => {} });
-  assert.equal(palmPrevented, false, "a second touch pointer must not alter or finish the pen stroke");
+  assert.equal(palmPrevented, true, "a palm touch must be consumed while the pen stroke is active");
   listeners.get("pointermove")(event(300, 250, .8, { getCoalescedEvents: undefined }));
   listeners.get("pointerup")(event(300, 250, .8));
   assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").length, 1);
@@ -125,6 +137,19 @@ async function main() {
   flowCtx.inkTool = "line";
   listeners.get("pointerdown")(event(500, 500, .4)); listeners.get("pointerup")(event(500, 500, .4));
   assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").length, 1, "a zero-size shape must not be stored");
+  flowCtx.inkTool = "pen";
+  listeners.get("pointerdown")(event(600, 600, .4)); listeners.get("pointermove")(event(700, 700, .6)); listeners.get("pointercancel")(event(700, 700, .6));
+  assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").length, 2, "a sampled Pencil stroke must survive an iOS pointer cancellation");
+  let stylusTouchPrevented = false;
+  const iosTouch = (type, x, y, force) => ({
+    changedTouches: [{ identifier: 42, touchType: "stylus", altitudeAngle: .9, clientX: x, clientY: y, force }],
+    timeStamp: x, cancelable: true, preventDefault: () => { stylusTouchPrevented = true; }, stopPropagation: () => {}
+  });
+  listeners.get("touchstart")(iosTouch("start", 200, 300, .2));
+  listeners.get("touchmove")(iosTouch("move", 280, 390, .8));
+  listeners.get("touchend")(iosTouch("end", 280, 390, 0));
+  assert.equal(stylusTouchPrevented, true, "the iOS stylus touch path must cancel WKWebView scrolling synchronously");
+  assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").length, 3, "Touch.touchType=stylus must feed the handwriting pipeline");
 
   const reverseRect = { id: "reverse", type: "rect", x1: .8, y1: .8, x2: .2, y2: .2, width: .003, widthUnit: "page" };
   flowCtx._lmbInkSelection = [];
@@ -141,9 +166,40 @@ async function main() {
   const identityLive = { dataset: {}, clientWidth: 1000, clientHeight: 1400, width: 1000, height: 1400, style: {} };
   const identityPage = { dataset: { pageNumber: "2", lmbInkBound: "1" }, clientWidth: 1000, clientHeight: 1400, querySelector: (selector) => selector.includes("live") ? identityLive : identityCanvas };
   const identityCtx = Object.create(proto);
-  Object.assign(identityCtx, { lmbDrawInkLayer: () => { staticRedraws++; }, lmbDrawInkLiveLayer: () => { liveClears++; } });
+  Object.assign(identityCtx, { inkMode: true, settings: {}, lmbDrawInkLayer: () => { staticRedraws++; }, lmbDrawInkLiveLayer: () => { liveClears++; } });
   identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
   assert.equal(staticRedraws, 1); assert.equal(liveClears, 1);
+  identityCtx._lmbInkVisibilityObserver = {};
+  identityPage._lmbInkNearViewport = false;
+  identityPage.clientWidth = 2000;
+  identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
+  assert.equal(identityCanvas.width, 1000, "offscreen zoom must not resize the backing canvas");
+  identityPage._lmbInkNearViewport = true;
+  identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
+  assert.equal(identityCanvas.width, 2000, "scrolling back into view must update canvas resolution");
+  identityCtx.inkMode = false;
+  identityPage.querySelectorAll = () => [identityCanvas, identityLive];
+  identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
+  assert.equal(identityCanvas.width, 1, "unused canvases must release their backing storage");
+  assert.equal(identityLive.style.display, "none");
+  const emptyPage = { dataset: { pageNumber: "1" }, _lmbInkNearViewport: true, querySelectorAll: () => [] };
+  identityCtx.lmbEnsureInkLayer(emptyPage, "empty.pdf", 0);
+  assert.equal(emptyPage.dataset.lmbInkBound, undefined, "blank reading pages must not create or bind canvases");
+  identityCtx._lmbInkDocs = { "new.pdf": { "2": { objects: [{ id: "saved", type: "line" }] } } };
+  identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
+  assert.equal(identityCanvas.width, 2000, "saved ink must display even when handwriting mode is off");
+  assert.equal(identityCanvas.style.display, "block");
+  let resizeCallback;
+  global.ResizeObserver = class { constructor(callback) { resizeCallback = callback; } observe() {} };
+  identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
+  identityPage.isConnected = true;
+  identityPage._lmbInkPageContext = { path: "new.pdf", index: 1 };
+  const refreshedPages = [];
+  identityCtx.lmbEnsureInkLayer = (page) => refreshedPages.push(page);
+  resizeCallback(); resizeCallback(); resizeCallback();
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.deepEqual(refreshedPages, [identityPage], "a burst of resize events must refresh only its page once");
+  delete global.ResizeObserver;
 
   const selectedCanvas = Object.assign({}, canvas, { isConnected: true });
   const otherCanvas = Object.assign({}, canvas, { isConnected: true });
@@ -162,7 +218,7 @@ async function main() {
   Object.assign(storageCtx, {
     manifest: { id: "lucias-marginbook" }, app: { vault: { adapter } },
     settings: { inkAnnotations: { "legacy.pdf": { "2": { objects: [{ id: "safe", type: "pen", points: [{ x: .2, y: .3 }] }] } } }, inkSidecarV2Migrated: false },
-    saveSettings: async () => {}, lmbUpdateInkSaveStatus: () => {}
+    saveSettings: async () => {}, lmbUpdateInkSaveStatus: () => {}, lmbScheduleInkRefresh: () => {}
   });
   assert.equal(await storageCtx.lmbInitializeInkStorage(), true);
   assert.equal(storageCtx._lmbInkSidecarReady, true);
@@ -178,7 +234,10 @@ async function main() {
   const recoveryAdapter = { exists: async (path) => recoveryFiles.has(path) || path === recoveryDir, read: async (path) => recoveryFiles.get(path), write: async (path, body) => recoveryFiles.set(path, body), mkdir: async () => {} };
   const recoveryCtx = Object.create(proto);
   Object.assign(recoveryCtx, { manifest: { id: "lucias-marginbook" }, app: { vault: { adapter: recoveryAdapter } }, settings: { inkAnnotations: {}, inkSidecarV2Migrated: true }, lmbUpdateInkSaveStatus: () => {} });
+  let loadedRefreshes = 0;
+  recoveryCtx.lmbScheduleInkRefresh = () => { loadedRefreshes++; };
   await recoveryCtx.lmbInitializeInkStorage(); await recoveryCtx.lmbEnsureInkDocument("recover.pdf");
+  assert.equal(loadedRefreshes, 1, "async sidecar loading must request creation of visible saved-ink layers");
   assert.equal(recoveryCtx.lmbInkObjects("recover.pdf", "1")[0].id, "backup");
 
   const newestFiles = new Map(), newestPath = `${recoveryDir}/${pure.lmbInkFileKey("newest.pdf")}`;

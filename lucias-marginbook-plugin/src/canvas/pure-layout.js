@@ -29,6 +29,53 @@ function lmbPickDropParent(newNode, otherNodes, threshold = 0.2) {
   }
   return best ? { node: best, ratio: bestRatio } : null;
 }
+
+/**
+ * Build a lightweight grid index for overlap/containment lookups.
+ * Canvas auto-linking only needs nodes whose rectangles share at least one grid
+ * cell with the moved node; checking every node made bulk imports quadratic.
+ */
+function lmbBuildSpatialIndex(nodes, cellSize = 512) {
+  const size = Math.max(64, Number(cellSize) || 512);
+  const buckets = new Map();
+  const overflow = [];
+  const key = (x, y) => x + "," + y;
+  const cellsFor = (node) => {
+    const x = Number(node && node.x) || 0, y = Number(node && node.y) || 0;
+    const w = Math.max(0, Number(node && node.width) || 0);
+    const h = Math.max(0, Number(node && node.height) || 0);
+    const x0 = Math.floor(x / size), y0 = Math.floor(y / size);
+    const x1 = Math.floor((x + Math.max(1, w) - 0.001) / size);
+    const y1 = Math.floor((y + Math.max(1, h) - 0.001) / size);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 256) return null;
+    const out = [];
+    for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) out.push(key(cx, cy));
+    return out;
+  };
+  for (const node of nodes || []) {
+    if (!node || node.type === "group") continue;
+    const cells = cellsFor(node);
+    if (!cells) { overflow.push(node); continue; }
+    for (const cell of cells) {
+      if (!buckets.has(cell)) buckets.set(cell, []);
+      buckets.get(cell).push(node);
+    }
+  }
+  return {
+    query(node) {
+      const cells = cellsFor(node);
+      if (!cells) return (nodes || []).filter((n) => n && n.type !== "group" && n.id !== node.id);
+      const seen = new Set(), out = [];
+      const add = (candidate) => {
+        if (!candidate || candidate.id === node.id || seen.has(candidate.id)) return;
+        seen.add(candidate.id); out.push(candidate);
+      };
+      for (const cell of cells) for (const candidate of buckets.get(cell) || []) add(candidate);
+      for (const candidate of overflow) add(candidate);
+      return out;
+    }
+  };
+}
 /**
  * 子卡吸附到父卡旁边 —— v0.4.4 四方向择位（修复「长龙」问题）：
  *   按落点相对方位选首选面；首选面被已占位节点（含先吸附的兄弟卡）占据时，
@@ -150,14 +197,15 @@ function lmbSideFlip(side) {
  * v0.6.0：从 edges 中导出指定父卡的所有子卡，按它们相对父卡的位置分组（right/left/top/bottom）。
  *   用法：拿到 kidsBySide.get(side) 后加上新子卡，整组调用 lmbLayoutGroup。
  */
-function lmbGroupBySide(parent, nodes, edges) {
+function lmbGroupBySide(parent, nodes, edges, nodeById) {
   const m = new Map();
+  const byId = nodeById || new Map((nodes || []).filter((n) => n && n.id).map((n) => [n.id, n]));
   for (const e of edges || []) {
     let childId = null;
     if (e.fromNode === parent.id) childId = e.toNode;
     else if (e.toNode === parent.id) childId = e.fromNode;
     if (!childId) continue;
-    const child = nodes.find((n) => n.id === childId);
+    const child = byId.get(childId);
     if (!child) continue;
     const side = lmbSideOf(child, parent);
     if (!m.has(side)) m.set(side, []);

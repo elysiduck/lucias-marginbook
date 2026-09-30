@@ -104,14 +104,21 @@ class LmbSettingsStore {
         (this.plugin._lmbInkDocs && typeof this.plugin._lmbInkDocs === "object" ? this.plugin._lmbInkDocs :
           (settings.inkAnnotations && typeof settings.inkAnnotations === "object" ? settings.inkAnnotations : {}))
     };
-    if (state.autoSize.size) {
-      obj.autoSizes = Object.fromEntries(Array.from(state.autoSize, ([path, store]) => [path, Array.from(store)]));
+    let runtime = this.plugin._lmbSerializedRuntimeCaches;
+    if (!runtime || this.plugin._lmbRuntimeStateDirty) {
+      runtime = {};
+      if (state.autoSize.size) {
+        runtime.autoSizes = Object.fromEntries(Array.from(state.autoSize, ([path, store]) => [path, Array.from(store)]));
+      }
+      if (state.imgDims.size) runtime.imgDims = Object.fromEntries(state.imgDims);
+      const positions = this._nonEmptyEntries(state.canvasPositions);
+      if (positions) runtime.canvasPositions = positions;
+      const edges = this._nonEmptyEntries(state.autoEdges);
+      if (edges) runtime.autoEdges = edges;
+      this.plugin._lmbSerializedRuntimeCaches = runtime;
+      this.plugin._lmbRuntimeStateDirty = false;
     }
-    if (state.imgDims.size) obj.imgDims = Object.fromEntries(state.imgDims);
-    const positions = this._nonEmptyEntries(state.canvasPositions);
-    if (positions) obj.canvasPositions = positions;
-    const edges = this._nonEmptyEntries(state.autoEdges);
-    if (edges) obj.autoEdges = edges;
+    Object.assign(obj, runtime);
     return obj;
   }
 

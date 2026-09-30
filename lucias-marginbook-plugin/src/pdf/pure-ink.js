@@ -15,6 +15,34 @@ function lmbInkDistance(a, b) {
   return Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0));
 }
 
+/**
+ * iPad WKWebView does not always expose Apple Pencil through the same event
+ * shape. Modern builds use PointerEvent(pointerType="pen"), while the iOS
+ * compatibility path exposes Touch.touchType plus Pencil angle data.
+ */
+function lmbInkIsStylusInput(input) {
+  if (!input) return false;
+  const pointerType = String(input.pointerType || "").toLowerCase();
+  const touchType = String(input.touchType || "").toLowerCase();
+  if (pointerType === "pen" || touchType === "stylus" || touchType === "pencil") return true;
+  const altitude = Number(input.altitudeAngle);
+  if (Number.isFinite(altitude) && altitude > 0) return true;
+  const tiltX = Number(input.tiltX), tiltY = Number(input.tiltY);
+  return pointerType === "touch" && ((Number.isFinite(tiltX) && tiltX !== 0) || (Number.isFinite(tiltY) && tiltY !== 0));
+}
+
+function lmbInkTouchPointEvent(touch, sourceEvent, ended) {
+  return {
+    pointerType: "pen", pointerId: `stylus-touch-${touch.identifier}`,
+    button: 0, buttons: ended ? 0 : 1,
+    clientX: touch.clientX, clientY: touch.clientY,
+    pressure: Number(touch.force) > 0 ? Number(touch.force) : .5,
+    timeStamp: sourceEvent && sourceEvent.timeStamp,
+    preventDefault: () => { if (sourceEvent && sourceEvent.cancelable !== false) sourceEvent.preventDefault(); },
+    stopPropagation: () => { if (sourceEvent) sourceEvent.stopPropagation(); }
+  };
+}
+
 function lmbInkDistanceToSegment(point, start, end) {
   const dx = end.x - start.x, dy = end.y - start.y;
   const length2 = dx * dx + dy * dy;

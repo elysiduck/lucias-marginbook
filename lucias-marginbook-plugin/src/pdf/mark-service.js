@@ -198,7 +198,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   /** 画单条摘录的标记（跨行会有多个矩形，每个矩形一个 div） */
-  lmbDrawEntryMark(pageEl, entry) {
+  lmbDrawEntryMark(pageEl, entry, destination) {
     try {
       let pcts = null;
       if (entry && entry.selection) {
@@ -257,7 +257,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         bar.title = "此处有摘录，但无法精确定位（缺 selection 或文本层对不上）";
         frag.appendChild(bar);
       }
-      pageEl.appendChild(frag);
+      (destination || pageEl).appendChild(frag);
     } catch (_) { /* 单条失败不影响其他条 */ }
   },
 
@@ -279,6 +279,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const m = marks[i];
         if (m.parentNode) m.parentNode.removeChild(m);
       }
+      const pages = containerEl.querySelectorAll("div.page");
+      for (let i = 0; i < pages.length; i++) delete pages[i]._lmbMarkSignature;
     } catch (_) { /* noop */ }
   },
 
@@ -287,7 +289,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       if (!view || !view.containerEl) return;
       const container = view.containerEl;
-      this.lmbClearMarks(container);
 
       const file = view.file;
       if (!file) return;
@@ -298,32 +299,53 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       //   现在只要有文件就先挂 Observer（幂等），页面渲染/虚拟化的瞬间都会自动重画。
       this.lmbSetupObserver(view);
       const entries = this._lmbGetPdfSidebarEntries ? this._lmbGetPdfSidebarEntries(file) : this.getExcerptsForPdf(file.path);
-      if (!entries || !entries.length) { this.lmbDisconnectObserver(view); return; }
+      if (!entries || !entries.length) { this.lmbClearMarks(container); this.lmbDisconnectObserver(view); return; }
 
       const pages = container.querySelectorAll("div.page");
       if (!pages.length) return;   // 还没渲染（僵尸 leaf / 刚打开）→ Observer 已挂，渲染瞬间自动重画
 
       const guard = entries.length > 200;   // 性能守卫
+      const byPage = new Map();
+      for (const entry of entries) {
+        const page = Number(entry && entry.page);
+        if (!page) continue;
+        if (!byPage.has(page)) byPage.set(page, []);
+        byPage.get(page).push(entry);
+      }
 
       for (let i = 0; i < pages.length; i++) {
         const pageEl = pages[i];
         const num = parseInt(pageEl.getAttribute("data-page-number") || "", 10);
         if (!num) continue;
         if (guard && !this.lmbPageNearViewport(pageEl)) continue;
-        const list = entries.filter((e) => e.page === num);
-        if (!list.length) continue;
+        const list = byPage.get(num) || [];
         // v0.16.5 修复 R2：旧版在循环开头无条件要求 .textLayer，把**不依赖文本层**
         //   的截图摘录（rect 条目）一起挡掉了 —— 与 lmbDrawEntryMark「rect 是页面
         //   百分比，虚拟化（未渲染文本层）的页也能画」的实现承诺自相矛盾。
         //   现在按条目类型分流：rect 条目只要 .page 在就画；selection 条目才要求文本层
         //   （虚拟化页没有文本层时跳过，等它进入视口、observer 触发后自然重画）。
-        const hasLayer = !!pageEl.querySelector(".textLayer");
+        const textLayer = pageEl.querySelector(".textLayer"), hasLayer = !!textLayer;
+        const signature = JSON.stringify([
+          pageEl.clientWidth || 0, pageEl.clientHeight || 0,
+          textLayer && textLayer.childElementCount || 0,
+          this.settings && this.settings.imageExcerptMarkStyle,
+          list.map((e) => [e.exId, e.selection, e.rect, e.target, e.color,
+            this.settings && this.settings.excerptColors && this.settings.excerptColors[e.exId]])
+        ]);
+        if (pageEl._lmbMarkSignature === signature
+          && (!list.length || pageEl.querySelector(".lmb-mark"))) continue;
+        const oldMarks = pageEl.querySelectorAll(".lmb-mark");
+        // Measure all excerpts before changing the page DOM to avoid repeated layouts.
+        const nextMarks = pageEl.ownerDocument.createDocumentFragment();
         for (let ei = 0; ei < list.length; ei++) {
           const e = Object.assign({}, list[ei], { pageOrdinal: ei + 1 });
           const rectOnly = !!(e.rect && e.rect.length === 4 && e.rect[2] > 0 && e.rect[3] > 0);
           if (!hasLayer && !rectOnly) continue;
-          this.lmbDrawEntryMark(pageEl, e);
+          this.lmbDrawEntryMark(pageEl, e, nextMarks);
         }
+        for (let mi = 0; mi < oldMarks.length; mi++) oldMarks[mi].remove();
+        pageEl.appendChild(nextMarks);
+        pageEl._lmbMarkSignature = signature;
       }
       // v0.12.0：Observer 已在函数开头挂过（幂等），这里不再重复
     } catch (err) {

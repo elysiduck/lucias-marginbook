@@ -1003,7 +1003,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const nodes = (data && data.nodes) || [];
       const nn = nodes.find((n) => !before.has(n.id) && n.type === "text" && n.text && EX_ID_RE.test(n.text));
       if (!nn) continue;
-      const others = nodes.filter((n) => n.id !== nn.id && n.type !== "group");
+      const others = lmbBuildSpatialIndex(nodes).query(nn);
       const hit = lmbPickDropParent(nn, others);
       if (!hit) return; // 没压到卡 → 交给文件层（含出生重试）
       const parent = hit.node;
@@ -1012,7 +1012,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const sidecar0 = (filePath && this.autoEdges.get(filePath)) || new Set();
       const plan = lmbPlanAutoLink(nn, parent, data.edges, sidecar0);
       if (plan.op === "create") {
-        const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
+        const byId = new Map(nodes.filter((n) => n && n.id).map((n) => [n.id, n]));
+        const kidsBySide = lmbGroupBySide(parent, nodes, data.edges, byId);
         const group = [...(kidsBySide.get(plan.side) || []), nn];
         lmbLayoutGroup(parent, group, plan.side, 30);
         const ends = lmbSideEnds(plan.side);
@@ -1071,12 +1072,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         continue;
       }
       let changed = false;
+      const spatialIndex = lmbBuildSpatialIndex(nodes);
+      const nodeById = new Map(nodes.filter((n) => n && n.id).map((n) => [n.id, n]));
       const movedRoots = moved.map((n) => {
         const prev = lastPos.get(n.id);
         return { id: n.id, dx: n.x - prev.x, dy: n.y - prev.y };
       });
       for (const nn of moved) {
-        const others = nodes.filter((n) => n.id !== nn.id && n.type !== "group");
+        const others = spatialIndex.query(nn);
         const hit = lmbPickDropParent(nn, others);
         if (!hit) continue;
         const parent = hit.node;
@@ -1088,7 +1091,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (plan.op === "skip") continue;
         if (plan.op === "recenter") {
           // v0.11.1：防御性同样过滤 nn 自身（auto edge 可能在 data.edges 里导致重复）
-          const kidsBySideR = lmbGroupBySide(parent, nodes, data.edges);
+          const kidsBySideR = lmbGroupBySide(parent, nodes, data.edges, nodeById);
           const groupR = [...(kidsBySideR.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
           lmbLayoutGroup(parent, groupR, plan.side, 30);
           if (!sidecar.has(plan.edge.id)) sidecar.add(plan.edge.id);
@@ -1107,7 +1110,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         // 取父卡现有子卡按侧分组；把新卡 nn 加进同侧组，整组贴边对齐+组居中排布
         // v0.11.1 防御：lmbGroupBySide 会通过已存在的 edge 把 nn 也算进来（虽然这里是 create
         //   路径理论上不会有，但若 nn 是从别处拖过来并且已经存在连线就可能），filter 防御
-        const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
+        const kidsBySide = lmbGroupBySide(parent, nodes, data.edges, nodeById);
         const group = [...(kidsBySide.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
         lmbLayoutGroup(parent, group, plan.side, 30);
         const ends = lmbSideEnds(plan.side);

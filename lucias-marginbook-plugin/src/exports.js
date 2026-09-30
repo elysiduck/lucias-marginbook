@@ -2,14 +2,14 @@ module.exports = LuciasMarginBookPlugin;
 module.exports.__test = {
   lmbShouldReshowSelection, lmbMeasureRenderedContent, lmbMeasureNaturalCard,
   lmbVerticalOverflow, lmbHeightAfterOverflow, lmbFinalizeCardHeight, EX_ID_RE,
-  lmbRectsOverlapRatio, lmbPickDropParent, lmbSnapChildPosition, lmbBuildTree,
+  lmbRectsOverlapRatio, lmbPickDropParent, lmbBuildSpatialIndex, lmbSnapChildPosition, lmbBuildTree,
   lmbDiffCanvasNodes, lmbSideOf, lmbSideEnds, lmbLayoutGroup, lmbGroupBySide,
   lmbAutoEdgeAlive, lmbAutoParentEdgeOf,
   lmbMoveDescendants,
   lmbLayoutTree,
   // PDF 手写：采样、命中、套索与版本化存储文件名
   LMB_INK_SCHEMA_VERSION, LMB_INK_HISTORY_LIMIT,
-  lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso,
+  lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso, lmbInkIsStylusInput, lmbInkTouchPointEvent,
   lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
   lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
   // v0.8.0：卡片补充描述

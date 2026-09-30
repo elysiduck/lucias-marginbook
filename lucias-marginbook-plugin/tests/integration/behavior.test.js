@@ -56,6 +56,37 @@ async function main() {
   });
   assert.equal(nearestRepeated.start.node, repeatedBottom);
 
+  // Large Canvas parent lookup must stay local instead of returning every node.
+  const gridNodes = Array.from({ length: 2000 }, (_, i) => ({
+    id: "n" + i, type: "text", x: (i % 100) * 700, y: Math.floor(i / 100) * 700,
+    width: 300, height: 180
+  }));
+  const moving = { id: "moving", type: "text", x: 10, y: 10, width: 80, height: 80 };
+  const nearby = pure.lmbBuildSpatialIndex(gridNodes).query(moving);
+  assert(nearby.length < 10);
+  assert.equal(pure.lmbPickDropParent(moving, nearby).node.id, "n0");
+
+  // Related-note corpus reads each Markdown body once and is shared by queries.
+  const relatedFiles = ["alpha.md", "beta.md", "gamma.md"].map((path) => ({
+    path, extension: "md", basename: path.slice(0, -3)
+  }));
+  let relatedReads = 0;
+  const relatedCtx = Object.create(proto);
+  Object.assign(relatedCtx, {
+    relatedCache: new Map(),
+    app: { vault: {
+      getMarkdownFiles: () => relatedFiles,
+      cachedRead: async (file) => { relatedReads++; return file.basename + " body"; }
+    }, metadataCache: { getFileCache: () => ({ headings: [], tags: [] }) } }
+  });
+  await relatedCtx.findRelatedNotes("ex-related-a", "alpha");
+  await relatedCtx.findRelatedNotes("ex-related-b", "beta");
+  assert.equal(relatedReads, relatedFiles.length);
+
+  const noteMap = proto._lmbBuildExcerptNoteMap.call({},
+    "> [!lmb-note]\n> > <!-- LMB-NOTE:BEGIN -->\n> > hello\n> > <!-- LMB-NOTE:END -->\n> ^ex-note01");
+  assert.equal(noteMap.get("ex-note01"), "hello");
+
   // PDF 边页靠 padding 改变可用宽度；必须显式唤醒 PDF.js 的 resize
   // 监听器，并在异步布局稳定后补发一次，避免沿用旧的 viewer 宽度。
   const sidebarFrames = [], sidebarTimers = [];
@@ -244,6 +275,7 @@ async function main() {
   assert.equal(deleted, 0);
 
   const pruneCtx = {
+    _lmbCachePruneDirty: true,
     app: { vault: { getFiles: () => [
       { path: "keep.canvas", name: "keep.canvas", extension: "canvas" },
       { path: "shot.webp", name: "shot.webp", extension: "webp" }
@@ -616,10 +648,17 @@ async function main() {
   assert(sourceText.includes("this.isMobile ? null : setInterval"));
   assert(sourceText.includes('document.body.toggleClass("lmb-mobile", !!this.isMobile)'));
   assert(sourceText.includes("const entries = this._lmbGetPdfSidebarEntries(file);"));
+  assert(sourceText.includes("touch-action:none!important"));
+  assert(sourceText.includes('event.pointerType === "touch"'));
+  assert(sourceText.includes('pageEl.addEventListener("touchstart"'));
+  assert(sourceText.includes("lmbInkIsStylusInput(touch)"));
+  assert(sourceText.includes('applyIcon(button, icon, fallback)'));
+  assert(sourceText.includes('color.className = "lmb-ink-color-input"'));
+  assert(sourceText.includes('widthControl.className = "lmb-ink-width-control"'));
   assert(!sourceText.includes('text: `目标: ${target.length'));
   assert(!sourceText.includes('${e.quick ? "简洁" : kind}'));
-  assert(sourceText.includes('st.dataset.lmbVersion = "0.24.1"'));
-  assert.equal(JSON.parse(fs.readFileSync("./manifest.json", "utf8")).version, "0.24.1");
+  assert(sourceText.includes('st.dataset.lmbVersion = "0.25.3"'));
+  assert.equal(JSON.parse(fs.readFileSync("./manifest.json", "utf8")).version, "0.25.3");
 
   // 删除安全：引用扫描任一文件失败时必须 fail closed，不能把异常当作 0 引用。
   await assert.rejects(() => proto._lmbCountAttachmentRefs.call({ app: { vault: {
@@ -643,7 +682,7 @@ async function main() {
   assert(Array.from(trashWrites.keys()).some((p) => p.endsWith("/metadata.json")));
   assert.equal(JSON.parse(Array.from(trashWrites.values())[0]).excerptId, "ex-safe");
 
-  console.log("MarginBook verification: 150 assertions passed");
+  console.log("MarginBook verification: 161 assertions passed");
 }
 
 main().catch((err) => {

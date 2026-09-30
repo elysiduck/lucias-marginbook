@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.25.3
+
+- Lazily create handwriting canvases for visible PDF pages with saved ink or active handwriting; release unused blank canvas buffers in reading mode.
+- Refresh only the resized page after zoom settles instead of traversing every open PDF, and defer offscreen canvas resizing until visibility changes.
+- Refresh visible saved annotations after asynchronous sidecar loading, and clean up visibility observers and per-page resize timers.
+- Batch excerpt highlight insertion after measuring all excerpts on a page to reduce repeated layout work.
+- Add regression coverage for blank pages, offscreen zoom, saved ink in reading mode, asynchronous loading, and local resize coalescing.
+
+## 0.25.2
+
+- Add a dedicated non-passive iOS Touch Events path that recognizes `Touch.touchType=stylus` and Pencil angle metadata instead of depending solely on `PointerEvent.pointerType`.
+- Force page-level `touch-action:none` while a drawing tool is active so WKWebView cannot promote Pencil movement into PDF scrolling before the plugin receives it.
+- Restore the page's original touch policy when handwriting capture stops, while retaining plugin-managed finger panning and PDF pinch handling.
+
+## 0.25.1
+
+- Stop Apple Pencil strokes from being converted into PDF scrolling by declaring pinch-only direct manipulation while drawing, while retaining one-finger PDF panning and two-finger pinch zoom.
+- Preserve sampled pen/highlighter strokes if iPadOS issues a late pointer cancellation, and consume palm touches during an active Pencil stroke.
+- Rebuild the handwriting toolbar with stable Lucide icons, bounded sidebar-aware sizing, mobile wrapping, a custom color picker, and an explicitly styled width slider.
+
+## 0.25.0
+
+- Cache related-note source documents across excerpt queries and invalidate only changed notes, removing repeated vault-wide reads and allocation-heavy token counting.
+- Use a spatial grid and node lookup maps for Canvas parent detection, and make the dual-card toolbar cache actually skip unchanged cards.
+- Incrementally redraw PDF marks by page, reuse unchanged PDF sidebars, parse excerpt notes in one pass, and render sidebar Markdown in responsive batches.
+- Avoid repeated full-vault cache pruning, remove duplicate startup indexing reads, batch Canvas note fitting delays, and coalesce handwriting snapshots with fewer verification I/O operations.
+- Add large-Canvas, shared-corpus, and linear note-parser regression coverage.
+
 ## 0.24.1
 
 - Harden handwriting storage with lazy per-PDF loading, verified writes, recovery from newer temporary/backup copies, bounded retries, and fail-closed handling for corrupt sidecars.

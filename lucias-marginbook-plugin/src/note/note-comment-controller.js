@@ -58,7 +58,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   async _lmbAutoFitCard(file, nodeId, fallbackNode, fitOpts) {
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    if (!(fitOpts && fitOpts.skipDelay)) await new Promise((resolve) => setTimeout(resolve, 80));
     let live = null;
     try {
       const leaf = (this.app.workspace.getLeavesOfType("canvas") || [])
@@ -94,6 +94,26 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         .map((line) => line.replace(/^\s*(?:>\s*){2}/, "")).join("\n").trim();
     }
     return { lines, anchor, begin, end, value };
+  },
+
+  /** Parse every excerpt note in one linear pass for list/index rendering. */
+  _lmbBuildExcerptNoteMap(raw) {
+    const result = new Map(), lines = String(raw || "").split(/\r?\n/);
+    let pending = "";
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes("LMB-NOTE:BEGIN")) {
+        const body = [];
+        for (i = i + 1; i < lines.length && !lines[i].includes("LMB-NOTE:END"); i++) {
+          if (!/\[!lmb-note\]/i.test(lines[i])) body.push(lines[i].replace(/^\s*(?:>\s*){2}/, ""));
+        }
+        pending = body.join("\n").trim();
+        continue;
+      }
+      const anchor = lines[i].match(/\^(ex-[0-9a-z]{4,16})/i);
+      if (anchor) { result.set(anchor[1], pending); pending = ""; }
+      else if (/\[!lmb-excerpt\]/i.test(lines[i])) pending = "";
+    }
+    return result;
   },
 
   async lmbSaveExcerptNote(file, exId, value) {
@@ -307,13 +327,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   async lmbMirrorMdNotesToCanvas(mdFile, raw, entries) {
     if (!mdFile || !Array.isArray(entries) || !this.excerptCanvasIndex) return;
     const grouped = new Map();
+    const noteMap = this._lmbBuildExcerptNoteMap(raw);
     for (const entry of entries) {
       if (!entry || !entry.exId || entry.sourceMd !== mdFile.path) continue;
       const loc = this.excerptCanvasIndex.get(entry.exId);
       if (!loc || !loc.canvasPath || !loc.nodeId) continue;
       if (!grouped.has(loc.canvasPath)) grouped.set(loc.canvasPath, []);
       grouped.get(loc.canvasPath).push({ nodeId: loc.nodeId, exId: entry.exId,
-        note: this._lmbFindSidebarNote(raw, entry.exId) || "" });
+        note: noteMap.get(entry.exId) || "" });
     }
     if (!grouped.size) return;
     if (!this._lmbCanvasNoteMirrorBusy) this._lmbCanvasNoteMirrorBusy = new Set();
@@ -340,7 +361,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
         if (!changed.length) continue;
         await this._lmbWriteCanvasData(canvasFile, rd.data, rd.memCanvas, rd.raw);
-        for (const node of changed) await this._lmbAutoFitCard(canvasFile, node.id, node);
+        // Allow Canvas rendering to settle once per batch rather than imposing
+        // an unconditional 80ms delay for every changed card.
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        for (const node of changed) await this._lmbAutoFitCard(canvasFile, node.id, node, { skipDelay: true });
       } catch (err) { console.warn("[lmb] mirror md note to canvas failed:", canvasPath, err); }
       finally { this._lmbCanvasNoteMirrorBusy.delete(canvasPath); }
     }

@@ -32,7 +32,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       if (!wrapperEl || !wrapperEl.querySelector) return null;
 
-      // 幂等：已存在直接复用（轮询 120ms 一次，不复用会疯狂建 DOM）
+      // 幂等：已存在直接复用（低频兜底轮询，不复用会反复创建 DOM）
       // v0.13.8：**先看版本**。重载插件时 canvas leaf 的 DOM 不重建，旧版本造的浮层会
       //   被一直复用，而它的按钮绑的是**旧版 click 回调**（比如 v0.13.4 的 fit 按钮是
       //   `if (!c) return` 静默版）→ 代码改了、插件重载了，行为还是老样子。
@@ -114,7 +114,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       let c = this._barCtx;
       if (!c) {
-        // v0.13.7：**不要静默 return**。轮询每 120ms 跑，canvas 选中会间歇性返回空
+        // v0.13.7：**不要静默 return**。轮询期间 canvas 选中会间歇性返回空
         //   （焦点切换 / Modal 开关 / canvas 内部 state 刷新），那一刻 _lmbHideBar 清掉
         //   _barCtx；等下次 tick 重建前用户点按钮 → 拿到 null → 旧版直接 return，
         //   用户视角就是"点了没反应、连 Notice 都不弹"（v0.13.6 用户反馈）。
@@ -466,8 +466,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *   （class 随之丢失、缓存却以为没变 → 永不重打 → 标记静默失效）；nodeEl 的
    *   生命周期 = 节点生命周期，稳定。
    *
-   * 性能：120ms 一次，遍历全部节点。用 simpleHash(text) 缓存，文本没变的卡
-   *   直接跳过（正则不再跑）；nodeEl 未就绪的卡**不写缓存**，下轮重试。
+   * 性能：低频兜底扫描全部节点；文本、宿主和视图状态没变的卡直接跳过，
+   *   正则和 DOM 写入都不再执行；nodeEl 未就绪的卡不写缓存，下轮重试。
    *
    * 副作用清理：onunload 不特意摘 class —— class 是无害标记，插件重载后本函数
    *   会重新对齐（变非双重卡的卡会被 toggle 掉）。
@@ -481,15 +481,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const entries = (typeof nodes.entries === "function") ? nodes.entries() : Object.entries(nodes);
       for (const [id, node] of entries) {
         if (!node || typeof node.text !== "string" || !node.text) continue;
-        const hash = this.simpleHash(node.text);
         const c = cache.get(id);
-        const isDual = !!lmbPickBarActions(node.text).view;
         const el = node.nodeEl || node.contentEl;
         // host 只用来确认内容容器已渲染；class 本身打 nodeEl（抗 markdown 重渲染）
         const host = el && el.querySelector
           ? (el.querySelector(".canvas-node-content") || el.querySelector(".markdown-rendered"))
           : null;
         if (!host) continue;                             // 未就绪 → 不写缓存，下轮重试
+        // Fast path: unchanged text and host means the expensive action regexes
+        // and DOM writes can be skipped.  The previous implementation read the
+        // cache but never used it, so every fallback tick reparsed every card.
+        const cachedExId = c && c.text === node.text ? c.exId : "";
+        const cachedSaved = (cachedExId && this.settings.excerptViews && this.settings.excerptViews[cachedExId])
+          || (this.settings.nodeViews && this.settings.nodeViews[(canvas.view && canvas.view.file
+            ? canvas.view.file.path : "") + "::" + id]);
+        if (c && c.text === node.text && c.host === host && c.saved === cachedSaved
+          && !!(el.classList && el.classList.contains("lmb-dual")) === !!c.dual
+          && !!host.classList.contains("lmb-view-img") === !!(c.dual && cachedSaved === "image")) continue;
+        const isDual = !!lmbPickBarActions(node.text).view;
         // Markdown 重渲染会替换 host；即使文本 hash 没变，也必须在新 host 上恢复视图。
         const ex = String(node.text || "").match(EX_ID_RE);
         const exId = ex ? ex[0].slice(1) : "";
@@ -498,7 +507,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             ? canvas.view.file.path : "") + "::" + id]);
         if (el.classList) el.classList.toggle("lmb-dual", isDual);
         if (isDual) host.classList.toggle("lmb-view-img", saved === "image");
-        cache.set(id, { hash: hash, dual: isDual, host: host });
+        cache.set(id, { text: node.text, dual: isDual, host: host, exId, saved });
       }
       // 缓存里已删除节点的条目顺手清掉（防长期使用内存缓慢增长）
       const has = (typeof nodes.has === "function") ? (k) => nodes.has(k) : (k) => (k in nodes);
@@ -511,9 +520,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /**
    * v0.13.7：即时从**当前** canvas 选中重建 _barCtx（不依赖轮询缓存）。
    *
-   * 为什么需要：轮询每 120ms 跑一次，而 canvas.getSelection() 会**间歇性**返回空
+   * 为什么需要：轮询期间 canvas.getSelection() 会**间歇性**返回空
    *   （焦点切换 / Modal 开关 / canvas 内部 state 刷新的瞬间）。那一刻 tick 走
-   *   _lmbHideBar() 把 _barCtx 清成 null；等下次 tick 重建（最多 120ms 后）之前，
+   *   _lmbHideBar() 把 _barCtx 清成 null；等下次 tick 重建之前，
    *   用户点按钮就会拿到 null —— 旧版直接 `if (!c) return` 静默退出，
    *   用户视角"点了没反应、连 Notice 都不弹"。
    *
@@ -1022,11 +1031,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *
    *   性能上的分工（很重要）：
    *     - 位置**每轮都重算**：拖动卡片、平移画布时它都会变，而 getBoundingClientRect()
-   *       只读两个元素，120ms 一次完全可以忽略。
+   *       只读两个元素，低频执行开销很小。
    *     - 按钮**只在指纹变化时才重建**：那是要动 DOM 的（清 class、setIcon 已建好不再动，
    *       但要重设显隐与上下文），每帧做纯属浪费。
    *
-   *   本函数是 setInterval 回调，**整体绝不能抛异常**，否则会每 120ms 刷一次错误。
+   *   本函数是 setInterval 回调，**整体绝不能抛异常**，否则会持续刷错误。
    */
   lmbCanvasBarTick() {
     try {
@@ -1281,7 +1290,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // iPad 完全采用 pointerup / workspace 事件驱动。持续轮询会在双指缩放期间
       // 反复读取 Canvas 布局并扫描节点，直接参与每一轮合成，造成明显掉帧。
       this._barTimer = this.isMobile ? null : setInterval(() => this.lmbCanvasBarTick(), LMB_BAR_POLL_MS);
-      this.lmbCanvasBarTick();                // 先跑一次，避免刚进 canvas 要等 120ms 才出现
+      this.lmbCanvasBarTick();                // 先跑一次，避免刚进 canvas 要等下一轮才出现
     } catch (_) { /* noop */ }
   },
 

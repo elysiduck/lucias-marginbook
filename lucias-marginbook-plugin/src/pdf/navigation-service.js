@@ -352,6 +352,88 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 旧知识自动浮现（补丁 B：P1-4 相关笔记 + P1-5 颜色语义） ==================== */
 
+  lmbInvalidateRelatedFile(file, oldPath) {
+    try {
+      if (!this._lmbRelatedCorpus) this._lmbRelatedCorpus = new Map();
+      if (!this._lmbRelatedDirtyFiles) this._lmbRelatedDirtyFiles = new Map();
+      if (oldPath) this._lmbRelatedCorpus.delete(oldPath);
+      if (!file || file.extension !== "md" || String(file.basename || "").endsWith("-摘录")) {
+        if (file && file.path) this._lmbRelatedCorpus.delete(file.path);
+        if (oldPath && this.relatedCache) this.relatedCache.clear();
+        return;
+      }
+      if (this.relatedCache) this.relatedCache.clear();
+      this._lmbRelatedCorpus.delete(file.path);
+      this._lmbRelatedDirtyFiles.set(file.path, file);
+    } catch (_) { /* invalidation must never interrupt vault events */ }
+  },
+
+  async _lmbLoadRelatedCorpusFile(file) {
+    if (!file || file.extension !== "md" || file.path.includes(".obsidian")
+      || String(file.basename || "").endsWith("-摘录")) return null;
+    let cache = null;
+    try { cache = this.app.metadataCache.getFileCache(file); } catch (_) { return null; }
+    if (!cache) return null;
+    const bag = [String(file.basename || "").toLowerCase()];
+    for (const h of cache.headings || []) if (h.heading) bag.push(String(h.heading).toLowerCase());
+    for (const t of cache.tags || []) if (t.tag) bag.push(String(t.tag).toLowerCase());
+    const fm = cache.frontmatter;
+    if (fm) for (const [k, value] of Object.entries(fm)) {
+      if (k === "position") continue;
+      if (Array.isArray(value)) {
+        for (const item of value) if (typeof item === "string") bag.push(item.toLowerCase());
+      } else if (typeof value === "string") bag.push(value.toLowerCase());
+    }
+    let body = "";
+    try { body = (await this.app.vault.cachedRead(file)).toLowerCase(); } catch (_) { return null; }
+    return { file, haystack: bag.join("\n"), body };
+  },
+
+  async _lmbEnsureRelatedCorpus() {
+    if (this._lmbRelatedCorpusPromise) return this._lmbRelatedCorpusPromise;
+    this._lmbRelatedCorpusPromise = (async () => {
+      if (!this._lmbRelatedCorpus) this._lmbRelatedCorpus = new Map();
+      if (!this._lmbRelatedDirtyFiles) this._lmbRelatedDirtyFiles = new Map();
+      if (!this._lmbRelatedCorpusReady) {
+        this._lmbRelatedCorpus.clear();
+        // Clear before asynchronous reads so events arriving during the build
+        // remain queued and are applied below instead of being lost.
+        this._lmbRelatedDirtyFiles.clear();
+        const files = this.app.vault.getMarkdownFiles().filter((file) => file
+          && !file.path.includes(".obsidian") && !String(file.basename || "").endsWith("-摘录"));
+        for (let i = 0; i < files.length; i += 24) {
+          const docs = await Promise.all(files.slice(i, i + 24).map((file) => this._lmbLoadRelatedCorpusFile(file)));
+          for (const doc of docs) if (doc) this._lmbRelatedCorpus.set(doc.file.path, doc);
+          if (i + 24 < files.length) await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        this._lmbRelatedCorpusReady = true;
+      }
+      if (this._lmbRelatedDirtyFiles.size) {
+        const dirty = Array.from(this._lmbRelatedDirtyFiles.values());
+        this._lmbRelatedDirtyFiles.clear();
+        const docs = await Promise.all(dirty.map((file) => this._lmbLoadRelatedCorpusFile(file)));
+        for (let i = 0; i < dirty.length; i++) {
+          const doc = docs[i];
+          if (doc) this._lmbRelatedCorpus.set(doc.file.path, doc);
+          else if (dirty[i] && dirty[i].path) this._lmbRelatedCorpus.delete(dirty[i].path);
+        }
+      }
+      return this._lmbRelatedCorpus;
+    })();
+    try { return await this._lmbRelatedCorpusPromise; }
+    finally { this._lmbRelatedCorpusPromise = null; }
+  },
+
+  _lmbCountToken(text, token, limit) {
+    let count = 0, from = 0;
+    while (count < (limit || 2)) {
+      const at = text.indexOf(token, from);
+      if (at < 0) break;
+      count++; from = at + Math.max(1, token.length);
+    }
+    return count;
+  },
+
   /**
    * P1-4：相关笔记检索（MarginNote 4「标题链接」平替，纯本地零 AI）。
    * v0.19：元数据给予高权重，同时读取正文做本地 BM25 风格评分；结果仍按 entryId 缓存。
@@ -366,42 +448,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const tokens = this.tokenizeForSearch(bodyText);
       if (tokens.length) {
         const scored = [];
-        for (const file of this.app.vault.getMarkdownFiles()) {
+        const corpus = await this._lmbEnsureRelatedCorpus();
+        for (const doc of corpus.values()) {
           try {
-            // 排除：路径含 .obsidian、摘录文档自身（basename 以 -摘录 结尾）。
-            // canvas / .pdf 不会出现在 getMarkdownFiles() 里，天然排除。
-            if (file.path.includes(".obsidian")) continue;
-            if (file.basename.endsWith("-摘录")) continue;
-            const cache = this.app.metadataCache.getFileCache(file);
-            if (!cache) continue;
-
-            // 只读元数据拼成一个「索引袋」：basename + headings + tags + 别名等
-            const bag = [file.basename.toLowerCase()];
-            if (cache.headings) {
-              for (const h of cache.headings) if (h.heading) bag.push(h.heading.toLowerCase());
-            }
-            if (cache.tags) {
-              for (const t of cache.tags) if (t.tag) bag.push(t.tag.toLowerCase());
-            }
-            const fm = cache.frontmatter;
-            if (fm) {
-              for (const [k, v] of Object.entries(fm)) {
-                if (k === "position") continue;
-                if (Array.isArray(v)) {
-                  for (const item of v) if (typeof item === "string") bag.push(item.toLowerCase());
-                } else if (typeof v === "string") {
-                  bag.push(v.toLowerCase());
-                }
-              }
-            }
-            const haystack = bag.join("\n");
-            let body = "";
-            try { body = (await this.app.vault.cachedRead(file)).toLowerCase(); } catch (_) {}
+            const file = doc.file, haystack = doc.haystack, body = doc.body;
             let score = 0;
             for (const tk of tokens) {
               if (haystack.includes(tk)) score += 3;
               if (body) {
-                const hits = body.split(tk).length - 1;
+                const hits = this._lmbCountToken(body, tk, 2);
                 if (hits) score += Math.min(2, hits) / (1 + body.length / 6000);
               }
             }

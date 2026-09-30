@@ -304,6 +304,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (movedOrNew.length) {
       // hoisted：所有迭代共用同一个 sidecar 引用，统一在末尾持久化
       const sidecar2 = this.autoEdges.get(cf.path) || new Set();
+      // Bulk imports used to scan/copy every node for every new card.  The grid
+      // reduces parent candidates to nearby rectangles, while nodeById removes
+      // the edges × nodes.find hot path in group reconstruction.
+      const nodeByIdForLayout = new Map(nodes.filter((n) => n && n.id).map((n) => [n.id, n]));
+      const spatialIndex = lmbBuildSpatialIndex(nodes);
       for (const nn of movedOrNew) {
         // v0.11.1：新卡（drop 下的 ^ex 卡）走 instantAttach 设了位置，
         //   再被 fitNode 撑大——x/y 与 instantAttach 之后一致但 size 已变。
@@ -315,7 +320,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   标记为 sizeOnly 让 lmbPlanAutoLink 走 recenter 而不是 reside。
         const isNewCard = !lastPos.has(nn.id);
         const sizeOnly = prevForNew || isNewCard;
-        const others = nodes.filter((n) => n.id !== nn.id && n.type !== "group");
+        const others = spatialIndex.query(nn);
         const hit = lmbPickDropParent(nn, others);
         if (!hit) continue;
         const parent = hit.node;
@@ -332,7 +337,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           // v0.11.1：尺寸变化触发的 recenter——只整组重排，不动 edge side。
           // ⚠️ 必须从 kidsBySide 过滤掉 nn 自身（lmbGroupBySide 通过 edge 找子卡，会把 nn 也算进来），
           //   否则 group = [nn, nn] → lmbLayoutGroup 当成两卡分组排布，x 算错。
-          const kidsBySideRecenter = lmbGroupBySide(parent, nodes, data.edges);
+          const kidsBySideRecenter = lmbGroupBySide(parent, nodes, data.edges, nodeByIdForLayout);
           const groupRecenter = [...(kidsBySideRecenter.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
           lmbLayoutGroup(parent, groupRecenter, plan.side, 30);
           // 顺便把 instantAttach 漏登记的边补进 sidecar（一次性兜底）
@@ -355,7 +360,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         // 取父卡现有子卡按侧分组；把新卡 nn 加进同侧组，整组贴边对齐+组居中排布（v0.9.3 不再拉伸尺寸）
         // v0.11.1 防御：lmbGroupBySide 会通过任何 edge 把 nn 算进来（理论上 create 路径不会，
         //   但若 instantAttach 已建边 + 文件层兜底未删干净，这里会重复。仍然 filter 一遍）
-        const kidsBySide = lmbGroupBySide(parent, nodes, data.edges);
+        const kidsBySide = lmbGroupBySide(parent, nodes, data.edges, nodeByIdForLayout);
         const group = [...(kidsBySide.get(plan.side) || []).filter((k) => k.id !== nn.id), nn];
         lmbLayoutGroup(parent, group, plan.side, 30);
         const ends = lmbSideEnds(plan.side);
@@ -987,6 +992,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   persistAutoSizeSoon() {
+    this._lmbRuntimeStateDirty = true;
     clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => {
       this.saveSettings().catch(() => {});

@@ -24,6 +24,8 @@ class LuciasMarginBookPlugin extends Plugin {
     this._instantSkip = 0;           // 即时通道成功后短暂抑制文件层自动父子（防双写）
     this._dropFlush = null;          // v0.7.2：canvas 内松手后的快速通道 {path, t, timer}
     this._lmbPdfSidebarTimer = null; // PDF 右侧批注侧栏防抖定时器
+    this._lmbCachePruneDirty = false;
+    this._lmbRuntimeStateDirty = true;
 
     // P1：摘录索引层（反向索引：摘录 md → PDF/页/选区）
     this._isIndexing = false;        // 全量重建进行中标记（防重入）
@@ -67,6 +69,10 @@ class LuciasMarginBookPlugin extends Plugin {
         }
       }
     } catch (_) { /* noop */ }
+    // Loaded persisted maps need one cleanup pass; subsequent saves only prune
+    // after a vault delete/rename instead of scanning the whole vault every time.
+    this._lmbCachePruneDirty = true;
+    this._lmbRuntimeStateDirty = true;
 
     // v0.16.12：旧缓存中的 hash 与文本仍相同；若不失效，新算法永远没有机会运行。
     // 保留 locked（用户明确手动锁定）的卡片，其余只标成 pendingActual，等待对应画布
@@ -254,18 +260,19 @@ class LuciasMarginBookPlugin extends Plugin {
      * （不链 pdf 且不在索引中 → 跳过；mtime 未变 → 跳过），不会读盘。
      */
     this.registerEvent(this.app.vault.on("modify", (f) => {
-      if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
+      if (f && f.extension === "md") this.lmbInvalidateRelatedFile(f);
       if (f && f.extension === "canvas") this.lmbScheduleCanvasIndex(f); // P3.5 canvas 索引（v0.16.5 R7 防抖）
       else this.reindexFile(f);
     }));
     this.registerEvent(this.app.vault.on("create", (f) => {
-      if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
+      if (f && f.extension === "md") this.lmbInvalidateRelatedFile(f);
       if (f && f.extension === "canvas") this.lmbIndexCanvasFile(f);
       else this.reindexFile(f);
     }));
     this.registerEvent(this.app.vault.on("delete", (f) => {
       if (!f) return;
-      if (f.extension === "md" && this.relatedCache) this.relatedCache.clear();
+      this._lmbCachePruneDirty = true;
+      if (f.extension === "md") this.lmbInvalidateRelatedFile(f);
       if (f.extension === "canvas") {
         for (const [k, v] of Array.from(this.excerptCanvasIndex.entries())) {
           if (v && v.canvasPath === f.path) this.excerptCanvasIndex.delete(k);
@@ -273,14 +280,15 @@ class LuciasMarginBookPlugin extends Plugin {
       } else this.dropFileFromIndex(f.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (f, oldPath) => {
+      this._lmbCachePruneDirty = true;
       if ((f && f.extension === "md") || /\.md$/i.test(oldPath || "")) {
-        if (this.relatedCache) this.relatedCache.clear();
+        this.lmbInvalidateRelatedFile(f, oldPath);
       }
       if (f && f.extension === "pdf") this.lmbHandleInkPdfRename(f, oldPath).catch((err) => console.warn("[lmb] PDF ink rename failed", err));
     }));
     if (this.app.metadataCache && this.app.metadataCache.on) {
       this.registerEvent(this.app.metadataCache.on("changed", (f) => {
-        if (f && f.extension === "md" && this.relatedCache) this.relatedCache.clear();
+        if (f && f.extension === "md") this.lmbInvalidateRelatedFile(f);
       }));
     }
     this.app.workspace.onLayoutReady(() => {
@@ -537,9 +545,9 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     });
 
-    if (this.isMobile) new Notice("MarginBook 0.24.1 已加载（手写增强版）", 5000);
-    this.debugNotice("已加载 ✓（v0.24.1）");
-    console.log("[lmb] loaded (v0.24.1)");
+    if (this.isMobile) new Notice("MarginBook 0.25.3 已加载（PDF 性能优化版）", 5000);
+    this.debugNotice("已加载 ✓（v0.25.3）");
+    console.log("[lmb] loaded (v0.25.3)");
   }
 
   onunload() {
@@ -558,6 +566,7 @@ class LuciasMarginBookPlugin extends Plugin {
       this._lmbClearPdfSidebars();
       document.body.removeClass("lmb-rect-mode");
       document.body.removeClass("lmb-ink-mode");
+      document.body.removeClass("lmb-ink-capture");
       document.body.removeClass("lmb-mobile");
       // v0.12.1：清掉工具栏宿主的 DOM 缓存（不清的话 Map 里会残留整棵已卸载的 leaf 引用）
       if (this._toolbarCache) this._toolbarCache.clear();
@@ -1008,6 +1017,7 @@ class LuciasMarginBookPlugin extends Plugin {
   /** 清除已删除画布和附件留下的持久化缓存，避免 data.json 无限制增长。 */
   _lmbPrunePersistedCaches() {
     try {
+      if (!this._lmbCachePruneDirty) return;
       const files = this.app && this.app.vault && typeof this.app.vault.getFiles === "function"
         ? this.app.vault.getFiles() : [];
       const canvasPaths = new Set(files.filter((f) => f && f.extension === "canvas").map((f) => f.path));
@@ -1024,6 +1034,8 @@ class LuciasMarginBookPlugin extends Plugin {
           if (!imageNames.has(base)) this.imgDims.delete(name);
         }
       }
+      this._lmbCachePruneDirty = false;
+      this._lmbRuntimeStateDirty = true;
     } catch (err) {
       console.warn("[lmb] cache prune failed:", err);
     }
@@ -1041,7 +1053,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.24.1";
+    st.dataset.lmbVersion = "0.25.3";
   }
 
 }
