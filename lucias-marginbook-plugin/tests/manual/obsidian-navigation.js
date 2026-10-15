@@ -103,7 +103,7 @@
   const concurrent = await Promise.all(Array.from({ length: 3 }, () => plugin.lmbOpenExcerptInMd("ex-target", file.path, null)));
   target = targets()[0];
   await wait();
-  check("three simultaneous requests create one excerpt tab", concurrent.every(Boolean) && targets().length === 1 && victim.view.file.path === keepFile.path,
+  check("three simultaneous requests create one excerpt tab; only latest executes", concurrent[0] === false && concurrent[1] === false && concurrent[2] === true && targets().length === 1 && victim.view.file.path === keepFile.path,
     { results: concurrent, targetCount: targets().length });
   check("concurrent requests finish with the excerpt visible", visibleTarget(target).visible, visibleTarget(target));
 

@@ -545,12 +545,17 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     });
 
-    if (this.isMobile) new Notice("MarginBook 0.25.5 已加载（视图跳转修复版）", 5000);
-    this.debugNotice("已加载 ✓（v0.25.5）");
-    console.log("[lmb] loaded (v0.25.5)");
+    if (this.isMobile) new Notice("MarginBook 0.25.6 已加载（视图跳转修复版）", 5000);
+    this.debugNotice("已加载 ✓（v0.25.6）");
+    console.log("[lmb] loaded (v0.25.6)");
   }
 
   onunload() {
+    this._unloaded = true;
+    if (this._lmbNavigation) {
+      this._lmbNavigation.cancelled = true;
+      this._lmbEndNavigation(this._lmbNavigation);
+    }
     this.hideChip();
     this.syncTimers.forEach((t) => clearTimeout(t));
     this.syncTimers.clear();
@@ -1053,7 +1058,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.25.5";
+    st.dataset.lmbVersion = "0.25.6";
   }
 
 }

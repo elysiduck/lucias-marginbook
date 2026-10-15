@@ -370,7 +370,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * canvas 视图懒加载节点，必须轮询等 nodes 里出现目标 id。
    * 聚焦失败不算失败（画布已打开），返回 true。
    */
-  async lmbFocusCanvasNode(cf, nodeId) {
+  async lmbFocusCanvasNode(cf, nodeId, navigation) {
+    const ownsNavigation = !navigation;
+    navigation = navigation || this._lmbBeginNavigation();
     try {
       /* v0.9.2：【已打开的画布直接复用，绝不重开】。
        * 之前每次都 getLeaf("tab") + openFile —— 同一个 canvas 开出第二个视图：
@@ -384,15 +386,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const v = l && l.view;
         if (v && v.file && v.file.path === cf.path) { leaf = l; break; }
       }
-      if (!leaf) {
-        leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(cf);
-      } else {
-        this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      }
+      leaf = await this._lmbActivateNavigationLeaf(navigation, leaf, cf);
+      if (!leaf) return false;
       const view = leaf.view;
       const t0 = Date.now();
       while (Date.now() - t0 < 6000) {
+        if (!this._lmbNavigationCurrent(navigation) || leaf.view !== view || view.file?.path !== cf.path) return false;
         const canvas = view && view.canvas;
         const node = canvas && canvas.nodes && canvas.nodes.get
           ? canvas.nodes.get(nodeId) : null;
@@ -412,7 +411,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (err) {
       console.warn("[lmb] lmbFocusCanvasNode error:", err);
       return false;
-    }
+    } finally { if (ownsNavigation) this._lmbEndNavigation(navigation); }
   },
 
   /**

@@ -3154,12 +3154,17 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     });
 
-    if (this.isMobile) new Notice("MarginBook 0.25.5 已加载（视图跳转修复版）", 5000);
-    this.debugNotice("已加载 ✓（v0.25.5）");
-    console.log("[lmb] loaded (v0.25.5)");
+    if (this.isMobile) new Notice("MarginBook 0.25.6 已加载（视图跳转修复版）", 5000);
+    this.debugNotice("已加载 ✓（v0.25.6）");
+    console.log("[lmb] loaded (v0.25.6)");
   }
 
   onunload() {
+    this._unloaded = true;
+    if (this._lmbNavigation) {
+      this._lmbNavigation.cancelled = true;
+      this._lmbEndNavigation(this._lmbNavigation);
+    }
     this.hideChip();
     this.syncTimers.forEach((t) => clearTimeout(t));
     this.syncTimers.clear();
@@ -3662,7 +3667,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.25.5";
+    st.dataset.lmbVersion = "0.25.6";
   }
 
 }
@@ -7852,7 +7857,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * canvas 视图懒加载节点，必须轮询等 nodes 里出现目标 id。
    * 聚焦失败不算失败（画布已打开），返回 true。
    */
-  async lmbFocusCanvasNode(cf, nodeId) {
+  async lmbFocusCanvasNode(cf, nodeId, navigation) {
+    const ownsNavigation = !navigation;
+    navigation = navigation || this._lmbBeginNavigation();
     try {
       /* v0.9.2：【已打开的画布直接复用，绝不重开】。
        * 之前每次都 getLeaf("tab") + openFile —— 同一个 canvas 开出第二个视图：
@@ -7866,15 +7873,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const v = l && l.view;
         if (v && v.file && v.file.path === cf.path) { leaf = l; break; }
       }
-      if (!leaf) {
-        leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(cf);
-      } else {
-        this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      }
+      leaf = await this._lmbActivateNavigationLeaf(navigation, leaf, cf);
+      if (!leaf) return false;
       const view = leaf.view;
       const t0 = Date.now();
       while (Date.now() - t0 < 6000) {
+        if (!this._lmbNavigationCurrent(navigation) || leaf.view !== view || view.file?.path !== cf.path) return false;
         const canvas = view && view.canvas;
         const node = canvas && canvas.nodes && canvas.nodes.get
           ? canvas.nodes.get(nodeId) : null;
@@ -7894,7 +7898,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (err) {
       console.warn("[lmb] lmbFocusCanvasNode error:", err);
       return false;
-    }
+    } finally { if (ownsNavigation) this._lmbEndNavigation(navigation); }
   },
 
   /**
@@ -8885,8 +8889,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         // Reading clientWidth commits the padding/class change before PDF.js
         // measures .pdf-viewer-container in its resize listener.
         void host.clientWidth;
-        try { if (this.app && this.app.workspace) this.app.workspace.trigger("resize"); } catch (_) {}
-        try { win.dispatchEvent(new win.Event("resize")); } catch (_) {}
+        // A sidebar only changes this PDF's width. A global resize also asks
+        // every Markdown preview to reapply its saved scroll position.
+        const child = leaf.view && leaf.view.viewer && leaf.view.viewer.child;
+        try {
+          if (child && typeof child.onResize === "function") child.onResize();
+          else if (child && child.pdfViewer && child.pdfViewer.eventBus)
+            child.pdfViewer.eventBus.dispatch("resize", { source: child });
+        } catch (_) {}
       };
       const afterFrame = () => {
         host._lmbSidebarLayoutFrame = 0;
@@ -8912,6 +8922,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         host._lmbSidebarToolbarObserver = null;
         host._lmbSidebarLayoutFrame = 0;
         host._lmbSidebarLayoutTimer = 0;
+        delete host._lmbSidebarVisible;
         host.removeClass("lmb-pdf-sidebar-host");
         host.style.removeProperty("--lmb-pdf-sidebar-width");
         host.style.removeProperty("--lmb-pdf-sidebar-top");
@@ -8973,7 +8984,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const toggle = leaf.containerEl.querySelector(".lmb-toolbar-sidebar");
       if (toggle) toggle.toggleClass("is-active", leaf._lmbPdfSidebarOpen);
       if (leaf._lmbPdfSidebarOpen && !host) this.lmbRenderPdfSidebarForLeaf(leaf).catch(() => {});
-      else if (host) this._lmbNotifyPdfSidebarLayout(leaf);
+      else if (host && host._lmbSidebarVisible !== leaf._lmbPdfSidebarOpen) {
+        host._lmbSidebarVisible = leaf._lmbPdfSidebarOpen;
+        this._lmbNotifyPdfSidebarLayout(leaf);
+      }
       return leaf._lmbPdfSidebarOpen;
     } catch (_) { return false; }
   },
@@ -9093,6 +9107,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   async lmbOpenExcerptInCanvas(exId) {
+    const navigation = this._lmbBeginNavigation();
     try {
       if (!exId) return false;
       let loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(exId);
@@ -9101,6 +9116,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const files = this.app.vault.getFiles().filter((f) => f.extension === "canvas");
         for (const file of files) {
           await this.lmbIndexCanvasFile(file);
+          if (!this._lmbNavigationCurrent(navigation)) return false;
           loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(exId);
           if (loc) break;
         }
@@ -9110,10 +9126,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       const file = this.app.vault.getAbstractFileByPath(loc.canvasPath);
       if (!(file instanceof TFile)) { new Notice("MarginBook: Canvas 文件已不存在"); return false; }
-      const ok = await this.lmbFocusCanvasNode(file, loc.nodeId);
-      if (!ok) new Notice("MarginBook: 已打开 Canvas，但没有找到对应卡片");
+      const ok = await this.lmbFocusCanvasNode(file, loc.nodeId, navigation);
+      if (!ok && this._lmbNavigationCurrent(navigation)) new Notice("MarginBook: 已打开 Canvas，但没有找到对应卡片");
       return ok;
     } catch (err) { console.warn("[lmb] canvas excerpt locate failed:", err); return false; }
+    finally { this._lmbEndNavigation(navigation); }
   },
 
   async lmbDeleteSidebarExcerpt(entry, leaf) {
@@ -9374,6 +9391,63 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
 
+  // A navigation belongs to one user action. Loading may finish much later;
+  // switching tabs or starting another navigation permanently cancels it.
+  _lmbBeginNavigation() {
+    if (this._lmbNavigation) this._lmbNavigation.cancelled = true;
+    const workspace = this.app.workspace;
+    const request = { leaf: workspace.activeLeaf, cancelled: false };
+    this._lmbNavigation = request;
+    if (typeof workspace.on === "function") {
+      request.event = workspace.on("active-leaf-change", (leaf) => {
+        if (!request.creating && leaf !== request.leaf) request.cancelled = true;
+      });
+    }
+    request.document = request.leaf && request.leaf.containerEl && request.leaf.containerEl.ownerDocument;
+    if (request.document) {
+      request.interrupt = () => { request.cancelled = true; };
+      for (const event of ["wheel", "touchstart", "pointerdown", "keydown"])
+        request.document.addEventListener(event, request.interrupt, { capture: true, passive: true });
+    }
+    return request;
+  },
+
+  _lmbNavigationCurrent(request) {
+    return !this._unloaded && request && !request.cancelled
+      && this._lmbNavigation === request
+      && (!this.app.workspace.activeLeaf || this.app.workspace.activeLeaf === request.leaf);
+  },
+
+  _lmbEndNavigation(request) {
+    if (request && request.document && request.interrupt)
+      for (const event of ["wheel", "touchstart", "pointerdown", "keydown"])
+        request.document.removeEventListener(event, request.interrupt, true);
+    if (request && request.event && this.app.workspace.offref) this.app.workspace.offref(request.event);
+    if (this._lmbNavigation === request) this._lmbNavigation = null;
+  },
+
+  async _lmbActivateNavigationLeaf(request, leaf, file) {
+    const workspace = this.app.workspace;
+    if (!this._lmbNavigationCurrent(request)) return null;
+    if (!leaf) {
+      request.creating = true;
+      try { leaf = workspace.getLeaf("tab"); }
+      finally { request.creating = false; }
+      // getLeaf may activate the blank tab synchronously.
+      request.leaf = workspace.activeLeaf;
+      await leaf.openFile(file, { active: false });
+      if (!this._lmbNavigationCurrent(request)) return null;
+    }
+    if (typeof leaf.loadIfDeferred === "function") await leaf.loadIfDeferred();
+    if (!this._lmbNavigationCurrent(request)) return null;
+    request.leaf = leaf;
+    workspace.setActiveLeaf(leaf, { focus: true });
+    // Older hosts expose revealLeaf but not loadIfDeferred.
+    if (typeof leaf.loadIfDeferred !== "function" && typeof workspace.revealLeaf === "function")
+      await workspace.revealLeaf(leaf);
+    return this._lmbNavigationCurrent(request) ? leaf : null;
+  },
+
   /* ==================== P3：双向跳转 ====================
    * 正向：摘录文档里的 [[x.pdf#page=N&selection=a,b,c,d]] → 滚到页 + 精确定位 + 闪 3 次
    * 反向：PDF 上双击标记区域 → 打开摘录文档并定位到 ^ex- 块
@@ -9558,6 +9632,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 只匹配「真正渲染了」的 leaf（view.file 有值）——僵尸 leaf 一律绕开重开。
    */
   async lmbJumpToSelection(filePath, pageNum, selection, rect, preferredLeaf, entryText) {
+    const request = this._lmbBeginNavigation();
     try {
       if (!filePath || !pageNum) return;
       let leaf = null, resolvedFile = this.app.vault.getAbstractFileByPath(filePath);
@@ -9578,22 +9653,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         //   metadataCache 的链接解析，与摘录索引层（reindexFile）用的是同一套规则
         const f = resolvedFile;
         if (!f) { new Notice("MarginBook: 找不到 PDF " + filePath); return; }
-        leaf = this.app.workspace.getLeaf("tab");        // 新标签页，不打乱现有布局
-        await leaf.openFile(f);
-      } else {
-        this.app.workspace.setActiveLeaf(leaf, { focus: true });
       }
+      leaf = await this._lmbActivateNavigationLeaf(request, leaf, resolvedFile);
+      if (!leaf) return;
       const view = leaf.view;
       const container = view && view.containerEl;
       if (!container) return;
 
       const pageEl = await this.lmbWaitPageEl(container, pageNum, 6000);
+      if (!this._lmbNavigationCurrent(request) || leaf.view !== view || view.file?.path !== resolvedPath) return;
       if (!pageEl) { new Notice("MarginBook: 找不到第 " + pageNum + " 页"); return; }
       pageEl.scrollIntoView({ block: "center" });
 
       // 截图摘录：rect 是页面百分比，直接闪（不需要 textLayer，最稳）
       if (rect && rect.length === 4 && rect[2] > 0 && rect[3] > 0) {
         await new Promise((r) => setTimeout(r, 350));     // 给滚动/渲染一点时间
+        if (!this._lmbNavigationCurrent(request)) return;
         this.lmbFlashRects(pageEl, null, rect);
         return;
       }
@@ -9601,6 +9676,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // 文字选区：pdf.js 虚拟化，刚滚到的页可能还没渲染文本层，必须等
       if (selection) {
         const rects = await this.lmbWaitSelectionRects(pageEl, selection, 8000);
+        if (!this._lmbNavigationCurrent(request)) return;
         if (!rects) {
           new Notice("MarginBook: 已到第 " + pageNum
             + " 页，但选区无法精确定位（文本层未就绪或索引漂移）。可跑「重建摘录索引」重试。");
@@ -9613,11 +9689,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
     } catch (err) {
       console.warn("[lmb] lmbJumpToSelection error:", err);
-    }
+    } finally { this._lmbEndNavigation(request); }
   },
 
   /** 已打开则复用（包括尚未加载的后台标签），否则新建标签，保留当前视图模式。 */
   async lmbOpenExcerptInMd(exId, sourceMd, pdfLeaf) {
+    const navigation = this._lmbBeginNavigation();
     try {
       if (!exId || !sourceMd) { new Notice("MarginBook: 该摘录缺少 Markdown 来源"); return false; }
       const file = this.app.vault.getAbstractFileByPath(sourceMd);
@@ -9627,6 +9704,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const queue = this._lmbMdNavigationQueue || (this._lmbMdNavigationQueue = new Map());
       const previous = queue.get(file.path) || Promise.resolve();
       const request = previous.catch(() => {}).then(async () => {
+        if (!this._lmbNavigationCurrent(navigation)) return false;
         const workspace = this.app.workspace;
         const mdLeaves = workspace.getLeavesOfType("markdown") || [];
         let leaf = mdLeaves.find((candidate) => {
@@ -9635,30 +9713,27 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           const state = typeof candidate.getViewState === "function" ? candidate.getViewState() : null;
           return state && state.state && state.state.file === file.path;
         });
-        if (!leaf) {
-          leaf = workspace.getLeaf("tab");
-          // Do not send a block subpath through openFile: it may change modes.
-          await leaf.openFile(file, { active: true });
-        }
-        if (typeof workspace.revealLeaf === "function") await workspace.revealLeaf(leaf);
-        else if (typeof leaf.loadIfDeferred === "function") await leaf.loadIfDeferred();
-        workspace.setActiveLeaf(leaf, { focus: true });
-        return this._lmbPositionMdExcerpt(leaf, file, exId);
+        leaf = await this._lmbActivateNavigationLeaf(navigation, leaf, file);
+        if (!leaf) return false;
+        return this._lmbPositionMdExcerpt(leaf, file, exId, navigation);
       });
       queue.set(file.path, request);
       try { return await request; }
       finally { if (queue.get(file.path) === request) queue.delete(file.path); }
     } catch (err) { console.warn("[lmb] lmbOpenExcerptInMd error:", err); return false; }
+    finally { this._lmbEndNavigation(navigation); }
   },
 
   /** 定位当前可见子视图；等待阅读渲染就绪，绝不通过重复 openFile 重试。 */
-  async _lmbPositionMdExcerpt(leaf, file, exId) {
+  async _lmbPositionMdExcerpt(leaf, file, exId, navigation) {
     let fallbackLine = null;
+    const initialMode = leaf.view && leaf.view.getMode();
     for (let attempt = 0; attempt < 30; attempt++) {
+      if (navigation && !this._lmbNavigationCurrent(navigation)) return false;
       const view = leaf.view;
       // A delayed renderer must not move the cursor in a document the user
       // switched to, or pull focus back after the user selected another tab.
-      if (!view || !view.file || view.file.path !== file.path
+      if (!view || !view.file || view.file.path !== file.path || view.getMode() !== initialMode
         || (this.app.workspace.activeLeaf && this.app.workspace.activeLeaf !== leaf)) return false;
       const cache = this.app.metadataCache.getFileCache(file);
       const block = cache && cache.blocks && cache.blocks[exId];
@@ -9675,7 +9750,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (fallbackLine >= 0) line = fallbackLine;
       }
       // cachedRead above can yield while the user changes the active document.
-      if (leaf.view !== view || !view.file || view.file.path !== file.path
+      if (navigation && !this._lmbNavigationCurrent(navigation)) return false;
+      if (leaf.view !== view || !view.file || view.file.path !== file.path || view.getMode() !== initialMode
         || (this.app.workspace.activeLeaf && this.app.workspace.activeLeaf !== leaf)) return false;
       if (Number.isInteger(line) && line >= 0) {
         if (view.getMode() === "preview") {
@@ -9748,14 +9824,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * 找不到 canvas 位置 / 节点没等到时才回退 md 的 ^ex- 块。
    */
   async lmbOpenExcerptAt(exId, sourceMd) {
+    const navigation = this._lmbBeginNavigation();
     try {
       if (!exId) return;
       // ① 优先 canvas 卡片
       const loc = this.excerptCanvasIndex ? this.excerptCanvasIndex.get(exId) : null;
       if (loc && loc.canvasPath && loc.nodeId) {
         const cf = this.app.vault.getAbstractFileByPath(loc.canvasPath);
-        if (cf && (await this.lmbFocusCanvasNode(cf, loc.nodeId))) return;
+        if (cf && (await this.lmbFocusCanvasNode(cf, loc.nodeId, navigation))) return;
       }
+      if (!this._lmbNavigationCurrent(navigation)) return;
       // ② 回退 md
       let path = sourceMd || null;
       if (!path && this.excerptIndex) {
@@ -9768,7 +9846,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       await this.lmbOpenExcerptInMd(exId, path, this._lmbGetActivePdfLeaf());
     } catch (err) {
       console.warn("[lmb] lmbOpenExcerptAt error:", err);
-    }
+    } finally { this._lmbEndNavigation(navigation); }
   },
 
   /* ==================== 旧知识自动浮现（补丁 B：P1-4 相关笔记 + P1-5 颜色语义） ==================== */

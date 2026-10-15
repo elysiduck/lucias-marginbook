@@ -1,0 +1,179 @@
+{
+  "scope": "Isolated Obsidian 1.14.4; only LMB enabled; synthetic PDF and 1000-line Markdown; timing cases deliberately delay completion. Not a reproduction of the complete user vault.",
+  "before": {
+    "version": "0.25.5",
+    "controlledDelay": true,
+    "pdfScrolledAfterSwitch": 1,
+    "queuedMarkdownStoleFocus": true
+  },
+  "after": {
+    "races": {
+      "version": "0.25.6",
+      "controlledDelay": true,
+      "pdfScrolledAfterSwitch": 0,
+      "queuedMarkdownStoleFocus": false
+    },
+    "sidebar": {
+      "version": "0.25.6",
+      "refresh": {
+        "mdResizes": 0,
+        "notifications": 0
+      },
+      "open": {
+        "container": 350,
+        "page": 314
+      },
+      "closed": {
+        "container": 668,
+        "page": 636
+      },
+      "reopened": {
+        "container": 350,
+        "page": 314
+      },
+      "pdfStillResizes": true
+    }
+  },
+  "normal": {
+    "app": "book-excerpts - vault - Obsidian 1.14.4",
+    "pluginVersion": "0.25.6",
+    "vault": "C:\\Users\\13567\\AppData\\Local\\Temp\\lmb-navigation-20261015\\vault",
+    "passed": 13,
+    "total": 13,
+    "results": [
+      {
+        "name": "unopened excerpt preserves the current tab",
+        "passed": true,
+        "details": {
+          "victim": "currently-reading.md",
+          "targetCount": 1
+        }
+      },
+      {
+        "name": "new reading tab displays the excerpt without changing mode",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      },
+      {
+        "name": "existing reading tab visibly scrolls and stays in reading mode",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      },
+      {
+        "name": "existing reading tab is reused",
+        "passed": true,
+        "details": {
+          "targetCount": 1
+        }
+      },
+      {
+        "name": "source mode positions the editor and preserves source mode",
+        "passed": true,
+        "details": {
+          "cursor": {
+            "line": 800,
+            "ch": 0
+          },
+          "mode": "source"
+        }
+      },
+      {
+        "name": "missing block cache still locates the excerpt",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      },
+      {
+        "name": "saved viewport matches the visible preview after positioning",
+        "passed": true,
+        "details": {
+          "saved": 782.45,
+          "visible": 782.45
+        }
+      },
+      {
+        "name": "switching tabs does not replay the excerpt jump",
+        "passed": true,
+        "details": {
+          "before": 148.85,
+          "after": 148.85
+        }
+      },
+      {
+        "name": "entering edit mode preserves the manually selected reading location",
+        "passed": true,
+        "details": {
+          "reading": 148.85,
+          "editing": 147.85416666666666
+        }
+      },
+      {
+        "name": "returning to reading mode preserves that location",
+        "passed": true,
+        "details": {
+          "before": 148.85,
+          "after": 148.85
+        }
+      },
+      {
+        "name": "missing target returns false and preserves the tab",
+        "passed": true,
+        "details": {
+          "result": false
+        }
+      },
+      {
+        "name": "three simultaneous requests create one excerpt tab; only latest executes",
+        "passed": true,
+        "details": {
+          "results": [
+            false,
+            false,
+            true
+          ],
+          "targetCount": 1
+        }
+      },
+      {
+        "name": "concurrent requests finish with the excerpt visible",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      }
+    ]
+  }
+}

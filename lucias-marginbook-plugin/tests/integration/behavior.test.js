@@ -90,7 +90,7 @@ async function main() {
   // PDF 边页靠 padding 改变可用宽度；必须显式唤醒 PDF.js 的 resize
   // 监听器，并在异步布局稳定后补发一次，避免沿用旧的 viewer 宽度。
   const sidebarFrames = [], sidebarTimers = [];
-  let sidebarWindowResizes = 0, sidebarWorkspaceResizes = 0, sidebarWidthReads = 0;
+  let sidebarWindowResizes = 0, sidebarWorkspaceResizes = 0, sidebarWidthReads = 0, sidebarPdfResizes = 0;
   class SidebarEvent { constructor(type) { this.type = type; } }
   const sidebarWindow = {
     Event: SidebarEvent,
@@ -104,17 +104,20 @@ async function main() {
     ownerDocument: { defaultView: sidebarWindow },
     get clientWidth() { sidebarWidthReads++; return 900; }
   };
-  const sidebarLeaf = { containerEl: { querySelector: () => sidebarHost } };
+  const sidebarLeaf = { containerEl: { querySelector: () => sidebarHost },
+    view: { viewer: { child: { onResize: () => { sidebarPdfResizes++; } } } } };
   proto._lmbNotifyPdfSidebarLayout.call({ app: { workspace: {
     trigger: (name) => { if (name === "resize") sidebarWorkspaceResizes++; }
   } } }, sidebarLeaf);
   assert.equal(sidebarWindowResizes, 0);
   sidebarFrames.shift()();
-  assert.equal(sidebarWindowResizes, 1);
-  assert.equal(sidebarWorkspaceResizes, 1);
+  assert.equal(sidebarPdfResizes, 1);
+  assert.equal(sidebarWindowResizes, 0);
+  assert.equal(sidebarWorkspaceResizes, 0);
   sidebarTimers.shift()();
-  assert.equal(sidebarWindowResizes, 2);
-  assert.equal(sidebarWorkspaceResizes, 2);
+  assert.equal(sidebarPdfResizes, 2);
+  assert.equal(sidebarWindowResizes, 0);
+  assert.equal(sidebarWorkspaceResizes, 0);
   assert.equal(sidebarWidthReads, 2);
 
   assert.deepEqual(

@@ -40,8 +40,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         // Reading clientWidth commits the padding/class change before PDF.js
         // measures .pdf-viewer-container in its resize listener.
         void host.clientWidth;
-        try { if (this.app && this.app.workspace) this.app.workspace.trigger("resize"); } catch (_) {}
-        try { win.dispatchEvent(new win.Event("resize")); } catch (_) {}
+        // A sidebar only changes this PDF's width. A global resize also asks
+        // every Markdown preview to reapply its saved scroll position.
+        const child = leaf.view && leaf.view.viewer && leaf.view.viewer.child;
+        try {
+          if (child && typeof child.onResize === "function") child.onResize();
+          else if (child && child.pdfViewer && child.pdfViewer.eventBus)
+            child.pdfViewer.eventBus.dispatch("resize", { source: child });
+        } catch (_) {}
       };
       const afterFrame = () => {
         host._lmbSidebarLayoutFrame = 0;
@@ -67,6 +73,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         host._lmbSidebarToolbarObserver = null;
         host._lmbSidebarLayoutFrame = 0;
         host._lmbSidebarLayoutTimer = 0;
+        delete host._lmbSidebarVisible;
         host.removeClass("lmb-pdf-sidebar-host");
         host.style.removeProperty("--lmb-pdf-sidebar-width");
         host.style.removeProperty("--lmb-pdf-sidebar-top");
@@ -128,7 +135,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const toggle = leaf.containerEl.querySelector(".lmb-toolbar-sidebar");
       if (toggle) toggle.toggleClass("is-active", leaf._lmbPdfSidebarOpen);
       if (leaf._lmbPdfSidebarOpen && !host) this.lmbRenderPdfSidebarForLeaf(leaf).catch(() => {});
-      else if (host) this._lmbNotifyPdfSidebarLayout(leaf);
+      else if (host && host._lmbSidebarVisible !== leaf._lmbPdfSidebarOpen) {
+        host._lmbSidebarVisible = leaf._lmbPdfSidebarOpen;
+        this._lmbNotifyPdfSidebarLayout(leaf);
+      }
       return leaf._lmbPdfSidebarOpen;
     } catch (_) { return false; }
   },
@@ -248,6 +258,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   async lmbOpenExcerptInCanvas(exId) {
+    const navigation = this._lmbBeginNavigation();
     try {
       if (!exId) return false;
       let loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(exId);
@@ -256,6 +267,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const files = this.app.vault.getFiles().filter((f) => f.extension === "canvas");
         for (const file of files) {
           await this.lmbIndexCanvasFile(file);
+          if (!this._lmbNavigationCurrent(navigation)) return false;
           loc = this.excerptCanvasIndex && this.excerptCanvasIndex.get(exId);
           if (loc) break;
         }
@@ -265,10 +277,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       const file = this.app.vault.getAbstractFileByPath(loc.canvasPath);
       if (!(file instanceof TFile)) { new Notice("MarginBook: Canvas 文件已不存在"); return false; }
-      const ok = await this.lmbFocusCanvasNode(file, loc.nodeId);
-      if (!ok) new Notice("MarginBook: 已打开 Canvas，但没有找到对应卡片");
+      const ok = await this.lmbFocusCanvasNode(file, loc.nodeId, navigation);
+      if (!ok && this._lmbNavigationCurrent(navigation)) new Notice("MarginBook: 已打开 Canvas，但没有找到对应卡片");
       return ok;
     } catch (err) { console.warn("[lmb] canvas excerpt locate failed:", err); return false; }
+    finally { this._lmbEndNavigation(navigation); }
   },
 
   async lmbDeleteSidebarExcerpt(entry, leaf) {
