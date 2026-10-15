@@ -81,6 +81,24 @@ async function main() {
   assert.equal(proto.lmbInkShouldDraw.call({ inkMode: true, inkTool: "pen", settings: { inkInputMode: "pen-only" } }, { pointerType: "pen", button: 0 }), true);
   assert.equal(proto.lmbInkShouldDraw.call({ inkMode: true, inkTool: "pen", settings: { inkInputMode: "pen-only" } }, { pointerType: "touch", touchType: "stylus", button: 0 }), true);
 
+  const styleState = () => {
+    const values = new Map(), priorities = new Map();
+    return {
+      setProperty: (name, value, priority) => { values.set(name, value); priorities.set(name, priority || ""); },
+      getPropertyValue: (name) => values.get(name) || "", getPropertyPriority: (name) => priorities.get(name) || "",
+      removeProperty: (name) => { values.delete(name); priorities.delete(name); }, values
+    };
+  };
+  const captureLiveStyle = styleState(), capturePageStyle = styleState();
+  const captureLive = { style: captureLiveStyle, dataset: {} };
+  const capturePage = { style: capturePageStyle, querySelector: () => captureLive };
+  const captureCtx = Object.assign(Object.create(proto), { inkMode: true, inkTool: "pen" });
+  captureCtx.lmbUpdateInkPageCapture(capturePage);
+  assert.equal(capturePageStyle.values.get("touch-action"), "none");
+  assert.equal(captureLiveStyle.values.get("pointer-events"), "auto", "the live ink canvas must be the Pencil hit-test surface");
+  captureCtx.inkTool = "hand"; captureCtx.lmbUpdateInkPageCapture(capturePage);
+  assert.equal(captureLiveStyle.values.get("pointer-events"), "none");
+
   global.requestAnimationFrame = (callback) => { callback(); return 0; };
   global.window = { devicePixelRatio: 1 };
   const listeners = new Map();
@@ -93,7 +111,10 @@ async function main() {
   };
   const context2d = new Proxy({}, { get: (target, key) => target[key] || (() => {}) });
   const canvas = { dataset: { lmbInkPath: "flow.pdf", lmbInkPage: "1" }, clientWidth: 1000, clientHeight: 1400, getContext: () => context2d };
-  const live = { dataset: canvas.dataset, clientWidth: 1000, clientHeight: 1400, getContext: () => context2d };
+  const live = {
+    dataset: canvas.dataset, clientWidth: 1000, clientHeight: 1400,
+    getContext: () => context2d, addEventListener: (name, callback) => listeners.set(name, callback), setPointerCapture: () => {}
+  };
   const flowCtx = Object.create(proto);
   Object.assign(flowCtx, {
     inkMode: true, inkTool: "pen", inkColor: "#e05252", inkWidth: 3,
@@ -174,9 +195,10 @@ async function main() {
   identityPage.clientWidth = 2000;
   identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
   assert.equal(identityCanvas.width, 1000, "offscreen zoom must not resize the backing canvas");
-  identityPage._lmbInkNearViewport = true;
+  identityPage.getBoundingClientRect = () => ({ top: 100, bottom: 1500 });
+  identityPage.closest = () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 1600 }) });
   identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);
-  assert.equal(identityCanvas.width, 2000, "scrolling back into view must update canvas resolution");
+  assert.equal(identityCanvas.width, 2000, "a visibly active page must not wait for an asynchronous visibility callback");
   identityCtx.inkMode = false;
   identityPage.querySelectorAll = () => [identityCanvas, identityLive];
   identityCtx.lmbEnsureInkLayer(identityPage, "new.pdf", 1);

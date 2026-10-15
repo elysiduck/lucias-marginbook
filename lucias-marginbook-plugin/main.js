@@ -424,6 +424,7 @@ const LMB_STYLES = [
   '.lmb-toolbar-ink.is-active{color:var(--text-on-accent)!important;background:var(--interactive-accent)!important;}',
   '.lmb-ink-layer,.lmb-ink-live-layer{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;z-index:50!important;display:block;pointer-events:none!important;}',
   '.lmb-ink-live-layer{z-index:51!important;}',
+  'body.lmb-ink-mode.lmb-ink-capture .lmb-ink-live-layer{pointer-events:auto!important;touch-action:none!important;-webkit-touch-callout:none!important;}',
   'body.lmb-ink-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair;}',
   'body.lmb-ink-mode.lmb-ink-capture .workspace-leaf-content[data-type="pdf"] .page{touch-action:none!important;overscroll-behavior:contain;-webkit-touch-callout:none!important;}',
   '.workspace-leaf-content[data-type="pdf"]{position:relative;}',
@@ -2126,7 +2127,7 @@ const LMB_BAR_SEL = ".lmb-canvas-bar";  // 悬浮栏容器 class
 //   （例如 v0.13.4 的 fit 按钮绑的是 `if (!c) return` 静默版）。
 //   表现极其迷惑：代码明明改了、也重载了，行为却是老样子。
 //   加版本号后，版本不匹配的浮层会被移除重建，保证用户手上的永远是"当前代码造的"浮层。
-const LMB_BAR_VERSION = "v0.25.3";
+const LMB_BAR_VERSION = "v0.25.5";
 
 /* LMB_BAR_POLL_MS 为什么是 800ms：
  *   - canvas **没有原生「选中变化」事件**。advanced-canvas 插件那个 `selection-changed`
@@ -3153,9 +3154,9 @@ class LuciasMarginBookPlugin extends Plugin {
       }
     });
 
-    if (this.isMobile) new Notice("MarginBook 0.25.3 已加载（PDF 性能优化版）", 5000);
-    this.debugNotice("已加载 ✓（v0.25.3）");
-    console.log("[lmb] loaded (v0.25.3)");
+    if (this.isMobile) new Notice("MarginBook 0.25.5 已加载（视图跳转修复版）", 5000);
+    this.debugNotice("已加载 ✓（v0.25.5）");
+    console.log("[lmb] loaded (v0.25.5)");
   }
 
   onunload() {
@@ -3661,7 +3662,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.25.3";
+    st.dataset.lmbVersion = "0.25.5";
   }
 
 }
@@ -3955,10 +3956,24 @@ LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
 
 LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
   if (!pageEl || !pdfPath) return;
-  this.lmbUpdateInkPageCapture(pageEl);
   const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
+  // Capture policy must update synchronously when ink mode toggles; waiting for
+  // IntersectionObserver leaves PDF.js in control of the first Pencil stroke.
+  this.lmbUpdateInkPageCapture(pageEl);
   // IntersectionObserver includes the PDF scroller's clipping, not just the window.
-  if (this._lmbInkVisibilityObserver && pageEl._lmbInkNearViewport !== true) return;
+  if (this._lmbInkVisibilityObserver && pageEl._lmbInkNearViewport !== true) {
+    let visiblyNear = false;
+    if (this.inkMode && typeof pageEl.getBoundingClientRect === "function") {
+      try {
+        const rect = pageEl.getBoundingClientRect();
+        const viewer = pageEl.closest && pageEl.closest(".pdf-viewer-container");
+        const clip = viewer && viewer.getBoundingClientRect ? viewer.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+        visiblyNear = rect.bottom >= clip.top - 300 && rect.top <= clip.bottom + 300;
+      } catch (_) {}
+    }
+    if (!visiblyNear) return;
+    pageEl._lmbInkNearViewport = true;
+  }
   if (!this.inkMode && !this.lmbInkObjects(pdfPath, pageNumber).length) {
     for (const layer of pageEl.querySelectorAll(":scope > .lmb-ink-layer, :scope > .lmb-ink-live-layer")) {
       layer.style.display = "none";
@@ -3975,8 +3990,9 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   for (const layer of [canvas, live]) {
     layer.dataset.lmbInkPath = pdfPath; layer.dataset.lmbInkPage = String(pageNumber);
     layer.dataset.lmbInkIdentity = identity;
-    layer.style.display = "block"; layer.style.pointerEvents = "none";
+    layer.style.display = "block";
   }
+  this.lmbUpdateInkPageCapture(pageEl);
   const width = Math.max(1, Math.round(pageEl.clientWidth)), height = Math.max(1, Math.round(pageEl.clientHeight));
   const ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
   let resized = false;
@@ -4015,7 +4031,21 @@ LuciasMarginBookPlugin.prototype.lmbUpdateInkPageCapture = function (pageEl, for
     };
     pageEl.style.setProperty("touch-action", "none", "important");
     pageEl.style.setProperty("-webkit-touch-callout", "none", "important");
+    const live = pageEl.querySelector && pageEl.querySelector(":scope > .lmb-ink-live-layer");
+    if (live && live.style) {
+      live.style.setProperty("pointer-events", "auto", "important");
+      live.style.setProperty("touch-action", "none", "important");
+      live.style.setProperty("-webkit-touch-callout", "none", "important");
+      live.dataset.lmbInkInputSurface = "active";
+    }
     return;
+  }
+  const live = pageEl.querySelector && pageEl.querySelector(":scope > .lmb-ink-live-layer");
+  if (live && live.style) {
+    live.style.setProperty("pointer-events", "none", "important");
+    live.style.removeProperty("touch-action");
+    live.style.removeProperty("-webkit-touch-callout");
+    delete live.dataset.lmbInkInputSurface;
   }
   const before = pageEl._lmbInkTouchActionBefore;
   if (!before) return;
@@ -4057,6 +4087,7 @@ LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
 
 LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live) {
   let active = null;
+  const inputSurface = live || pageEl;
   const touchPoints = new Map();
   const stylusTouchIds = new Set();
   let touchPan = null;
@@ -4076,7 +4107,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     if (event.pointerType === "touch" && !stylus) {
       if (active) { event.preventDefault(); event.stopPropagation(); return; }
       touchPoints.set(event.pointerId, { id: event.pointerId, x: event.clientX, y: event.clientY });
-      try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
+      try { inputSurface.setPointerCapture(event.pointerId); } catch (_) {}
       resetTouchPan();
       return;
     }
@@ -4090,7 +4121,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     let tool = this.inkTool;
     if (stylus && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
     event.preventDefault(); event.stopPropagation();
-    try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
+    try { inputSurface.setPointerCapture(event.pointerId); } catch (_) {}
     const before = lmbInkClone(objects);
     if (tool === "text") { this.lmbStartInkText(canvas, point); return; }
     if (tool === "select") {
@@ -4179,20 +4210,20 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     this.lmbDrawInkLayer(canvas); this.lmbDrawInkLiveLayer(live, null);
   };
   const captureActive = { capture: true, passive: false };
-  pageEl.addEventListener("pointerdown", down, captureActive);
-  pageEl.addEventListener("pointermove", move, captureActive);
-  pageEl.addEventListener("pointerup", (event) => finish(event, false), captureActive);
-  pageEl.addEventListener("pointercancel", (event) => finish(event, true), captureActive);
-  pageEl.addEventListener("lostpointercapture", (event) => finish(event, true), captureActive);
+  inputSurface.addEventListener("pointerdown", down, captureActive);
+  inputSurface.addEventListener("pointermove", move, captureActive);
+  inputSurface.addEventListener("pointerup", (event) => finish(event, false), captureActive);
+  inputSurface.addEventListener("pointercancel", (event) => finish(event, true), captureActive);
+  inputSurface.addEventListener("lostpointercapture", (event) => finish(event, true), captureActive);
   const stylusTouches = (event) => Array.from(event.changedTouches || []).filter((touch) => lmbInkIsStylusInput(touch));
-  pageEl.addEventListener("touchstart", (event) => {
+  inputSurface.addEventListener("touchstart", (event) => {
     const touches = stylusTouches(event); if (!touches.length) return;
     event.preventDefault(); event.stopPropagation();
     if (active) return;
     const touch = touches[0]; stylusTouchIds.add(touch.identifier);
     down(lmbInkTouchPointEvent(touch, event, false));
   }, captureActive);
-  pageEl.addEventListener("touchmove", (event) => {
+  inputSurface.addEventListener("touchmove", (event) => {
     const touches = stylusTouches(event).filter((touch) => stylusTouchIds.has(touch.identifier)); if (!touches.length) return;
     event.preventDefault(); event.stopPropagation(); move(lmbInkTouchPointEvent(touches[0], event, false));
   }, captureActive);
@@ -4201,9 +4232,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     event.preventDefault(); event.stopPropagation();
     const touch = touches[0]; finish(lmbInkTouchPointEvent(touch, event, true), cancelled); stylusTouchIds.delete(touch.identifier);
   };
-  pageEl.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
-  pageEl.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
-  pageEl.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
+  inputSurface.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
+  inputSurface.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
+  inputSurface.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
 };
 
 LuciasMarginBookPlugin.prototype.lmbRequestInkLiveDraw = function (live, active) {
@@ -9585,48 +9616,97 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
   },
 
-  /**
-   * 在 Markdown 摘录文档中定位：已打开则复用；存在左右分区时选择离 PDF 最远的
-   * 现有 leaf；只有一个分区时才开新标签。绝不重复打开同一文档。
-   */
+  /** 已打开则复用（包括尚未加载的后台标签），否则新建标签，保留当前视图模式。 */
   async lmbOpenExcerptInMd(exId, sourceMd, pdfLeaf) {
     try {
       if (!exId || !sourceMd) { new Notice("MarginBook: 该摘录缺少 Markdown 来源"); return false; }
       const file = this.app.vault.getAbstractFileByPath(sourceMd);
       if (!(file instanceof TFile)) { new Notice("MarginBook: 找不到摘录文档 " + sourceMd); return false; }
-      const mdLeaves = this.app.workspace.getLeavesOfType("markdown") || [];
-      let leaf = mdLeaves.find((l) => l && l.view && l.view.file && l.view.file.path === file.path) || null;
-      if (!leaf) {
-        const all = [];
-        try { this.app.workspace.iterateAllLeaves((l) => { if (l && l !== pdfLeaf && l.containerEl) all.push(l); }); } catch (_) {}
-        if (all.length) {
-          const pr = pdfLeaf && pdfLeaf.containerEl ? pdfLeaf.containerEl.getBoundingClientRect() : null;
-          all.sort((a, b) => {
-            if (!pr) return 0;
-            const ar = a.containerEl.getBoundingClientRect(), br = b.containerEl.getBoundingClientRect();
-            return Math.abs((br.left + br.right) / 2 - (pr.left + pr.right) / 2)
-              - Math.abs((ar.left + ar.right) / 2 - (pr.left + pr.right) / 2);
-          });
-          leaf = all[0];
+      // Serialize requests for the same file: openFile is asynchronous, so two
+      // rapid clicks must not both conclude that the document is not open yet.
+      const queue = this._lmbMdNavigationQueue || (this._lmbMdNavigationQueue = new Map());
+      const previous = queue.get(file.path) || Promise.resolve();
+      const request = previous.catch(() => {}).then(async () => {
+        const workspace = this.app.workspace;
+        const mdLeaves = workspace.getLeavesOfType("markdown") || [];
+        let leaf = mdLeaves.find((candidate) => {
+          if (!candidate || candidate === pdfLeaf) return false;
+          if (candidate.view && candidate.view.file && candidate.view.file.path === file.path) return true;
+          const state = typeof candidate.getViewState === "function" ? candidate.getViewState() : null;
+          return state && state.state && state.state.file === file.path;
+        });
+        if (!leaf) {
+          leaf = workspace.getLeaf("tab");
+          // Do not send a block subpath through openFile: it may change modes.
+          await leaf.openFile(file, { active: true });
         }
-        if (!leaf) leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
-      } else {
-        this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      }
-      const editor = leaf.view && leaf.view.editor;
+        if (typeof workspace.revealLeaf === "function") await workspace.revealLeaf(leaf);
+        else if (typeof leaf.loadIfDeferred === "function") await leaf.loadIfDeferred();
+        workspace.setActiveLeaf(leaf, { focus: true });
+        return this._lmbPositionMdExcerpt(leaf, file, exId);
+      });
+      queue.set(file.path, request);
+      try { return await request; }
+      finally { if (queue.get(file.path) === request) queue.delete(file.path); }
+    } catch (err) { console.warn("[lmb] lmbOpenExcerptInMd error:", err); return false; }
+  },
+
+  /** 定位当前可见子视图；等待阅读渲染就绪，绝不通过重复 openFile 重试。 */
+  async _lmbPositionMdExcerpt(leaf, file, exId) {
+    let fallbackLine = null;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const view = leaf.view;
+      // A delayed renderer must not move the cursor in a document the user
+      // switched to, or pull focus back after the user selected another tab.
+      if (!view || !view.file || view.file.path !== file.path
+        || (this.app.workspace.activeLeaf && this.app.workspace.activeLeaf !== leaf)) return false;
       const cache = this.app.metadataCache.getFileCache(file);
       const block = cache && cache.blocks && cache.blocks[exId];
-      if (editor && block && block.position && block.position.start) {
-        const line = block.position.start.line;
-        editor.setCursor({ line, ch: 0 });
-        editor.scrollIntoView({ from: { line: Math.max(0, line - 3), ch: 0 }, to: { line: line + 3, ch: 0 } }, true);
-      } else {
-        // 阅读模式或缓存尚未就绪：在同一个 leaf 上重设 subpath，仍不会新开标签。
-        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
+      let line = block && block.position && block.position.start ? block.position.start.line : fallbackLine;
+      if (line == null && fallbackLine == null) {
+        // The metadata cache can lag behind newly written excerpts. Read the
+        // literal marker rather than reopening the same file with a subpath.
+        const text = await this.app.vault.cachedRead(file);
+        const lines = text.split(/\r?\n/);
+        fallbackLine = lines.findIndex((textLine) => {
+          const match = /(?:^|\s)\^([A-Za-z0-9-]+)\s*$/.exec(textLine);
+          return match && match[1] === exId;
+        });
+        if (fallbackLine >= 0) line = fallbackLine;
       }
-      return true;
-    } catch (err) { console.warn("[lmb] lmbOpenExcerptInMd error:", err); return false; }
+      // cachedRead above can yield while the user changes the active document.
+      if (leaf.view !== view || !view.file || view.file.path !== file.path
+        || (this.app.workspace.activeLeaf && this.app.workspace.activeLeaf !== leaf)) return false;
+      if (Number.isInteger(line) && line >= 0) {
+        if (view.getMode() === "preview") {
+          const preview = view.previewMode;
+          const renderer = preview && preview.renderer;
+          // Obsidian's renderer knows source lines even for virtualized blocks.
+          // Its false return means the section layout is not ready yet.
+          if (renderer && typeof renderer.applyScroll === "function") {
+            if (renderer.applyScroll(line, { center: true, highlight: true }) !== false) {
+              if (typeof view.syncScroll === "function") view.syncScroll();
+              return true;
+            }
+          } else if (preview && typeof preview.applyScroll === "function") {
+            preview.applyScroll(line);
+            if (typeof view.syncScroll === "function") view.syncScroll();
+            return true;
+          }
+        } else if (view.editor) {
+          const editor = view.editor;
+          const lastLine = Math.max(0, editor.lineCount() - 1);
+          line = Math.min(line, lastLine);
+          editor.setCursor({ line, ch: 0 });
+          editor.scrollIntoView({ from: { line: Math.max(0, line - 3), ch: 0 }, to: { line: Math.min(lastLine, line + 3), ch: 0 } }, true);
+          if (typeof view.syncScroll === "function") view.syncScroll();
+          return true;
+        }
+      }
+      if (attempt < 29) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    new Notice("MarginBook: 暂时无法定位摘录 " + exId + "（块不存在或视图尚未就绪）");
+    return false;
   },
 
   /** 闪烁定位：覆盖 accent 色矩形，闪 3 次后自清理。
@@ -11318,7 +11398,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc("0.25.3 · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc("0.25.5 · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")

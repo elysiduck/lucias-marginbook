@@ -287,10 +287,24 @@ LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
 
 LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
   if (!pageEl || !pdfPath) return;
-  this.lmbUpdateInkPageCapture(pageEl);
   const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
+  // Capture policy must update synchronously when ink mode toggles; waiting for
+  // IntersectionObserver leaves PDF.js in control of the first Pencil stroke.
+  this.lmbUpdateInkPageCapture(pageEl);
   // IntersectionObserver includes the PDF scroller's clipping, not just the window.
-  if (this._lmbInkVisibilityObserver && pageEl._lmbInkNearViewport !== true) return;
+  if (this._lmbInkVisibilityObserver && pageEl._lmbInkNearViewport !== true) {
+    let visiblyNear = false;
+    if (this.inkMode && typeof pageEl.getBoundingClientRect === "function") {
+      try {
+        const rect = pageEl.getBoundingClientRect();
+        const viewer = pageEl.closest && pageEl.closest(".pdf-viewer-container");
+        const clip = viewer && viewer.getBoundingClientRect ? viewer.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+        visiblyNear = rect.bottom >= clip.top - 300 && rect.top <= clip.bottom + 300;
+      } catch (_) {}
+    }
+    if (!visiblyNear) return;
+    pageEl._lmbInkNearViewport = true;
+  }
   if (!this.inkMode && !this.lmbInkObjects(pdfPath, pageNumber).length) {
     for (const layer of pageEl.querySelectorAll(":scope > .lmb-ink-layer, :scope > .lmb-ink-live-layer")) {
       layer.style.display = "none";
@@ -307,8 +321,9 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   for (const layer of [canvas, live]) {
     layer.dataset.lmbInkPath = pdfPath; layer.dataset.lmbInkPage = String(pageNumber);
     layer.dataset.lmbInkIdentity = identity;
-    layer.style.display = "block"; layer.style.pointerEvents = "none";
+    layer.style.display = "block";
   }
+  this.lmbUpdateInkPageCapture(pageEl);
   const width = Math.max(1, Math.round(pageEl.clientWidth)), height = Math.max(1, Math.round(pageEl.clientHeight));
   const ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
   let resized = false;
@@ -347,7 +362,21 @@ LuciasMarginBookPlugin.prototype.lmbUpdateInkPageCapture = function (pageEl, for
     };
     pageEl.style.setProperty("touch-action", "none", "important");
     pageEl.style.setProperty("-webkit-touch-callout", "none", "important");
+    const live = pageEl.querySelector && pageEl.querySelector(":scope > .lmb-ink-live-layer");
+    if (live && live.style) {
+      live.style.setProperty("pointer-events", "auto", "important");
+      live.style.setProperty("touch-action", "none", "important");
+      live.style.setProperty("-webkit-touch-callout", "none", "important");
+      live.dataset.lmbInkInputSurface = "active";
+    }
     return;
+  }
+  const live = pageEl.querySelector && pageEl.querySelector(":scope > .lmb-ink-live-layer");
+  if (live && live.style) {
+    live.style.setProperty("pointer-events", "none", "important");
+    live.style.removeProperty("touch-action");
+    live.style.removeProperty("-webkit-touch-callout");
+    delete live.dataset.lmbInkInputSurface;
   }
   const before = pageEl._lmbInkTouchActionBefore;
   if (!before) return;
@@ -389,6 +418,7 @@ LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
 
 LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live) {
   let active = null;
+  const inputSurface = live || pageEl;
   const touchPoints = new Map();
   const stylusTouchIds = new Set();
   let touchPan = null;
@@ -408,7 +438,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     if (event.pointerType === "touch" && !stylus) {
       if (active) { event.preventDefault(); event.stopPropagation(); return; }
       touchPoints.set(event.pointerId, { id: event.pointerId, x: event.clientX, y: event.clientY });
-      try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
+      try { inputSurface.setPointerCapture(event.pointerId); } catch (_) {}
       resetTouchPan();
       return;
     }
@@ -422,7 +452,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     let tool = this.inkTool;
     if (stylus && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
     event.preventDefault(); event.stopPropagation();
-    try { pageEl.setPointerCapture(event.pointerId); } catch (_) {}
+    try { inputSurface.setPointerCapture(event.pointerId); } catch (_) {}
     const before = lmbInkClone(objects);
     if (tool === "text") { this.lmbStartInkText(canvas, point); return; }
     if (tool === "select") {
@@ -511,20 +541,20 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     this.lmbDrawInkLayer(canvas); this.lmbDrawInkLiveLayer(live, null);
   };
   const captureActive = { capture: true, passive: false };
-  pageEl.addEventListener("pointerdown", down, captureActive);
-  pageEl.addEventListener("pointermove", move, captureActive);
-  pageEl.addEventListener("pointerup", (event) => finish(event, false), captureActive);
-  pageEl.addEventListener("pointercancel", (event) => finish(event, true), captureActive);
-  pageEl.addEventListener("lostpointercapture", (event) => finish(event, true), captureActive);
+  inputSurface.addEventListener("pointerdown", down, captureActive);
+  inputSurface.addEventListener("pointermove", move, captureActive);
+  inputSurface.addEventListener("pointerup", (event) => finish(event, false), captureActive);
+  inputSurface.addEventListener("pointercancel", (event) => finish(event, true), captureActive);
+  inputSurface.addEventListener("lostpointercapture", (event) => finish(event, true), captureActive);
   const stylusTouches = (event) => Array.from(event.changedTouches || []).filter((touch) => lmbInkIsStylusInput(touch));
-  pageEl.addEventListener("touchstart", (event) => {
+  inputSurface.addEventListener("touchstart", (event) => {
     const touches = stylusTouches(event); if (!touches.length) return;
     event.preventDefault(); event.stopPropagation();
     if (active) return;
     const touch = touches[0]; stylusTouchIds.add(touch.identifier);
     down(lmbInkTouchPointEvent(touch, event, false));
   }, captureActive);
-  pageEl.addEventListener("touchmove", (event) => {
+  inputSurface.addEventListener("touchmove", (event) => {
     const touches = stylusTouches(event).filter((touch) => stylusTouchIds.has(touch.identifier)); if (!touches.length) return;
     event.preventDefault(); event.stopPropagation(); move(lmbInkTouchPointEvent(touches[0], event, false));
   }, captureActive);
@@ -533,9 +563,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     event.preventDefault(); event.stopPropagation();
     const touch = touches[0]; finish(lmbInkTouchPointEvent(touch, event, true), cancelled); stylusTouchIds.delete(touch.identifier);
   };
-  pageEl.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
-  pageEl.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
-  pageEl.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
+  inputSurface.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
+  inputSurface.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
+  inputSurface.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
 };
 
 LuciasMarginBookPlugin.prototype.lmbRequestInkLiveDraw = function (live, active) {

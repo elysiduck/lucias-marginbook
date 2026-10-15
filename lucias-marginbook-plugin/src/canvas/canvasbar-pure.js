@@ -29,7 +29,7 @@ const LMB_BAR_SEL = ".lmb-canvas-bar";  // 悬浮栏容器 class
 //   （例如 v0.13.4 的 fit 按钮绑的是 `if (!c) return` 静默版）。
 //   表现极其迷惑：代码明明改了、也重载了，行为却是老样子。
 //   加版本号后，版本不匹配的浮层会被移除重建，保证用户手上的永远是"当前代码造的"浮层。
-const LMB_BAR_VERSION = "v0.25.3";
+const LMB_BAR_VERSION = "v0.25.5";
 
 /* LMB_BAR_POLL_MS 为什么是 800ms：
  *   - canvas **没有原生「选中变化」事件**。advanced-canvas 插件那个 `selection-changed`

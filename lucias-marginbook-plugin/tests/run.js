@@ -8,7 +8,8 @@ const suites = [
   "tests/unit/build.test.js",
   "tests/unit/architecture.test.js",
   "tests/unit/ink.test.js",
-  "tests/integration/behavior.test.js"
+  "tests/integration/behavior.test.js",
+  "tests/integration/navigation.test.js"
 ];
 
 for (const suite of suites) {

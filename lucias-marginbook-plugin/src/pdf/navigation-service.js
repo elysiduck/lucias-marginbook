@@ -244,48 +244,97 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
   },
 
-  /**
-   * 在 Markdown 摘录文档中定位：已打开则复用；存在左右分区时选择离 PDF 最远的
-   * 现有 leaf；只有一个分区时才开新标签。绝不重复打开同一文档。
-   */
+  /** 已打开则复用（包括尚未加载的后台标签），否则新建标签，保留当前视图模式。 */
   async lmbOpenExcerptInMd(exId, sourceMd, pdfLeaf) {
     try {
       if (!exId || !sourceMd) { new Notice("MarginBook: 该摘录缺少 Markdown 来源"); return false; }
       const file = this.app.vault.getAbstractFileByPath(sourceMd);
       if (!(file instanceof TFile)) { new Notice("MarginBook: 找不到摘录文档 " + sourceMd); return false; }
-      const mdLeaves = this.app.workspace.getLeavesOfType("markdown") || [];
-      let leaf = mdLeaves.find((l) => l && l.view && l.view.file && l.view.file.path === file.path) || null;
-      if (!leaf) {
-        const all = [];
-        try { this.app.workspace.iterateAllLeaves((l) => { if (l && l !== pdfLeaf && l.containerEl) all.push(l); }); } catch (_) {}
-        if (all.length) {
-          const pr = pdfLeaf && pdfLeaf.containerEl ? pdfLeaf.containerEl.getBoundingClientRect() : null;
-          all.sort((a, b) => {
-            if (!pr) return 0;
-            const ar = a.containerEl.getBoundingClientRect(), br = b.containerEl.getBoundingClientRect();
-            return Math.abs((br.left + br.right) / 2 - (pr.left + pr.right) / 2)
-              - Math.abs((ar.left + ar.right) / 2 - (pr.left + pr.right) / 2);
-          });
-          leaf = all[0];
+      // Serialize requests for the same file: openFile is asynchronous, so two
+      // rapid clicks must not both conclude that the document is not open yet.
+      const queue = this._lmbMdNavigationQueue || (this._lmbMdNavigationQueue = new Map());
+      const previous = queue.get(file.path) || Promise.resolve();
+      const request = previous.catch(() => {}).then(async () => {
+        const workspace = this.app.workspace;
+        const mdLeaves = workspace.getLeavesOfType("markdown") || [];
+        let leaf = mdLeaves.find((candidate) => {
+          if (!candidate || candidate === pdfLeaf) return false;
+          if (candidate.view && candidate.view.file && candidate.view.file.path === file.path) return true;
+          const state = typeof candidate.getViewState === "function" ? candidate.getViewState() : null;
+          return state && state.state && state.state.file === file.path;
+        });
+        if (!leaf) {
+          leaf = workspace.getLeaf("tab");
+          // Do not send a block subpath through openFile: it may change modes.
+          await leaf.openFile(file, { active: true });
         }
-        if (!leaf) leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
-      } else {
-        this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      }
-      const editor = leaf.view && leaf.view.editor;
+        if (typeof workspace.revealLeaf === "function") await workspace.revealLeaf(leaf);
+        else if (typeof leaf.loadIfDeferred === "function") await leaf.loadIfDeferred();
+        workspace.setActiveLeaf(leaf, { focus: true });
+        return this._lmbPositionMdExcerpt(leaf, file, exId);
+      });
+      queue.set(file.path, request);
+      try { return await request; }
+      finally { if (queue.get(file.path) === request) queue.delete(file.path); }
+    } catch (err) { console.warn("[lmb] lmbOpenExcerptInMd error:", err); return false; }
+  },
+
+  /** 定位当前可见子视图；等待阅读渲染就绪，绝不通过重复 openFile 重试。 */
+  async _lmbPositionMdExcerpt(leaf, file, exId) {
+    let fallbackLine = null;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const view = leaf.view;
+      // A delayed renderer must not move the cursor in a document the user
+      // switched to, or pull focus back after the user selected another tab.
+      if (!view || !view.file || view.file.path !== file.path
+        || (this.app.workspace.activeLeaf && this.app.workspace.activeLeaf !== leaf)) return false;
       const cache = this.app.metadataCache.getFileCache(file);
       const block = cache && cache.blocks && cache.blocks[exId];
-      if (editor && block && block.position && block.position.start) {
-        const line = block.position.start.line;
-        editor.setCursor({ line, ch: 0 });
-        editor.scrollIntoView({ from: { line: Math.max(0, line - 3), ch: 0 }, to: { line: line + 3, ch: 0 } }, true);
-      } else {
-        // 阅读模式或缓存尚未就绪：在同一个 leaf 上重设 subpath，仍不会新开标签。
-        await leaf.openFile(file, { active: true, eState: { subpath: "#^" + exId } });
+      let line = block && block.position && block.position.start ? block.position.start.line : fallbackLine;
+      if (line == null && fallbackLine == null) {
+        // The metadata cache can lag behind newly written excerpts. Read the
+        // literal marker rather than reopening the same file with a subpath.
+        const text = await this.app.vault.cachedRead(file);
+        const lines = text.split(/\r?\n/);
+        fallbackLine = lines.findIndex((textLine) => {
+          const match = /(?:^|\s)\^([A-Za-z0-9-]+)\s*$/.exec(textLine);
+          return match && match[1] === exId;
+        });
+        if (fallbackLine >= 0) line = fallbackLine;
       }
-      return true;
-    } catch (err) { console.warn("[lmb] lmbOpenExcerptInMd error:", err); return false; }
+      // cachedRead above can yield while the user changes the active document.
+      if (leaf.view !== view || !view.file || view.file.path !== file.path
+        || (this.app.workspace.activeLeaf && this.app.workspace.activeLeaf !== leaf)) return false;
+      if (Number.isInteger(line) && line >= 0) {
+        if (view.getMode() === "preview") {
+          const preview = view.previewMode;
+          const renderer = preview && preview.renderer;
+          // Obsidian's renderer knows source lines even for virtualized blocks.
+          // Its false return means the section layout is not ready yet.
+          if (renderer && typeof renderer.applyScroll === "function") {
+            if (renderer.applyScroll(line, { center: true, highlight: true }) !== false) {
+              if (typeof view.syncScroll === "function") view.syncScroll();
+              return true;
+            }
+          } else if (preview && typeof preview.applyScroll === "function") {
+            preview.applyScroll(line);
+            if (typeof view.syncScroll === "function") view.syncScroll();
+            return true;
+          }
+        } else if (view.editor) {
+          const editor = view.editor;
+          const lastLine = Math.max(0, editor.lineCount() - 1);
+          line = Math.min(line, lastLine);
+          editor.setCursor({ line, ch: 0 });
+          editor.scrollIntoView({ from: { line: Math.max(0, line - 3), ch: 0 }, to: { line: Math.min(lastLine, line + 3), ch: 0 } }, true);
+          if (typeof view.syncScroll === "function") view.syncScroll();
+          return true;
+        }
+      }
+      if (attempt < 29) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    new Notice("MarginBook: 暂时无法定位摘录 " + exId + "（块不存在或视图尚未就绪）");
+    return false;
   },
 
   /** 闪烁定位：覆盖 accent 色矩形，闪 3 次后自清理。

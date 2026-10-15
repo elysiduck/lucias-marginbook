@@ -1,0 +1,182 @@
+{
+  "date": "2026-10-15",
+  "appVersion": "1.14.4",
+  "enabledPlugins": [
+    "lucias-marginbook"
+  ],
+  "fixture": {
+    "sourceLines": 1000,
+    "targetLine": 800,
+    "isolatedUserData": true,
+    "isolatedCliPipe": true,
+    "disposableVault": true
+  },
+  "baseline": {
+    "pluginVersion": "0.25.4",
+    "replacement": {
+      "opened": true,
+      "before": {
+        "id": "keep",
+        "file": "currently-reading.md",
+        "mode": "preview"
+      },
+      "after": {
+        "id": "keep",
+        "file": "book-excerpts.md",
+        "mode": "preview",
+        "cursor": {
+          "line": 800,
+          "ch": 0
+        }
+      },
+      "replaced": true
+    },
+    "reading": {
+      "result": true,
+      "before": 0,
+      "after": 0,
+      "mode": "preview",
+      "editor": true
+    }
+  },
+  "fixed": {
+    "pluginVersion": "0.25.5",
+    "passed": 13,
+    "total": 13,
+    "results": [
+      {
+        "name": "unopened excerpt preserves the current tab",
+        "passed": true,
+        "details": {
+          "victim": "currently-reading.md",
+          "targetCount": 1
+        }
+      },
+      {
+        "name": "new reading tab displays the excerpt without changing mode",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      },
+      {
+        "name": "existing reading tab visibly scrolls and stays in reading mode",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      },
+      {
+        "name": "existing reading tab is reused",
+        "passed": true,
+        "details": {
+          "targetCount": 1
+        }
+      },
+      {
+        "name": "source mode positions the editor and preserves source mode",
+        "passed": true,
+        "details": {
+          "cursor": {
+            "line": 800,
+            "ch": 0
+          },
+          "mode": "source"
+        }
+      },
+      {
+        "name": "missing block cache still locates the excerpt",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      },
+      {
+        "name": "saved viewport matches the visible preview after positioning",
+        "passed": true,
+        "details": {
+          "saved": 782.45,
+          "visible": 782.45
+        }
+      },
+      {
+        "name": "switching tabs does not replay the excerpt jump",
+        "passed": true,
+        "details": {
+          "before": 148.85,
+          "after": 148.85
+        }
+      },
+      {
+        "name": "entering edit mode preserves the manually selected reading location",
+        "passed": true,
+        "details": {
+          "reading": 148.85,
+          "editing": 147.85416666666666
+        }
+      },
+      {
+        "name": "returning to reading mode preserves that location",
+        "passed": true,
+        "details": {
+          "before": 148.85,
+          "after": 148.85
+        }
+      },
+      {
+        "name": "missing target returns false and preserves the tab",
+        "passed": true,
+        "details": {
+          "result": false
+        }
+      },
+      {
+        "name": "three simultaneous requests create one excerpt tab",
+        "passed": true,
+        "details": {
+          "results": [
+            true,
+            true,
+            true
+          ],
+          "targetCount": 1
+        }
+      },
+      {
+        "name": "concurrent requests finish with the excerpt visible",
+        "passed": true,
+        "details": {
+          "visible": true,
+          "scroll": 782.45,
+          "mode": "preview",
+          "paragraphTop": 429.140625,
+          "viewport": {
+            "top": 78.046875,
+            "bottom": 800
+          }
+        }
+      }
+    ]
+  }
+}

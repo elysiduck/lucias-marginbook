@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.25.5
+
+- Open previously unopened Markdown excerpts in a new tab instead of replacing another document, Canvas, or sidebar view.
+- Reuse deferred excerpt tabs and serialize concurrent reverse jumps to avoid duplicate tabs.
+- Locate blocks in the visible reading or editing view without reopening files with a block subpath; retry unfinished preview layouts and handle delayed metadata.
+- Stop pending positioning when the active document changes, bound editor scroll ranges to the document, and report missing targets instead of silently claiming success.
+- Add regression coverage for tab preservation, reading mode, deferred views, concurrent jumps, metadata delays, and cancellation.
+
+## 0.25.4
+
+- Make the live handwriting canvas the actual hit-test surface while a drawing tool is active, instead of leaving PDF.js text and annotation layers in control of Pencil input.
+- Bind Pointer Events and iOS stylus Touch Events directly to that input surface with `pointer-events:auto` and `touch-action:none`, then restore pass-through behavior in hand mode.
+- Add regression coverage that verifies the live canvas owns hit testing before Pencil input begins.
+
 ## 0.25.3
 
 - Lazily create handwriting canvases for visible PDF pages with saved ink or active handwriting; release unused blank canvas buffers in reading mode.

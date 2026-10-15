@@ -403,6 +403,7 @@ const LMB_STYLES = [
   '.lmb-toolbar-ink.is-active{color:var(--text-on-accent)!important;background:var(--interactive-accent)!important;}',
   '.lmb-ink-layer,.lmb-ink-live-layer{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;z-index:50!important;display:block;pointer-events:none!important;}',
   '.lmb-ink-live-layer{z-index:51!important;}',
+  'body.lmb-ink-mode.lmb-ink-capture .lmb-ink-live-layer{pointer-events:auto!important;touch-action:none!important;-webkit-touch-callout:none!important;}',
   'body.lmb-ink-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair;}',
   'body.lmb-ink-mode.lmb-ink-capture .workspace-leaf-content[data-type="pdf"] .page{touch-action:none!important;overscroll-behavior:contain;-webkit-touch-callout:none!important;}',
   '.workspace-leaf-content[data-type="pdf"]{position:relative;}',

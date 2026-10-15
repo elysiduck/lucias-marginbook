@@ -16,13 +16,21 @@ function run(command, args, cwd = repoRoot, capture = false) {
     stdio: capture ? "pipe" : "inherit"
   });
   if (result.status !== 0) {
+    if (result.error) console.error(result.error.message);
     if (capture) process.stderr.write(result.stderr || result.stdout || "");
     process.exit(result.status || 1);
   }
   return (result.stdout || "").trim();
 }
 
-run(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "verify"], pluginDir);
+// npm.cmd cannot be spawned directly without a shell on current Node/Windows.
+// npm run supplies its JS entry point, which works with the same Node runtime
+// and does not require passing commands through cmd.exe.
+if (process.env.npm_execpath) {
+  run(process.execPath, [process.env.npm_execpath, "run", "verify"], pluginDir);
+} else {
+  run(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "verify"], pluginDir);
+}
 run("git", ["add", "--", relativePluginDir]);
 
 const staged = run("git", ["diff", "--cached", "--name-only", "--", relativePluginDir], repoRoot, true);

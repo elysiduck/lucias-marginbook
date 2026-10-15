@@ -650,15 +650,18 @@ async function main() {
   assert(sourceText.includes("const entries = this._lmbGetPdfSidebarEntries(file);"));
   assert(sourceText.includes("touch-action:none!important"));
   assert(sourceText.includes('event.pointerType === "touch"'));
-  assert(sourceText.includes('pageEl.addEventListener("touchstart"'));
+  assert(sourceText.includes('inputSurface.addEventListener("touchstart"'));
   assert(sourceText.includes("lmbInkIsStylusInput(touch)"));
+  assert(sourceText.includes('const inputSurface = live || pageEl'));
+  assert(sourceText.includes('live.style.setProperty("pointer-events", "auto", "important")'));
   assert(sourceText.includes('applyIcon(button, icon, fallback)'));
   assert(sourceText.includes('color.className = "lmb-ink-color-input"'));
   assert(sourceText.includes('widthControl.className = "lmb-ink-width-control"'));
   assert(!sourceText.includes('text: `目标: ${target.length'));
   assert(!sourceText.includes('${e.quick ? "简洁" : kind}'));
-  assert(sourceText.includes('st.dataset.lmbVersion = "0.25.3"'));
-  assert.equal(JSON.parse(fs.readFileSync("./manifest.json", "utf8")).version, "0.25.3");
+  const manifestVersion = JSON.parse(fs.readFileSync("./manifest.json", "utf8")).version;
+  assert(sourceText.includes('st.dataset.lmbVersion = "' + manifestVersion + '"'));
+  assert.equal(JSON.parse(fs.readFileSync("./package.json", "utf8")).version, manifestVersion);
 
   // 删除安全：引用扫描任一文件失败时必须 fail closed，不能把异常当作 0 引用。
   await assert.rejects(() => proto._lmbCountAttachmentRefs.call({ app: { vault: {
@@ -682,7 +685,7 @@ async function main() {
   assert(Array.from(trashWrites.keys()).some((p) => p.endsWith("/metadata.json")));
   assert.equal(JSON.parse(Array.from(trashWrites.values())[0]).excerptId, "ex-safe");
 
-  console.log("MarginBook verification: 161 assertions passed");
+  console.log("MarginBook verification: 163 assertions passed");
 }
 
 main().catch((err) => {
