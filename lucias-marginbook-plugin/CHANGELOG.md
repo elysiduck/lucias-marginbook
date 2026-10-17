@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.1
+
+- Replace sidebar hiding with a compact row containing the page/ordinal and a direct expand button. Previously hidden entries automatically appear as compact rows.
+- Remove the hidden-entry filter and rename page controls to sidebar collapse/expand; preserve Markdown content and page placement while collapsing.
+- Cover legacy hidden-state compatibility, persistence, expansion and current-page filtering.
+
 ## 0.26.0
 
 - Place excerpt notes on PDF pages as selectable Markdown text blocks, with drag handles, width reflow, adjustable type size and transparent/sticky-note styles.

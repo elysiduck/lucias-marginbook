@@ -44,10 +44,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (err) { new Notice("无法打开批注：" + err.message); }
   },
 
-  async lmbSetTextBlockHidden(entry, path, hidden) {
+  lmbIsTextBlockCollapsed(view) {
+    return !!(view && (view.collapsed === undefined ? view.hidden : view.collapsed));
+  },
+
+  async lmbSetTextBlockCollapsed(entry, path, collapsed) {
     const views = this.lmbTextBlockViews(path);
     const view = views[entry.exId] || (views[entry.exId] = {});
-    view.hidden = !!hidden;
+    view.collapsed = !!collapsed;
+    delete view.hidden; // Previous releases hid the row; now it always retains an expand entry.
     await this.saveSettings();
     await this.lmbRefreshTextBlocks();
     this.lmbSchedulePdfSidebarRefresh(0);
@@ -158,7 +163,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     tools.style.bottom = nearTop ? "auto" : "100%";
     tools.style.top = nearTop ? "0" : "auto";
     tools.style.left = Math.min(0, page.getBoundingClientRect().width * (1 - (view.x || 0)) - 280) + "px";
-    block.querySelector(".lmb-text-sidebar-toggle").textContent = view.hidden ? "侧栏显示" : "侧栏隐藏";
+    block.querySelector(".lmb-text-sidebar-toggle").textContent = this.lmbIsTextBlockCollapsed(view) ? "侧栏展开" : "侧栏收起";
     block.classList.toggle("is-note-style", view.style === "note");
   },
 
@@ -185,7 +190,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (value >= 8 && value <= 72) size.onchange();
     };
     button("样式", () => { view.style = view.style === "note" ? "transparent" : "note"; this.lmbStyleTextBlock(block, page, view); return persist(); });
-    button("侧栏隐藏", () => this.lmbSetTextBlockHidden(entry, entry.pdfPath, !view.hidden), "lmb-text-sidebar-toggle");
+    button("侧栏收起", () => this.lmbSetTextBlockCollapsed(entry, entry.pdfPath, !this.lmbIsTextBlockCollapsed(view)), "lmb-text-sidebar-toggle");
     button("移除", async () => {
       delete view.page; block.remove(); await persist(); await this.lmbRefreshTextBlocks();
     });

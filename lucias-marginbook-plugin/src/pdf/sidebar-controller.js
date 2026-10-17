@@ -200,7 +200,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       bar.dataset.page = String(page);
       const current = this._lmbPdfSidebarView !== "all"; let shown = 0;
       bar.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
-        const visible = (!current || Number(row.dataset.page) === page) && (leaf._lmbShowHiddenTextBlocks || row.dataset.sidebarHidden !== "true");
+        const visible = !current || Number(row.dataset.page) === page;
         row.toggleClass("is-page-hidden", !visible); if (visible) shown++;
       });
       const sub = bar.querySelector(".lmb-pdf-sidebar-title-sub");
@@ -389,9 +389,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const controls = head.createDiv({ cls: "lmb-pdf-sidebar-controls" });
       const currentBtn = controls.createEl("button", { text: "当前页" }), allBtn = controls.createEl("button", { text: "全部" });
       const followBtn = controls.createEl("button", { cls: "lmb-pdf-sidebar-follow", text: "● 跟随" });
-      const hiddenBtn = controls.createEl("button", { text: "显示已隐藏" });
-      hiddenBtn.onclick = () => { leaf._lmbShowHiddenTextBlocks = !leaf._lmbShowHiddenTextBlocks; hiddenBtn.toggleClass("is-active", !!leaf._lmbShowHiddenTextBlocks); this._lmbApplySidebarPageFilter(leaf); };
-      hiddenBtn.toggleClass("is-active", !!leaf._lmbShowHiddenTextBlocks);
       const sync = () => {
         currentBtn.toggleClass("is-active", this._lmbPdfSidebarView !== "all"); allBtn.toggleClass("is-active", this._lmbPdfSidebarView === "all");
         followBtn.toggleClass("is-active", this._lmbPdfSidebarFollow !== false);
@@ -405,11 +402,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       for (const e of entries) {
         const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
         const textView = this.lmbTextBlockViews(file.path)[e.exId] || {};
-        row.dataset.sidebarHidden = String(!!textView.hidden);
+        const compact = this.lmbIsTextBlockCollapsed(textView);
+        row.toggleClass("is-compact", compact);
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
         // 卡片头部只呈现定位信息。摘录类型可由内容/操作判断，target 仅供
         // 内部回绘校验使用，不再把这两项重复展示给用户。
         header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` });
+        const expandEntry = header.createEl("button", { cls: "lmb-pdf-sidebar-expand-entry", text: "在侧栏展开", attr: { "aria-label": `在侧栏展开 P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` } });
+        expandEntry.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, false).catch((err) => new Notice("设置保存失败：" + err.message)); };
         if (e.tags && e.tags.length) header.createDiv({ cls: "lmb-pdf-sidebar-item-tags", text: e.tags.map((t) => "#" + t).join(" ") });
         const body = row.createDiv({ cls: "lmb-pdf-sidebar-item-body" });
         const cleanText = String(e.text || "").trim();
@@ -461,8 +461,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const color = iconButton("palette", "修改摘录颜色");
         const place = iconButton("text-cursor-input", textView.page ? "重新放置 Markdown 文本块" : "将 Markdown 备注放到 PDF 页面");
         place.onclick = (ev) => { ev.stopPropagation(); this.lmbStartTextBlockPlacement(Object.assign({}, e, { pdfPath: file.path }), leaf).catch((err) => new Notice("无法放置：" + err.message)); };
-        const visibility = iconButton(textView.hidden ? "eye" : "eye-off", textView.hidden ? "恢复侧栏显示" : "在侧栏隐藏（可找回）");
-        visibility.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockHidden(e, file.path, !textView.hidden).catch((err) => new Notice("设置保存失败：" + err.message)); };
+        const visibility = iconButton("chevrons-up", "收起为侧栏入口");
+        visibility.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, true).catch((err) => new Notice("设置保存失败：" + err.message)); };
         color.onclick = (ev) => { ev.stopPropagation(); this.lmbChooseExcerptColor(e.exId, color); };
         if (imageEl && cleanText) {
           const persistedImage = !!(e.exId && this.settings.excerptViews

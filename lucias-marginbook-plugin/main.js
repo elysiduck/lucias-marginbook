@@ -661,7 +661,8 @@ const LMB_STYLES = [
   '.lmb-pdf-text-body h1{font-size:1.7em;}.lmb-pdf-text-body h2{font-size:1.4em;}.lmb-pdf-text-body h3{font-size:1.2em;}.lmb-pdf-text-body h4,.lmb-pdf-text-body h5,.lmb-pdf-text-body h6{font-size:1em;}.lmb-pdf-text-body :is(h1,h2,h3,h4,h5,h6){color:inherit;margin:.6em 0 .35em;}',
   '.lmb-pdf-text-body blockquote{border-left:3px solid #74b490;padding-left:.7em;}.lmb-pdf-text-body img{max-width:100%;}.lmb-pdf-text-body pre{overflow:auto;}.lmb-pdf-text-body a{color:#1765a3;}',
   '.lmb-pdf-text-resize{position:absolute;right:-7px;top:0;bottom:0;width:14px;cursor:ew-resize;touch-action:none;}.lmb-pdf-text-block:hover>.lmb-pdf-text-resize,.lmb-pdf-text-block:focus-within>.lmb-pdf-text-resize{border-right:3px solid var(--interactive-accent,#6a9);}',
-  '.lmb-pdf-sidebar-item-note.is-collapsed{max-height:160px;overflow:hidden;}.lmb-pdf-sidebar-note-expand{font-size:12px;}'
+  '.lmb-pdf-sidebar-item-note.is-collapsed{max-height:160px;overflow:hidden;}.lmb-pdf-sidebar-note-expand{font-size:12px;}',
+  '.lmb-pdf-sidebar-expand-entry{display:none;}.lmb-pdf-sidebar-item.is-compact{padding:6px 10px;}.lmb-pdf-sidebar-item.is-compact>:not(.lmb-pdf-sidebar-item-header){display:none!important;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-tags{display:none;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-expand-entry{display:inline-flex;font-size:12px;height:26px;padding:3px 8px;white-space:nowrap;}'
 ];
 
 if (typeof module !== "undefined" && module.exports) {
@@ -3684,7 +3685,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.26.0";
+    st.dataset.lmbVersion = "0.26.1";
   }
 
 }
@@ -9070,7 +9071,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       bar.dataset.page = String(page);
       const current = this._lmbPdfSidebarView !== "all"; let shown = 0;
       bar.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
-        const visible = (!current || Number(row.dataset.page) === page) && (leaf._lmbShowHiddenTextBlocks || row.dataset.sidebarHidden !== "true");
+        const visible = !current || Number(row.dataset.page) === page;
         row.toggleClass("is-page-hidden", !visible); if (visible) shown++;
       });
       const sub = bar.querySelector(".lmb-pdf-sidebar-title-sub");
@@ -9259,9 +9260,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const controls = head.createDiv({ cls: "lmb-pdf-sidebar-controls" });
       const currentBtn = controls.createEl("button", { text: "当前页" }), allBtn = controls.createEl("button", { text: "全部" });
       const followBtn = controls.createEl("button", { cls: "lmb-pdf-sidebar-follow", text: "● 跟随" });
-      const hiddenBtn = controls.createEl("button", { text: "显示已隐藏" });
-      hiddenBtn.onclick = () => { leaf._lmbShowHiddenTextBlocks = !leaf._lmbShowHiddenTextBlocks; hiddenBtn.toggleClass("is-active", !!leaf._lmbShowHiddenTextBlocks); this._lmbApplySidebarPageFilter(leaf); };
-      hiddenBtn.toggleClass("is-active", !!leaf._lmbShowHiddenTextBlocks);
       const sync = () => {
         currentBtn.toggleClass("is-active", this._lmbPdfSidebarView !== "all"); allBtn.toggleClass("is-active", this._lmbPdfSidebarView === "all");
         followBtn.toggleClass("is-active", this._lmbPdfSidebarFollow !== false);
@@ -9275,11 +9273,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       for (const e of entries) {
         const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
         const textView = this.lmbTextBlockViews(file.path)[e.exId] || {};
-        row.dataset.sidebarHidden = String(!!textView.hidden);
+        const compact = this.lmbIsTextBlockCollapsed(textView);
+        row.toggleClass("is-compact", compact);
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
         // 卡片头部只呈现定位信息。摘录类型可由内容/操作判断，target 仅供
         // 内部回绘校验使用，不再把这两项重复展示给用户。
         header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` });
+        const expandEntry = header.createEl("button", { cls: "lmb-pdf-sidebar-expand-entry", text: "在侧栏展开", attr: { "aria-label": `在侧栏展开 P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` } });
+        expandEntry.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, false).catch((err) => new Notice("设置保存失败：" + err.message)); };
         if (e.tags && e.tags.length) header.createDiv({ cls: "lmb-pdf-sidebar-item-tags", text: e.tags.map((t) => "#" + t).join(" ") });
         const body = row.createDiv({ cls: "lmb-pdf-sidebar-item-body" });
         const cleanText = String(e.text || "").trim();
@@ -9331,8 +9332,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const color = iconButton("palette", "修改摘录颜色");
         const place = iconButton("text-cursor-input", textView.page ? "重新放置 Markdown 文本块" : "将 Markdown 备注放到 PDF 页面");
         place.onclick = (ev) => { ev.stopPropagation(); this.lmbStartTextBlockPlacement(Object.assign({}, e, { pdfPath: file.path }), leaf).catch((err) => new Notice("无法放置：" + err.message)); };
-        const visibility = iconButton(textView.hidden ? "eye" : "eye-off", textView.hidden ? "恢复侧栏显示" : "在侧栏隐藏（可找回）");
-        visibility.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockHidden(e, file.path, !textView.hidden).catch((err) => new Notice("设置保存失败：" + err.message)); };
+        const visibility = iconButton("chevrons-up", "收起为侧栏入口");
+        visibility.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, true).catch((err) => new Notice("设置保存失败：" + err.message)); };
         color.onclick = (ev) => { ev.stopPropagation(); this.lmbChooseExcerptColor(e.exId, color); };
         if (imageEl && cleanText) {
           const persistedImage = !!(e.exId && this.settings.excerptViews
@@ -9453,10 +9454,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (err) { new Notice("无法打开批注：" + err.message); }
   },
 
-  async lmbSetTextBlockHidden(entry, path, hidden) {
+  lmbIsTextBlockCollapsed(view) {
+    return !!(view && (view.collapsed === undefined ? view.hidden : view.collapsed));
+  },
+
+  async lmbSetTextBlockCollapsed(entry, path, collapsed) {
     const views = this.lmbTextBlockViews(path);
     const view = views[entry.exId] || (views[entry.exId] = {});
-    view.hidden = !!hidden;
+    view.collapsed = !!collapsed;
+    delete view.hidden; // Previous releases hid the row; now it always retains an expand entry.
     await this.saveSettings();
     await this.lmbRefreshTextBlocks();
     this.lmbSchedulePdfSidebarRefresh(0);
@@ -9567,7 +9573,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     tools.style.bottom = nearTop ? "auto" : "100%";
     tools.style.top = nearTop ? "0" : "auto";
     tools.style.left = Math.min(0, page.getBoundingClientRect().width * (1 - (view.x || 0)) - 280) + "px";
-    block.querySelector(".lmb-text-sidebar-toggle").textContent = view.hidden ? "侧栏显示" : "侧栏隐藏";
+    block.querySelector(".lmb-text-sidebar-toggle").textContent = this.lmbIsTextBlockCollapsed(view) ? "侧栏展开" : "侧栏收起";
     block.classList.toggle("is-note-style", view.style === "note");
   },
 
@@ -9594,7 +9600,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (value >= 8 && value <= 72) size.onchange();
     };
     button("样式", () => { view.style = view.style === "note" ? "transparent" : "note"; this.lmbStyleTextBlock(block, page, view); return persist(); });
-    button("侧栏隐藏", () => this.lmbSetTextBlockHidden(entry, entry.pdfPath, !view.hidden), "lmb-text-sidebar-toggle");
+    button("侧栏收起", () => this.lmbSetTextBlockCollapsed(entry, entry.pdfPath, !this.lmbIsTextBlockCollapsed(view)), "lmb-text-sidebar-toggle");
     button("移除", async () => {
       delete view.page; block.remove(); await persist(); await this.lmbRefreshTextBlocks();
     });

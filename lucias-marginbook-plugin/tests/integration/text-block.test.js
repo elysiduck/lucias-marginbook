@@ -68,14 +68,16 @@ async function main() {
 
   const view = { page: 1, x: .2, y: .3, w: .5, fontSize: 20 };
   plugin.lmbTextBlockViews("a.pdf")[entry.exId] = view;
-  await plugin.lmbSetTextBlockHidden(entry, "a.pdf", true);
+  view.hidden = true;
+  assert.equal(plugin.lmbIsTextBlockCollapsed(view), true, "previously hidden notes become compact entries");
+  await plugin.lmbSetTextBlockCollapsed(entry, "a.pdf", true);
   assert.equal(plugin.lmbTextBlockViews("a.pdf")[entry.exId], view, "live controls retain their view reference");
-  assert.equal(view.page, 1); assert.equal(view.hidden, true); assert.equal(refreshes, 1);
+  assert.equal(view.page, 1); assert.equal(view.collapsed, true); assert.equal(view.hidden, undefined); assert.equal(refreshes, 1);
 
   const serialized = vm.runInContext("new LmbSettingsStore({ _lmbSerializedRuntimeCaches: {} })", context).serialize(plugin.settings, {});
   const restored = JSON.parse(JSON.stringify(serialized));
   assert.equal(restored.pdfTextBlocks["a.pdf"]["ex-a"].fontSize, 20);
-  assert.equal(restored.pdfTextBlocks["a.pdf"]["ex-a"].hidden, true);
+  assert.equal(restored.pdfTextBlocks["a.pdf"]["ex-a"].collapsed, true);
   assert.equal(restored.quickExcerpts["a.pdf"][0].note, "## 同步\n新内容");
 
   const page = new Element("page"); page.dataset.pageNumber = "1";
@@ -102,8 +104,11 @@ async function main() {
   const leaf = { containerEl: { querySelector: () => bar } };
   plugin._lmbPdfSidebarView = "all";
   plugin._lmbCurrentPdfPage = () => 1;
-  plugin._lmbApplySidebarPageFilter(leaf); assert(row.cls.has("is-page-hidden"));
-  leaf._lmbShowHiddenTextBlocks = true;
+  plugin._lmbApplySidebarPageFilter(leaf); assert(!row.cls.has("is-page-hidden"), "even legacy hidden rows stay visible");
+  plugin._lmbPdfSidebarView = "current";
+  row.dataset.page = "2";
+  plugin._lmbApplySidebarPageFilter(leaf); assert(row.cls.has("is-page-hidden"), "current-page filtering still applies");
+  row.dataset.page = "1";
   plugin._lmbApplySidebarPageFilter(leaf); assert(!row.cls.has("is-page-hidden"));
 
   // A placement is committed only after an explicit click in the chosen PDF.
@@ -111,7 +116,7 @@ async function main() {
   page.closest = (selector) => selector.startsWith(".page") ? page : null;
   await plugin.lmbStartTextBlockPlacement(entry, { containerEl: root, view: { file: { path: "a.pdf" } } });
   await doc.emit("pointerdown", { target: page, button: 0, clientX: 250, clientY: 700, preventDefault() {}, stopImmediatePropagation() {} });
-  assert.equal(view.x, .25); assert.equal(view.y, .5); assert.equal(view.hidden, true);
+  assert.equal(view.x, .25); assert.equal(view.y, .5); assert.equal(view.collapsed, true);
   assert.equal(plugin._lmbCancelTextPlacement, null);
 
   // Saved text on otherwise blank pages must scale without creating an ink canvas.
@@ -134,6 +139,9 @@ async function main() {
   assert.equal(await plugin.lmbTextBlockNote(entry), "## 同步\n新内容");
   await plugin.lmbRenderTextBlocksOnPage(page, "a.pdf");
   assert.equal(resizeObserver.disconnected, true);
+  await plugin.lmbSetTextBlockCollapsed(entry, "a.pdf", false);
+  assert.equal(plugin.lmbIsTextBlockCollapsed(view), false);
+  assert.equal(await plugin.lmbTextBlockNote(entry), "## 同步\n新内容", "expanding preserves content");
 
   context.Modal = class {}; context.FuzzySuggestModal = class {};
   vm.runInContext(fs.readFileSync("src/ui/modals.js", "utf8"), context);

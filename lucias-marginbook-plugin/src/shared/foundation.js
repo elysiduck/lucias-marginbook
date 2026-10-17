@@ -640,7 +640,8 @@ const LMB_STYLES = [
   '.lmb-pdf-text-body h1{font-size:1.7em;}.lmb-pdf-text-body h2{font-size:1.4em;}.lmb-pdf-text-body h3{font-size:1.2em;}.lmb-pdf-text-body h4,.lmb-pdf-text-body h5,.lmb-pdf-text-body h6{font-size:1em;}.lmb-pdf-text-body :is(h1,h2,h3,h4,h5,h6){color:inherit;margin:.6em 0 .35em;}',
   '.lmb-pdf-text-body blockquote{border-left:3px solid #74b490;padding-left:.7em;}.lmb-pdf-text-body img{max-width:100%;}.lmb-pdf-text-body pre{overflow:auto;}.lmb-pdf-text-body a{color:#1765a3;}',
   '.lmb-pdf-text-resize{position:absolute;right:-7px;top:0;bottom:0;width:14px;cursor:ew-resize;touch-action:none;}.lmb-pdf-text-block:hover>.lmb-pdf-text-resize,.lmb-pdf-text-block:focus-within>.lmb-pdf-text-resize{border-right:3px solid var(--interactive-accent,#6a9);}',
-  '.lmb-pdf-sidebar-item-note.is-collapsed{max-height:160px;overflow:hidden;}.lmb-pdf-sidebar-note-expand{font-size:12px;}'
+  '.lmb-pdf-sidebar-item-note.is-collapsed{max-height:160px;overflow:hidden;}.lmb-pdf-sidebar-note-expand{font-size:12px;}',
+  '.lmb-pdf-sidebar-expand-entry{display:none;}.lmb-pdf-sidebar-item.is-compact{padding:6px 10px;}.lmb-pdf-sidebar-item.is-compact>:not(.lmb-pdf-sidebar-item-header){display:none!important;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-tags{display:none;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-expand-entry{display:inline-flex;font-size:12px;height:26px;padding:3px 8px;white-space:nowrap;}'
 ];
 
 if (typeof module !== "undefined" && module.exports) {

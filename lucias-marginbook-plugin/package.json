@@ -1,6 +1,6 @@
 {
   "name": "lucias-marginbook",
-  "version": "0.26.0",
+  "version": "0.26.1",
   "private": true,
   "description": "Source and build workspace for Lucia's MarginBook Obsidian plugin",
   "scripts": {
