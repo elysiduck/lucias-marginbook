@@ -205,11 +205,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { return null; }
   },
 
-  _lmbApplySidebarPageFilter(leaf, forcedPage) {
+  _lmbApplySidebarPageFilter(leaf, forcedPage, preparedBar) {
     try {
-      const bar = leaf && leaf.containerEl && leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar");
+      const bar = preparedBar || (leaf && leaf.containerEl && leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar"));
       if (!bar) return;
-      const page = forcedPage || this._lmbCurrentPdfPage(leaf) || Number(bar.dataset.page) || 1;
+      const page = forcedPage || (this._lmbPdfSidebarFollow === false ? null : this._lmbCurrentPdfPage(leaf)) || Number(bar.dataset.page) || this._lmbCurrentPdfPage(leaf) || 1;
       bar.dataset.page = String(page);
       const current = this._lmbPdfSidebarView !== "all"; let shown = 0;
       bar.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
@@ -221,9 +221,38 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) {}
   },
 
+  lmbApplySidebarCollapsedState(path, exId, collapsed) {
+    for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
+      if (!leaf.view || !leaf.view.file || leaf.view.file.path !== path) continue;
+      const bar = leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar");
+      if (bar) {
+        const row = Array.from(bar.querySelectorAll(".lmb-pdf-sidebar-item")).find((el) => el.dataset.exId === exId);
+        if (row) {
+          const oldScroll = bar.scrollTop, rect = row.getBoundingClientRect();
+          const heading = bar.querySelector(".lmb-pdf-sidebar-title");
+          const aboveViewport = rect.bottom <= (heading ? heading.getBoundingClientRect().bottom : bar.getBoundingClientRect().top);
+          const hadFocus = row.contains(row.ownerDocument.activeElement);
+          row.toggleClass("is-compact", collapsed);
+          const shift = aboveViewport ? row.getBoundingClientRect().height - rect.height : 0;
+          bar.scrollTop = oldScroll + shift;
+          if (hadFocus) {
+            const focusTarget = row.querySelector(collapsed ? ".lmb-pdf-sidebar-expand-entry" : ".lmb-pdf-sidebar-header-actions button");
+            if (focusTarget) focusTarget.focus({ preventScroll: true });
+          }
+        }
+      }
+      leaf.containerEl.querySelectorAll(".lmb-pdf-text-block").forEach((block) => {
+        if (block.dataset.exId !== exId) return;
+        const toggle = block.querySelector(".lmb-text-sidebar-toggle");
+        if (toggle) toggle.setText(collapsed ? "侧栏展开" : "侧栏收起");
+      });
+    }
+  },
+
   lmbHandlePdfSidebarScroll(ev) {
     if (this._lmbPdfSidebarFollow === false) return;
     const target = ev && ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    if (target && target.closest(".lmb-pdf-excerpt-sidebar")) return;
     if (target && !target.closest(".workspace-leaf-content[data-type='pdf']")) return;
     if (this._lmbPdfSidebarPageTimer) clearTimeout(this._lmbPdfSidebarPageTimer);
     this._lmbPdfSidebarPageTimer = setTimeout(() => {
@@ -373,28 +402,32 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags]),
         sources: Array.from(sourceVersions),
         views: this.settings && this.settings.excerptViews,
-        textBlocks: this.settings && this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[file.path],
+        // Geometry, font size and compact state do not change sidebar content.
+        textPlacements: entries.map((e) => [e.exId, !!(this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[file.path] && this.settings.pdfTextBlocks[file.path][e.exId] && this.settings.pdfTextBlocks[file.path][e.exId].page)]),
         colors: this.settings && this.settings.excerptColors
       });
+      const renderToken = {};
+      bar._lmbRenderToken = renderToken;
       if (bar._lmbRenderSig === renderSig && bar.querySelector(".lmb-pdf-sidebar-list")) {
         this._lmbApplySidebarPageFilter(leaf);
         return;
       }
-      const renderToken = {};
-      bar._lmbRenderToken = renderToken;
+      // Build offscreen: never expose unfiltered rows or a blank page counter
+      // while source notes and Markdown are still rendering.
+      const prepared = bar.ownerDocument.createElement("div");
+      prepared.dataset.page = bar.dataset.page || "";
       const grip = bar.querySelector(".lmb-pdf-sidebar-resizer");
-      Array.from(bar.children).forEach((child) => { if (child !== grip) child.remove(); });
       // 保持索引原始顺序，与 PDF 回绘的既有编号一致。不能按来源文档的
       // line 字段重排：不同 Markdown 文件的行号彼此不可比较，会让 PDF
       // 上已经稳定的序号整体洗牌。
-      bar.dataset.total = String(entries.length);
+      prepared.dataset.total = String(entries.length);
       const pageOrdinals = new Map();
       for (const e of entries) {
         const key = String(e.page || "?");
         const ordinal = (pageOrdinals.get(key) || 0) + 1;
         pageOrdinals.set(key, ordinal); e._lmbSidebarOrdinal = ordinal;
       }
-      const head = bar.createDiv({ cls: "lmb-pdf-sidebar-title" }), titleRow = head.createDiv({ cls: "lmb-pdf-sidebar-title-row" });
+      const head = prepared.createDiv({ cls: "lmb-pdf-sidebar-title" }), titleRow = head.createDiv({ cls: "lmb-pdf-sidebar-title-row" });
       titleRow.createDiv({ cls: "lmb-pdf-sidebar-title-main", text: "PDF 批注" });
       titleRow.createSpan({ cls: "lmb-pdf-sidebar-count", text: String(entries.length) });
       head.createDiv({ cls: "lmb-pdf-sidebar-file", text: file.name });
@@ -406,12 +439,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         currentBtn.toggleClass("is-active", this._lmbPdfSidebarView !== "all"); allBtn.toggleClass("is-active", this._lmbPdfSidebarView === "all");
         followBtn.toggleClass("is-active", this._lmbPdfSidebarFollow !== false);
       };
-      currentBtn.onclick = () => { this._lmbPdfSidebarView = "current"; sync(); this._lmbApplySidebarPageFilter(leaf); };
+      currentBtn.onclick = () => { this._lmbPdfSidebarView = "current"; sync(); this._lmbApplySidebarPageFilter(leaf, this._lmbCurrentPdfPage(leaf)); };
       allBtn.onclick = () => { this._lmbPdfSidebarView = "all"; sync(); this._lmbApplySidebarPageFilter(leaf); };
       followBtn.onclick = () => { this._lmbPdfSidebarFollow = this._lmbPdfSidebarFollow === false; sync(); };
       sync();
       const search = head.createEl("input", { cls: "lmb-pdf-sidebar-search", attr: { type: "search", placeholder: "搜索摘录或备注…" } });
-      const list = bar.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
+      const list = prepared.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
       for (const e of entries) {
         const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
         const textView = this.lmbTextBlockViews(file.path)[e.exId] || {};
@@ -551,8 +584,32 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => row.toggleClass("is-search-hidden", !!query && !row.textContent.toLowerCase().includes(query)));
       };
       if (!entries.length) list.createDiv({ cls: "lmb-pdf-sidebar-empty", text: "当前 PDF 暂无可用批注" });
+      if (bar._lmbRenderToken !== renderToken || this._unloaded || leaf.view.file !== file) return;
+      // A collapse click/search/PDF scroll may have happened during preparation.
+      list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
+        row.toggleClass("is-compact", this.lmbIsTextBlockCollapsed(this.lmbTextBlockViews(file.path)[row.dataset.exId]));
+      });
+      const oldSearch = bar.querySelector(".lmb-pdf-sidebar-search");
+      search.value = oldSearch ? oldSearch.value : "";
+      search.oninput();
+      this._lmbApplySidebarPageFilter(leaf, this._lmbPdfSidebarFollow === false ? Number(bar.dataset.page) || null : null, prepared);
+      const oldScroll = bar.scrollTop;
+      const oldRows = Array.from(bar.querySelectorAll(".lmb-pdf-sidebar-item"));
+      const visibleHeading = bar.querySelector(".lmb-pdf-sidebar-title");
+      const barTop = visibleHeading ? visibleHeading.getBoundingClientRect().bottom : bar.getBoundingClientRect().top;
+      const anchor = oldRows.find((row) => !row.classList.contains("is-page-hidden") && !row.classList.contains("is-search-hidden") && row.getBoundingClientRect().bottom > barTop);
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+      const searchFocused = oldSearch && oldSearch === bar.ownerDocument.activeElement;
+      const selection = searchFocused ? [oldSearch.selectionStart, oldSearch.selectionEnd] : null;
+      bar.dataset.total = prepared.dataset.total; bar.dataset.page = prepared.dataset.page;
+      bar.replaceChildren(...(grip ? [grip] : []), ...Array.from(prepared.children));
+      bar.scrollTop = oldScroll;
+      if (anchor) {
+        const replacement = Array.from(list.querySelectorAll(".lmb-pdf-sidebar-item")).find((row) => row.dataset.exId === anchor.dataset.exId);
+        if (replacement && !replacement.classList.contains("is-page-hidden") && !replacement.classList.contains("is-search-hidden")) bar.scrollTop += replacement.getBoundingClientRect().top - anchorTop;
+      }
+      if (searchFocused) { search.focus({ preventScroll: true }); search.setSelectionRange(...selection); }
       bar._lmbRenderSig = renderSig;
-      this._lmbApplySidebarPageFilter(leaf);
     } catch (err) { console.warn("[lmb] render pdf sidebar failed:", err); }
   }
 });

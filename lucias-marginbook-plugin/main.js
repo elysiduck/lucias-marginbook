@@ -591,7 +591,7 @@ const LMB_STYLES = [
   '.lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed>.lmb-pdf-excerpt-sidebar{display:none!important;}',
   '.lmb-pdf-excerpt-sidebar{position:absolute;z-index:15;right:0;top:var(--lmb-pdf-sidebar-top,0px);bottom:0;min-width:260px;max-width:min(50vw,560px);height:auto;',
   'padding:0 10px 28px 13px;overflow:auto;box-sizing:border-box;background:var(--background-primary);',
-  'border-left:1px solid var(--background-modifier-border);scroll-behavior:smooth;}',
+  'border-left:1px solid var(--background-modifier-border);scroll-behavior:auto;overflow-anchor:none;}',
   '.lmb-pdf-sidebar-resizer{position:absolute;z-index:5;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize;}',
   '.lmb-pdf-sidebar-resizer:hover,.lmb-pdf-sidebar-resizer.is-dragging{background:var(--interactive-accent);opacity:.75;}',
   '.lmb-pdf-sidebar-title{position:sticky;top:0;padding:12px 3px 10px;margin-bottom:9px;',
@@ -665,7 +665,14 @@ const LMB_STYLES = [
   '.lmb-pdf-sidebar-item-note.is-collapsed:after{content:"";position:absolute;bottom:0;left:0;right:0;height:30px;background:linear-gradient(transparent,var(--background-primary));pointer-events:none;border-radius:0 0 5px 5px;}.lmb-pdf-sidebar-note-expand{position:absolute;right:6px;bottom:5px;z-index:1;height:23px;padding:1px 7px;font-size:11px;line-height:1.2;border-radius:5px;background:var(--background-primary);color:var(--text-muted);border:1px solid var(--background-modifier-border);}',
   '.lmb-pdf-sidebar-item-summary{display:none;}.lmb-pdf-sidebar-item-title{flex-shrink:0;}.lmb-pdf-sidebar-header-actions{display:flex;align-items:center;gap:4px;flex-shrink:0;margin-left:auto;}.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-icon-button{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;min-width:26px;padding:0;background:transparent;border:0;box-shadow:none;color:var(--text-muted);}.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-delete:hover{background:var(--background-modifier-error);color:var(--text-error)!important;}',
   '.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-summary{display:block;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-muted);}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-header-actions{display:none;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-expand-entry{flex-shrink:0;}',
-  '.lmb-pdf-sidebar-expand-entry{display:none;}.lmb-pdf-sidebar-item.is-compact{padding:6px 10px;}.lmb-pdf-sidebar-item.is-compact>:not(.lmb-pdf-sidebar-item-header){display:none!important;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-tags{display:none;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-expand-entry{display:inline-flex;font-size:12px;height:26px;padding:3px 8px;white-space:nowrap;}'
+  '.lmb-pdf-sidebar-expand-entry{display:none;}.lmb-pdf-sidebar-item.is-compact{padding:6px 10px;}.lmb-pdf-sidebar-item.is-compact>:not(.lmb-pdf-sidebar-item-header){display:none!important;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-tags{display:none;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-expand-entry{display:inline-flex;font-size:12px;height:26px;padding:3px 8px;white-space:nowrap;}',
+  '.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-icon-button,.lmb-pdf-sidebar-expand-entry,.lmb-pdf-sidebar-note-expand{border:1px solid var(--background-modifier-border);border-radius:6px;background:var(--background-secondary);box-shadow:0 1px 2px #0001;cursor:pointer;}',
+  '.lmb-pdf-sidebar-header-actions button,.lmb-pdf-sidebar-expand-entry,.lmb-pdf-sidebar-note-expand,.lmb-pdf-sidebar-item-actions button{transition:background-color .15s,border-color .15s,box-shadow .15s,transform .1s;}',
+  '.lmb-pdf-sidebar-header-actions button:hover,.lmb-pdf-sidebar-expand-entry:hover,.lmb-pdf-sidebar-note-expand:hover,.lmb-pdf-sidebar-item-actions button:hover{border-color:var(--interactive-accent);background:color-mix(in srgb,var(--interactive-accent) 12%,var(--background-secondary));box-shadow:0 3px 7px #0002;transform:translateY(-1px);}',
+  '.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-delete:hover{border-color:var(--text-error);background:color-mix(in srgb,var(--text-error) 14%,var(--background-secondary));color:var(--text-error)!important;}',
+  '.lmb-pdf-sidebar-header-actions button:active,.lmb-pdf-sidebar-expand-entry:active,.lmb-pdf-sidebar-note-expand:active,.lmb-pdf-sidebar-item-actions button:active{transform:translateY(1px);box-shadow:inset 0 1px 3px #0003;}',
+  '.lmb-pdf-sidebar-header-actions button:focus-visible,.lmb-pdf-sidebar-expand-entry:focus-visible,.lmb-pdf-sidebar-note-expand:focus-visible,.lmb-pdf-sidebar-item-actions button:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px;}',
+  '@media(prefers-reduced-motion:reduce){.lmb-pdf-sidebar-header-actions button,.lmb-pdf-sidebar-expand-entry,.lmb-pdf-sidebar-note-expand,.lmb-pdf-sidebar-item-actions button{transition:none!important;transform:none!important;}}'
 ];
 
 if (typeof module !== "undefined" && module.exports) {
@@ -3688,7 +3695,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.26.2";
+    st.dataset.lmbVersion = "0.26.3";
   }
 
 }
@@ -9079,11 +9086,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) { return null; }
   },
 
-  _lmbApplySidebarPageFilter(leaf, forcedPage) {
+  _lmbApplySidebarPageFilter(leaf, forcedPage, preparedBar) {
     try {
-      const bar = leaf && leaf.containerEl && leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar");
+      const bar = preparedBar || (leaf && leaf.containerEl && leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar"));
       if (!bar) return;
-      const page = forcedPage || this._lmbCurrentPdfPage(leaf) || Number(bar.dataset.page) || 1;
+      const page = forcedPage || (this._lmbPdfSidebarFollow === false ? null : this._lmbCurrentPdfPage(leaf)) || Number(bar.dataset.page) || this._lmbCurrentPdfPage(leaf) || 1;
       bar.dataset.page = String(page);
       const current = this._lmbPdfSidebarView !== "all"; let shown = 0;
       bar.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
@@ -9095,9 +9102,38 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     } catch (_) {}
   },
 
+  lmbApplySidebarCollapsedState(path, exId, collapsed) {
+    for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
+      if (!leaf.view || !leaf.view.file || leaf.view.file.path !== path) continue;
+      const bar = leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar");
+      if (bar) {
+        const row = Array.from(bar.querySelectorAll(".lmb-pdf-sidebar-item")).find((el) => el.dataset.exId === exId);
+        if (row) {
+          const oldScroll = bar.scrollTop, rect = row.getBoundingClientRect();
+          const heading = bar.querySelector(".lmb-pdf-sidebar-title");
+          const aboveViewport = rect.bottom <= (heading ? heading.getBoundingClientRect().bottom : bar.getBoundingClientRect().top);
+          const hadFocus = row.contains(row.ownerDocument.activeElement);
+          row.toggleClass("is-compact", collapsed);
+          const shift = aboveViewport ? row.getBoundingClientRect().height - rect.height : 0;
+          bar.scrollTop = oldScroll + shift;
+          if (hadFocus) {
+            const focusTarget = row.querySelector(collapsed ? ".lmb-pdf-sidebar-expand-entry" : ".lmb-pdf-sidebar-header-actions button");
+            if (focusTarget) focusTarget.focus({ preventScroll: true });
+          }
+        }
+      }
+      leaf.containerEl.querySelectorAll(".lmb-pdf-text-block").forEach((block) => {
+        if (block.dataset.exId !== exId) return;
+        const toggle = block.querySelector(".lmb-text-sidebar-toggle");
+        if (toggle) toggle.setText(collapsed ? "侧栏展开" : "侧栏收起");
+      });
+    }
+  },
+
   lmbHandlePdfSidebarScroll(ev) {
     if (this._lmbPdfSidebarFollow === false) return;
     const target = ev && ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    if (target && target.closest(".lmb-pdf-excerpt-sidebar")) return;
     if (target && !target.closest(".workspace-leaf-content[data-type='pdf']")) return;
     if (this._lmbPdfSidebarPageTimer) clearTimeout(this._lmbPdfSidebarPageTimer);
     this._lmbPdfSidebarPageTimer = setTimeout(() => {
@@ -9247,28 +9283,32 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags]),
         sources: Array.from(sourceVersions),
         views: this.settings && this.settings.excerptViews,
-        textBlocks: this.settings && this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[file.path],
+        // Geometry, font size and compact state do not change sidebar content.
+        textPlacements: entries.map((e) => [e.exId, !!(this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[file.path] && this.settings.pdfTextBlocks[file.path][e.exId] && this.settings.pdfTextBlocks[file.path][e.exId].page)]),
         colors: this.settings && this.settings.excerptColors
       });
+      const renderToken = {};
+      bar._lmbRenderToken = renderToken;
       if (bar._lmbRenderSig === renderSig && bar.querySelector(".lmb-pdf-sidebar-list")) {
         this._lmbApplySidebarPageFilter(leaf);
         return;
       }
-      const renderToken = {};
-      bar._lmbRenderToken = renderToken;
+      // Build offscreen: never expose unfiltered rows or a blank page counter
+      // while source notes and Markdown are still rendering.
+      const prepared = bar.ownerDocument.createElement("div");
+      prepared.dataset.page = bar.dataset.page || "";
       const grip = bar.querySelector(".lmb-pdf-sidebar-resizer");
-      Array.from(bar.children).forEach((child) => { if (child !== grip) child.remove(); });
       // 保持索引原始顺序，与 PDF 回绘的既有编号一致。不能按来源文档的
       // line 字段重排：不同 Markdown 文件的行号彼此不可比较，会让 PDF
       // 上已经稳定的序号整体洗牌。
-      bar.dataset.total = String(entries.length);
+      prepared.dataset.total = String(entries.length);
       const pageOrdinals = new Map();
       for (const e of entries) {
         const key = String(e.page || "?");
         const ordinal = (pageOrdinals.get(key) || 0) + 1;
         pageOrdinals.set(key, ordinal); e._lmbSidebarOrdinal = ordinal;
       }
-      const head = bar.createDiv({ cls: "lmb-pdf-sidebar-title" }), titleRow = head.createDiv({ cls: "lmb-pdf-sidebar-title-row" });
+      const head = prepared.createDiv({ cls: "lmb-pdf-sidebar-title" }), titleRow = head.createDiv({ cls: "lmb-pdf-sidebar-title-row" });
       titleRow.createDiv({ cls: "lmb-pdf-sidebar-title-main", text: "PDF 批注" });
       titleRow.createSpan({ cls: "lmb-pdf-sidebar-count", text: String(entries.length) });
       head.createDiv({ cls: "lmb-pdf-sidebar-file", text: file.name });
@@ -9280,12 +9320,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         currentBtn.toggleClass("is-active", this._lmbPdfSidebarView !== "all"); allBtn.toggleClass("is-active", this._lmbPdfSidebarView === "all");
         followBtn.toggleClass("is-active", this._lmbPdfSidebarFollow !== false);
       };
-      currentBtn.onclick = () => { this._lmbPdfSidebarView = "current"; sync(); this._lmbApplySidebarPageFilter(leaf); };
+      currentBtn.onclick = () => { this._lmbPdfSidebarView = "current"; sync(); this._lmbApplySidebarPageFilter(leaf, this._lmbCurrentPdfPage(leaf)); };
       allBtn.onclick = () => { this._lmbPdfSidebarView = "all"; sync(); this._lmbApplySidebarPageFilter(leaf); };
       followBtn.onclick = () => { this._lmbPdfSidebarFollow = this._lmbPdfSidebarFollow === false; sync(); };
       sync();
       const search = head.createEl("input", { cls: "lmb-pdf-sidebar-search", attr: { type: "search", placeholder: "搜索摘录或备注…" } });
-      const list = bar.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
+      const list = prepared.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
       for (const e of entries) {
         const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
         const textView = this.lmbTextBlockViews(file.path)[e.exId] || {};
@@ -9425,8 +9465,32 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => row.toggleClass("is-search-hidden", !!query && !row.textContent.toLowerCase().includes(query)));
       };
       if (!entries.length) list.createDiv({ cls: "lmb-pdf-sidebar-empty", text: "当前 PDF 暂无可用批注" });
+      if (bar._lmbRenderToken !== renderToken || this._unloaded || leaf.view.file !== file) return;
+      // A collapse click/search/PDF scroll may have happened during preparation.
+      list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
+        row.toggleClass("is-compact", this.lmbIsTextBlockCollapsed(this.lmbTextBlockViews(file.path)[row.dataset.exId]));
+      });
+      const oldSearch = bar.querySelector(".lmb-pdf-sidebar-search");
+      search.value = oldSearch ? oldSearch.value : "";
+      search.oninput();
+      this._lmbApplySidebarPageFilter(leaf, this._lmbPdfSidebarFollow === false ? Number(bar.dataset.page) || null : null, prepared);
+      const oldScroll = bar.scrollTop;
+      const oldRows = Array.from(bar.querySelectorAll(".lmb-pdf-sidebar-item"));
+      const visibleHeading = bar.querySelector(".lmb-pdf-sidebar-title");
+      const barTop = visibleHeading ? visibleHeading.getBoundingClientRect().bottom : bar.getBoundingClientRect().top;
+      const anchor = oldRows.find((row) => !row.classList.contains("is-page-hidden") && !row.classList.contains("is-search-hidden") && row.getBoundingClientRect().bottom > barTop);
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+      const searchFocused = oldSearch && oldSearch === bar.ownerDocument.activeElement;
+      const selection = searchFocused ? [oldSearch.selectionStart, oldSearch.selectionEnd] : null;
+      bar.dataset.total = prepared.dataset.total; bar.dataset.page = prepared.dataset.page;
+      bar.replaceChildren(...(grip ? [grip] : []), ...Array.from(prepared.children));
+      bar.scrollTop = oldScroll;
+      if (anchor) {
+        const replacement = Array.from(list.querySelectorAll(".lmb-pdf-sidebar-item")).find((row) => row.dataset.exId === anchor.dataset.exId);
+        if (replacement && !replacement.classList.contains("is-page-hidden") && !replacement.classList.contains("is-search-hidden")) bar.scrollTop += replacement.getBoundingClientRect().top - anchorTop;
+      }
+      if (searchFocused) { search.focus({ preventScroll: true }); search.setSelectionRange(...selection); }
       bar._lmbRenderSig = renderSig;
-      this._lmbApplySidebarPageFilter(leaf);
     } catch (err) { console.warn("[lmb] render pdf sidebar failed:", err); }
   }
 });
@@ -9486,9 +9550,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const view = views[entry.exId] || (views[entry.exId] = {});
     view.collapsed = !!collapsed;
     delete view.hidden; // Previous releases hid the row; now it always retains an expand entry.
+    this.lmbApplySidebarCollapsedState(path, entry.exId, !!collapsed);
     await this.saveSettings();
-    await this.lmbRefreshTextBlocks();
-    this.lmbSchedulePdfSidebarRefresh(0);
   },
 
   async lmbStartTextBlockPlacement(entry, leaf) {

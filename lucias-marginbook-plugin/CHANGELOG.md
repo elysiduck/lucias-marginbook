@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.3
+
+- Update sidebar collapse state in place instead of rebuilding the sidebar and rerendering Markdown. Preserve the page counter, search, focus and scroll position.
+- Prepare full sidebar refreshes offscreen, apply page/search filters before committing, retain a visible scroll anchor and discard superseded renders. Reconcile collapse clicks received while content is loading.
+- Exclude text-block geometry/type size/compact state from content signatures and ignore sidebar scrolling for PDF page-follow updates.
+- Add borders, hover lift/highlighting, pressed feedback and keyboard focus rings to the new sidebar buttons, with reduced-motion support.
+- Add slow-Markdown/multi-page regression coverage and an 11-entry browser stress fixture.
+
 ## 0.26.2
 
 - Label compact sidebar entries with the note title/opening text, falling back to excerpt text, and truncate with a single-line ellipsis.

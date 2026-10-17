@@ -6,13 +6,15 @@ class Element {
   constructor(cls = "", tag = "div") {
     this.cls = new Set(cls.split(" ")); this.tag = tag; this.children = []; this.childNodes = this.children;
     this.dataset = {}; this.style = {}; this.events = {}; this.isConnected = true;
-    this.classList = { add: (x) => this.cls.add(x), remove: (x) => this.cls.delete(x), toggle: (x, on) => {
+    this.scrollTop = 0;
+    this.classList = { contains: (x) => this.cls.has(x), add: (x) => this.cls.add(x), remove: (x) => this.cls.delete(x), toggle: (x, on) => {
       const value = on === undefined ? !this.cls.has(x) : on; value ? this.cls.add(x) : this.cls.delete(x); return value;
     } };
     this.ownerDocument = { createElement: (tag) => new Element("", tag) };
     this.rect = { left: 0, top: 0, width: 1000, height: 1400 };
   }
   createDiv(opts) { return this.createEl("div", opts); }
+  createSpan(opts) { return this.createEl("span", opts); }
   createEl(tag, opts = {}) {
     const el = new Element(opts.cls || "", tag); el.textContent = opts.text || "";
     el.parent = this; el.ownerDocument = this.ownerDocument; this.children.push(el); return el;
@@ -27,7 +29,13 @@ class Element {
     return found;
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  getBoundingClientRect() { return this.rect; }
+  getBoundingClientRect() { return { ...this.rect, bottom: this.rect.top + this.rect.height, right: this.rect.left + this.rect.width }; }
+  contains(el) { return !!el && (el === this || this.children.some((child) => child.contains(el))); }
+  setAttribute(name, value) { (this.attributes || (this.attributes = {}))[name] = value; }
+  focus() { this.ownerDocument.activeElement = this; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  get textContent() { return (this._text || "") + this.children.map((child) => child.textContent).join(""); }
+  set textContent(text) { this._text = text; }
   addEventListener(type, fn) { (this.events[type] || (this.events[type] = new Set())).add(fn); }
   removeEventListener(type, fn) { if (this.events[type]) this.events[type].delete(fn); }
   async emit(type, value) { for (const fn of Array.from(this.events[type] || [])) await fn(value); }
@@ -36,7 +44,7 @@ class Element {
   toggleClass(cls, value) { this.classList.toggle(cls, value); }
   setText(text) { this.textContent = text; }
   empty() { this.children.length = 0; }
-  replaceChildren(el) { this.empty(); this.children.push(el); }
+  replaceChildren(...elements) { this.empty(); this.children.push(...elements); elements.forEach((el) => { el.parent = this; }); }
   remove() { this.isConnected = false; if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); }
 }
 class Plugin {}
@@ -52,6 +60,49 @@ async function main() {
   assert.equal(proto._lmbSidebarSummary("2026 年的知识脉络", ""), "2026 年的知识脉络");
   assert.equal(proto._lmbSidebarSummary("[理论笔记](notes.md) 与 [[原文|作业]]", ""), "理论笔记 与 作业");
   assert.equal(proto._lmbSidebarSummary("", ""), "无文字批注");
+  // Slow Markdown must never expose unfiltered page-one rows or an empty counter.
+  const rendering = new Plugin(), sidebar = new Element();
+  const pdfFile = { path: "async.pdf", extension: "pdf", name: "async.pdf" };
+  const renderingLeaf = { view: { file: pdfFile }, containerEl: { querySelector: () => sidebar, querySelectorAll: () => [] } };
+  const oldHead = sidebar.createDiv({ cls: "lmb-pdf-sidebar-title" });
+  const oldCounter = oldHead.createDiv({ cls: "lmb-pdf-sidebar-title-sub", text: "当前第 3 页 · 1 条" });
+  const oldSearch = oldHead.createEl("input", { cls: "lmb-pdf-sidebar-search" }); oldSearch.value = "current";
+  const oldList = sidebar.createDiv({ cls: "lmb-pdf-sidebar-list" });
+  const oldRow = oldList.createDiv({ cls: "lmb-pdf-sidebar-item" }); oldRow.dataset = { page: "3", exId: "current" };
+  sidebar.dataset.page = "3"; sidebar.scrollTop = 180;
+  rendering.settings = {};
+  rendering.app = { workspace: { getLeavesOfType: () => [renderingLeaf] }, vault: {} };
+  rendering.lmbEnsurePdfSidebarEl = () => sidebar; rendering.lmbSetPdfSidebarVisible = () => {};
+  rendering.lmbRefreshTextBlocks = async () => {}; rendering.saveSettings = async () => {};
+  rendering._lmbCurrentPdfPage = () => 3;
+  rendering._lmbGetPdfSidebarEntries = () => [
+    { quick: true, exId: "first", page: 1, text: "first page", note: "first note" },
+    { quick: true, exId: "current", page: 3, text: "current page", note: "current note" }
+  ];
+  const originalRender = context.MarkdownRenderer.render, releases = [];
+  context.MarkdownRenderer.render = async (_app, text, el) => { await new Promise((resolve) => releases.push(resolve)); el.textContent = text; };
+  const pendingSidebar = rendering.lmbRenderPdfSidebarForLeaf(renderingLeaf);
+  assert.equal(sidebar.children[0], oldHead); assert.equal(oldCounter.textContent, "当前第 3 页 · 1 条");
+  assert.equal(sidebar.querySelectorAll(".lmb-pdf-sidebar-item").length, 1, "page one must remain offscreen until filtered");
+  const renderCount = releases.length;
+  await rendering.lmbSetTextBlockCollapsed({ exId: "current" }, "async.pdf", true);
+  assert(oldRow.cls.has("is-compact")); assert.equal(sidebar.children[0], oldHead);
+  assert.equal(sidebar.scrollTop, 180); assert.equal(releases.length, renderCount, "collapse must not start a full rebuild");
+  releases.forEach((resolve) => resolve()); await pendingSidebar;
+  assert.equal(sidebar.querySelector(".lmb-pdf-sidebar-title-sub").textContent, "当前第 3 页 · 1 条");
+  const renderedRows = sidebar.querySelectorAll(".lmb-pdf-sidebar-item");
+  assert(renderedRows[0].cls.has("is-page-hidden")); assert(renderedRows[1].cls.has("is-compact"), "reconcile clicks made during asynchronous rendering");
+  assert.equal(sidebar.querySelector(".lmb-pdf-sidebar-search").value, "current"); assert.equal(sidebar.scrollTop, 180);
+  const stableHead = sidebar.children[0];
+  await rendering.lmbSetTextBlockCollapsed({ exId: "current" }, "async.pdf", false);
+  await rendering.lmbRenderPdfSidebarForLeaf(renderingLeaf);
+  assert.equal(sidebar.children[0], stableHead); assert.equal(releases.length, renderCount);
+  rendering.lmbHandlePdfSidebarScroll({ target: { nodeType: 1, closest: (selector) => selector === ".lmb-pdf-excerpt-sidebar" ? sidebar : null } });
+  assert.equal(rendering._lmbPdfSidebarPageTimer, undefined, "sidebar scrolling must not drive PDF page-follow");
+  rendering._lmbPdfSidebarFollow = false; rendering._lmbCurrentPdfPage = () => 1;
+  rendering._lmbApplySidebarPageFilter(renderingLeaf);
+  assert.equal(sidebar.dataset.page, "3", "unfollowed sidebar retains the selected page during refresh");
+  context.MarkdownRenderer.render = originalRender;
   let saves = 0, refreshes = 0;
   const plugin = new Plugin();
   plugin.settings = { quickExcerpts: { "a.pdf": [{ exId: "ex-a", note: "**原备注**" }] } };
@@ -78,7 +129,7 @@ async function main() {
   assert.equal(plugin.lmbIsTextBlockCollapsed(view), true, "previously hidden notes become compact entries");
   await plugin.lmbSetTextBlockCollapsed(entry, "a.pdf", true);
   assert.equal(plugin.lmbTextBlockViews("a.pdf")[entry.exId], view, "live controls retain their view reference");
-  assert.equal(view.page, 1); assert.equal(view.collapsed, true); assert.equal(view.hidden, undefined); assert.equal(refreshes, 1);
+  assert.equal(view.page, 1); assert.equal(view.collapsed, true); assert.equal(view.hidden, undefined); assert.equal(refreshes, 0, "collapse must not rerender Markdown or rebuild the sidebar");
 
   const serialized = vm.runInContext("new LmbSettingsStore({ _lmbSerializedRuntimeCaches: {} })", context).serialize(plugin.settings, {});
   const restored = JSON.parse(JSON.stringify(serialized));

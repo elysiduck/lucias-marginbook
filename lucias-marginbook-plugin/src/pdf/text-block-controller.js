@@ -53,9 +53,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const view = views[entry.exId] || (views[entry.exId] = {});
     view.collapsed = !!collapsed;
     delete view.hidden; // Previous releases hid the row; now it always retains an expand entry.
+    this.lmbApplySidebarCollapsedState(path, entry.exId, !!collapsed);
     await this.saveSettings();
-    await this.lmbRefreshTextBlocks();
-    this.lmbSchedulePdfSidebarRefresh(0);
   },
 
   async lmbStartTextBlockPlacement(entry, leaf) {
