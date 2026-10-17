@@ -557,6 +557,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!node) return null;
       const el = node.nodeType === 1 ? node : node.parentElement;
       if (!el || !el.closest) return null;
+      if (el.closest(".lmb-pdf-text-block")) return null;
       const pageEl = el.closest(".page[data-page-number]");
       if (!pageEl) return null;
       const ctx = this.resolvePdfContext(el);

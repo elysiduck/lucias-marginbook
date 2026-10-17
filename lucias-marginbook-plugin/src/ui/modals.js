@@ -97,7 +97,16 @@ class LMBExcerptNoteModal extends Modal {
     cancel.onclick = () => this.close(); save.onclick = () => this.submit();
     setTimeout(() => ta.focus(), 30);
   }
-  submit() { const value = this.ta ? this.ta.value : ""; this.close(); if (this.opts.onSubmit) this.opts.onSubmit(value); }
+  async submit() {
+    if (this._submitting) return;
+    this._submitting = true;
+    try {
+      const value = this.ta ? this.ta.value : "";
+      if (this.opts.onSubmit) await this.opts.onSubmit(value);
+      this.close();
+    } catch (err) { new Notice("保存失败，编辑内容已保留：" + err.message); }
+    finally { this._submitting = false; }
+  }
   onClose() { clearTimeout(this._renderTimer); this.contentEl.empty(); }
 }
 

@@ -200,7 +200,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       bar.dataset.page = String(page);
       const current = this._lmbPdfSidebarView !== "all"; let shown = 0;
       bar.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
-        const visible = !current || Number(row.dataset.page) === page;
+        const visible = (!current || Number(row.dataset.page) === page) && (leaf._lmbShowHiddenTextBlocks || row.dataset.sidebarHidden !== "true");
         row.toggleClass("is-page-hidden", !visible); if (visible) shown++;
       });
       const sub = bar.querySelector(".lmb-pdf-sidebar-title-sub");
@@ -349,6 +349,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const bar = this.lmbEnsurePdfSidebarEl(leaf); if (!bar) return;
       this.lmbSetPdfSidebarVisible(leaf, leaf._lmbPdfSidebarOpen !== false);
       const entries = this._lmbGetPdfSidebarEntries(file);
+      this.lmbRefreshTextBlocks().catch((err) => console.warn("[lmb] text block refresh failed", err));
       const sourceVersions = new Map();
       for (const e of entries) if (e && e.sourceMd && !sourceVersions.has(e.sourceMd)) {
         const source = this.app.vault.getAbstractFileByPath(e.sourceMd);
@@ -359,6 +360,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags]),
         sources: Array.from(sourceVersions),
         views: this.settings && this.settings.excerptViews,
+        textBlocks: this.settings && this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[file.path],
         colors: this.settings && this.settings.excerptColors
       });
       if (bar._lmbRenderSig === renderSig && bar.querySelector(".lmb-pdf-sidebar-list")) {
@@ -387,6 +389,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const controls = head.createDiv({ cls: "lmb-pdf-sidebar-controls" });
       const currentBtn = controls.createEl("button", { text: "当前页" }), allBtn = controls.createEl("button", { text: "全部" });
       const followBtn = controls.createEl("button", { cls: "lmb-pdf-sidebar-follow", text: "● 跟随" });
+      const hiddenBtn = controls.createEl("button", { text: "显示已隐藏" });
+      hiddenBtn.onclick = () => { leaf._lmbShowHiddenTextBlocks = !leaf._lmbShowHiddenTextBlocks; hiddenBtn.toggleClass("is-active", !!leaf._lmbShowHiddenTextBlocks); this._lmbApplySidebarPageFilter(leaf); };
+      hiddenBtn.toggleClass("is-active", !!leaf._lmbShowHiddenTextBlocks);
       const sync = () => {
         currentBtn.toggleClass("is-active", this._lmbPdfSidebarView !== "all"); allBtn.toggleClass("is-active", this._lmbPdfSidebarView === "all");
         followBtn.toggleClass("is-active", this._lmbPdfSidebarFollow !== false);
@@ -399,6 +404,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const list = bar.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
       for (const e of entries) {
         const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
+        const textView = this.lmbTextBlockViews(file.path)[e.exId] || {};
+        row.dataset.sidebarHidden = String(!!textView.hidden);
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
         // 卡片头部只呈现定位信息。摘录类型可由内容/操作判断，target 仅供
         // 内部回绘校验使用，不再把这两项重复展示给用户。
@@ -434,6 +441,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
         if (note) {
           const noteEl = row.createDiv({ cls: "lmb-pdf-sidebar-item-note" });
+          if (note.length > 300 || note.split("\n").length > 8) {
+            noteEl.addClass("is-collapsed");
+            const expand = row.createEl("button", { cls: "lmb-pdf-sidebar-note-expand", text: "展开备注" });
+            expand.onclick = (ev) => { ev.stopPropagation(); const collapsed = noteEl.classList.toggle("is-collapsed"); expand.setText(collapsed ? "展开备注" : "收起备注"); };
+          }
           const noteBody = noteEl.createDiv({ cls: "lmb-pdf-sidebar-item-note-body markdown-rendered" });
           renderJobs.push(async () => {
             try { await MarkdownRenderer.render(this.app, note, noteBody, e.sourceMd || "", this); }
@@ -447,6 +459,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           return button;
         };
         const color = iconButton("palette", "修改摘录颜色");
+        const place = iconButton("text-cursor-input", textView.page ? "重新放置 Markdown 文本块" : "将 Markdown 备注放到 PDF 页面");
+        place.onclick = (ev) => { ev.stopPropagation(); this.lmbStartTextBlockPlacement(Object.assign({}, e, { pdfPath: file.path }), leaf).catch((err) => new Notice("无法放置：" + err.message)); };
+        const visibility = iconButton(textView.hidden ? "eye" : "eye-off", textView.hidden ? "恢复侧栏显示" : "在侧栏隐藏（可找回）");
+        visibility.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockHidden(e, file.path, !textView.hidden).catch((err) => new Notice("设置保存失败：" + err.message)); };
         color.onclick = (ev) => { ev.stopPropagation(); this.lmbChooseExcerptColor(e.exId, color); };
         if (imageEl && cleanText) {
           const persistedImage = !!(e.exId && this.settings.excerptViews
@@ -477,31 +493,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         openMd.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInMd(e.exId, e.sourceMd, leaf); };
         openCanvas.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInCanvas(e.exId); };
         edit.onclick = (ev) => {
-          ev.stopPropagation(); const source = e.sourceMd && this.app.vault.getAbstractFileByPath(e.sourceMd);
-          if (!(source instanceof TFile) || !e.exId) { new Notice("该摘录缺少可编辑的来源文档"); return; }
-          new LMBExcerptNoteModal(this.app, { title: "PDF 摘录备注", value: note || "", sourcePath: source.path,
-            onSubmit: async (value) => {
-              const ok = await this.lmbSaveExcerptNote(source, e.exId, value);
-              if (ok) { await this.reindexFile(source, true); await this.lmbRenderPdfSidebarForLeaf(leaf); new Notice("备注已同步"); }
-              else new Notice("未找到对应摘录，未修改文档");
-            } }).open();
+          ev.stopPropagation(); this.lmbEditTextBlockNote(Object.assign({}, e, { pdfPath: file.path }));
         };
         }
         if (e.quick) {
           const editQuick = iconButton(note ? "pencil" : "message-square-plus", note ? "编辑备注" : "添加备注");
           editQuick.onclick = (ev) => {
             ev.stopPropagation();
-            new LMBExcerptNoteModal(this.app, { title: "简洁摘录备注", value: note || "", sourcePath: "",
-              onSubmit: async (value) => {
-                const path = String(file.path || "").replace(/\\/g, "/");
-                const list = this.settings.quickExcerpts && this.settings.quickExcerpts[path];
-                const item = Array.isArray(list) && list.find((x) => x && x.exId === e.exId);
-                if (!item) { new Notice("未找到这条简洁摘录"); return; }
-                item.note = String(value || "");
-                await this.saveSettings(); await this.lmbRenderPdfSidebarForLeaf(leaf);
-                new Notice("备注已保存");
-              }
-            }).open();
+            this.lmbEditTextBlockNote(Object.assign({}, e, { pdfPath: file.path }));
           };
         }
         const remove = iconButton("trash-2", "删除摘录");

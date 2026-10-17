@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.0
+
+- Place excerpt notes on PDF pages as selectable Markdown text blocks, with drag handles, width reflow, adjustable type size and transparent/sticky-note styles.
+- Share the existing Markdown/quick-excerpt note source between page and sidebar editing; save only presentation metadata separately.
+- Hide individual sidebar entries and recover them with “显示已隐藏”; keep placed text visible independently. Collapse long sidebar notes by default.
+- Restore geometry and visibility after reopening, track PDF page resizing independently of ink, and preserve editor drafts on save failure.
+- Add text-block integration coverage and a browser smoke fixture (`tests/text-block-preview.html`). Page overlays remain plugin data; PDF export is outside this release.
+
 ## 0.25.5
 
 - Open previously unopened Markdown excerpts in a new tab instead of replacing another document, Canvas, or sidebar view.

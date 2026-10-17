@@ -288,6 +288,8 @@ LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
 LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
   if (!pageEl || !pdfPath) return;
   const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
+  if (this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[pdfPath])
+    this.lmbRenderTextBlocksOnPage(pageEl, pdfPath).catch((err) => console.warn("[lmb] text block render failed", err));
   // Capture policy must update synchronously when ink mode toggles; waiting for
   // IntersectionObserver leaves PDF.js in control of the first Pencil stroke.
   this.lmbUpdateInkPageCapture(pageEl);
@@ -942,6 +944,7 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
       if (node.querySelectorAll) pages.push(...node.querySelectorAll(".page"));
       for (const pageEl of pages) {
         if (pageEl.isConnected) continue;
+        this.lmbReleaseTextBlockPage(pageEl);
         clearTimeout(pageEl._lmbInkResizeTimer);
         if (this._lmbInkVisibilityObserver) this._lmbInkVisibilityObserver.unobserve(pageEl);
         this._lmbInkObservedPages.delete(pageEl);

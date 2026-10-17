@@ -25,6 +25,7 @@ module.exports = Object.freeze([
   "src/excerpt/index-service.js",
   "src/pdf/mark-service.js",
   "src/pdf/sidebar-controller.js",
+  "src/pdf/text-block-controller.js",
   "src/pdf/navigation-service.js",
   "src/canvas/canvasbar-controller.js",
   "src/ui/modals.js",

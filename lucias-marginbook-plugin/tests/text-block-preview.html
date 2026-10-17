@@ -1,0 +1,29 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Markdown 批注界面验证</title>
+<style>
+:root{--background-primary:#292929;--background-secondary:#333;--background-modifier-border:#555;--text-normal:#ddd;--text-muted:#aaa;--text-faint:#888;--interactive-accent:#70bd94;--font-text:Arial,sans-serif;--font-interface:Arial,sans-serif;--font-text-size:16px}
+*{box-sizing:border-box}body{margin:0;background:#1e1e1e;color:#ddd;font:16px Arial}button,input,textarea{background:#333;color:#ddd;border:1px solid #555;border-radius:5px;padding:6px}button{cursor:pointer}.view-content{height:100vh;overflow:auto;position:relative}.pdf-viewer-container{padding:28px}.page{position:relative;background:white;color:#222;width:800px;height:1100px;margin:0 auto 30px;padding:70px;box-shadow:0 2px 12px #0005}.page>p{font-family:Georgia,serif;line-height:1.7}.modal{position:fixed;inset:7vh 8vw;background:#292929;border:1px solid #777;border-radius:12px;z-index:10000;padding:20px;overflow:auto}.modal textarea{min-height:350px;width:100%}.notice{position:fixed;top:10px;left:20px;background:#335c49;color:white;padding:12px;z-index:10001}
+</style>
+<div class="workspace-leaf-content" data-type="pdf"><div class="view-content"><div class="pdf-viewer-container"><div class="page" data-page-number="1"><p><b>Short answer (30 points):</b> Describe Prospect Theory: the value function, probability weighting and loss aversion.</p><p>Explain the four-fold pattern of risk attitudes.</p></div></div></div></div>
+<script>
+// Browser smoke fixture: real plugin controls and styles, with small Obsidian API
+// substitutes. PDF.js and Obsidian's Markdown engine require the host application.
+Element.prototype.createEl=function(tag,o={}){const e=document.createElement(tag);e.className=o.cls||'';e.textContent=o.text||'';for(const [k,v] of Object.entries(o.attr||{}))e.setAttribute(k,v);this.append(e);return e};
+Element.prototype.createDiv=function(o){return this.createEl('div',o)};Element.prototype.createSpan=function(o){return this.createEl('span',o)};
+Element.prototype.empty=function(){this.replaceChildren()};Element.prototype.setText=function(t){this.textContent=t};Element.prototype.addClass=function(c){this.classList.add(c)};Element.prototype.removeClass=function(c){this.classList.remove(c)};Element.prototype.toggleClass=function(c,on){this.classList.toggle(c,on)};
+class StubModal{constructor(app){this.app=app;this.contentEl=document.createElement('div');this.contentEl.className='modal'}open(){document.body.append(this.contentEl);this.onOpen()}close(){this.onClose();this.contentEl.remove()}}
+class StubNotice{constructor(text,duration=3000){this.el=document.body.createDiv({cls:'notice',text});if(duration)setTimeout(()=>this.hide(),duration)}hide(){this.el.remove()}}
+class StubFile{}
+const stubRender=async(_app,text,el)=>{for(const line of text.split('\n')){const h=line.match(/^(#{1,6})\s+(.*)/);const p=el.createEl(h?'h'+h[1].length:'p');p.textContent=h?h[2]:line;p.innerHTML=p.innerHTML.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}};
+window.module={exports:{}};window.require=()=>({Plugin:class{},TFile:StubFile,Notice:StubNotice,PluginSettingTab:class{},Setting:class{},Modal:StubModal,FuzzySuggestModal:class{},MarkdownRenderer:{render:stubRender},setIcon:(el,icon)=>el.textContent=({'palette':'◉','text-cursor-input':'放到页面','eye-off':'隐藏','eye':'显示','message-square-plus':'备注','pencil':'编辑','trash-2':'删除'}[icon]||icon),normalizePath:p=>p,Platform:{}});
+</script><script src="../main.js"></script><script>
+const plugin=new module.exports();
+const pdf=Object.assign(new StubFile(),{path:'demo.pdf',name:'ProblemSet 2 Neurofinance.pdf',extension:'pdf'});
+const leaf={containerEl:document.querySelector('.workspace-leaf-content'),view:{file:pdf},_lmbPdfSidebarOpen:true};
+const defaults={quickExcerpts:{'demo.pdf':[{exId:'ex-demo',page:1,text:'Describe Prospect Theory.',note:'## 1. 理论的基本含义\n前景理论（PT）描述人们如何在风险下作出选择。\n**参照点**：判断结果是收益还是损失。\n**价值函数**：把客观收益、损失转化为主观价值。\n**概率加权函数**：把客观概率转化为决策权重。\n## 2. 价值函数 Value Function\n收益侧凹：收益越多，额外收益带来的满足增加得越慢。\n损失侧凸：损失越多，额外损失带来的痛苦增加得越慢。\n**损失厌恶**：同等金额的损失，比收益影响更大。'}]},pdfTextBlocks:{'demo.pdf':{'ex-demo':{page:1,x:.12,y:.25,w:.76,fontSize:21}}}};
+plugin.settings=JSON.parse(localStorage.getItem('lmb-text-smoke')||'null')||defaults;
+plugin.app={vault:{getAbstractFileByPath:()=>pdf},workspace:{getLeavesOfType:()=>[leaf],activeLeaf:leaf}};
+plugin.excerptIndex=new Map();plugin.getExcerptsForPdf=()=>[];plugin.saveSettings=async()=>localStorage.setItem('lmb-text-smoke',JSON.stringify(plugin.settings));plugin._lmbPdfSidebarView='all';
+plugin.lmbJumpToSelection=()=>{};plugin.lmbChooseExcerptColor=()=>{};
+const style=document.createElement('style');style.textContent=module.exports.__lmbStyles.LMB_STYLES.join('');document.head.append(style);
+plugin.lmbRenderPdfSidebarForLeaf(leaf);
+</script></html>
