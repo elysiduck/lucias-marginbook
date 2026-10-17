@@ -14,7 +14,7 @@ class StubModal{constructor(app){this.app=app;this.contentEl=document.createElem
 class StubNotice{constructor(text,duration=3000){this.el=document.body.createDiv({cls:'notice',text});if(duration)setTimeout(()=>this.hide(),duration)}hide(){this.el.remove()}}
 class StubFile{}
 const stubRender=async(_app,text,el)=>{for(const line of text.split('\n')){const h=line.match(/^(#{1,6})\s+(.*)/);const p=el.createEl(h?'h'+h[1].length:'p');p.textContent=h?h[2]:line;p.innerHTML=p.innerHTML.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}};
-window.module={exports:{}};window.require=()=>({Plugin:class{},TFile:StubFile,Notice:StubNotice,PluginSettingTab:class{},Setting:class{},Modal:StubModal,FuzzySuggestModal:class{},MarkdownRenderer:{render:stubRender},setIcon:(el,icon)=>el.textContent=({'palette':'◉','text-cursor-input':'放到页面','eye-off':'隐藏','eye':'显示','message-square-plus':'备注','pencil':'编辑','trash-2':'删除'}[icon]||icon),normalizePath:p=>p,Platform:{}});
+window.module={exports:{}};window.require=()=>({Plugin:class{},TFile:StubFile,Notice:StubNotice,PluginSettingTab:class{},Setting:class{},Modal:StubModal,FuzzySuggestModal:class{},MarkdownRenderer:{render:stubRender},setIcon:(el,icon)=>el.textContent=({'palette':'◉','text-cursor-input':'T','chevrons-up':'⌃','message-square-plus':'+','pencil':'✎','trash-2':'×','image':'▧','file-text':'▤','notebook-pen':'▤','waypoints':'⑂'}[icon]||'•'),normalizePath:p=>p,Platform:{}});
 </script><script src="../main.js"></script><script>
 const plugin=new module.exports();
 const pdf=Object.assign(new StubFile(),{path:'demo.pdf',name:'ProblemSet 2 Neurofinance.pdf',extension:'pdf'});
@@ -23,6 +23,13 @@ const defaults={quickExcerpts:{'demo.pdf':[{exId:'ex-demo',page:1,text:'Describe
 plugin.settings=JSON.parse(localStorage.getItem('lmb-text-smoke')||'null')||defaults;
 plugin.app={vault:{getAbstractFileByPath:()=>pdf},workspace:{getLeavesOfType:()=>[leaf],activeLeaf:leaf}};
 plugin.excerptIndex=new Map();plugin.getExcerptsForPdf=()=>[];plugin.saveSettings=async()=>localStorage.setItem('lmb-text-smoke',JSON.stringify(plugin.settings));plugin._lmbPdfSidebarView='all';
+// Optional full-excerpt mode exercises the densest footer (image + MD + Canvas).
+if(new URLSearchParams(location.search).has('full')){
+  const item=plugin.settings.quickExcerpts['demo.pdf'][0];
+  plugin.getExcerptsForPdf=()=>[{...item,quick:false,sourceMd:'demo.md',imagePath:'demo.svg'}];
+  plugin._lmbReadSidebarNotes=async()=>item.note;plugin._lmbBuildExcerptNoteMap=()=>new Map([[item.exId,item.note]]);plugin._lmbFindSidebarNote=raw=>raw;
+  plugin.app.vault.getResourcePath=()=> 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="600" height="100"%3E%3Ctext y="50"%3EExcerpt preview%3C/text%3E%3C/svg%3E';
+}
 plugin.lmbJumpToSelection=()=>{};plugin.lmbChooseExcerptColor=()=>{};
 const style=document.createElement('style');style.textContent=module.exports.__lmbStyles.LMB_STYLES.join('');document.head.append(style);
 plugin.lmbRenderPdfSidebarForLeaf(leaf);

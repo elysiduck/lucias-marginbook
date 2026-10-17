@@ -46,6 +46,12 @@ for (const file of ["src/pdf/sidebar-controller.js", "src/pdf/text-block-control
   vm.runInContext(fs.readFileSync(file, "utf8"), context);
 const proto = Plugin.prototype;
 async function main() {
+  assert.equal(proto._lmbSidebarSummary("## **前景理论**\n长篇内容", "题干"), "前景理论");
+  assert.equal(proto._lmbSidebarSummary("\n<!-- marker -->\n> [!note]\n> **我的理解**", "题干"), "我的理解");
+  assert.equal(proto._lmbSidebarSummary("", "1. **Prospect Theory**"), "Prospect Theory");
+  assert.equal(proto._lmbSidebarSummary("2026 年的知识脉络", ""), "2026 年的知识脉络");
+  assert.equal(proto._lmbSidebarSummary("[理论笔记](notes.md) 与 [[原文|作业]]", ""), "理论笔记 与 作业");
+  assert.equal(proto._lmbSidebarSummary("", ""), "无文字批注");
   let saves = 0, refreshes = 0;
   const plugin = new Plugin();
   plugin.settings = { quickExcerpts: { "a.pdf": [{ exId: "ex-a", note: "**原备注**" }] } };

@@ -661,7 +661,10 @@ const LMB_STYLES = [
   '.lmb-pdf-text-body h1{font-size:1.7em;}.lmb-pdf-text-body h2{font-size:1.4em;}.lmb-pdf-text-body h3{font-size:1.2em;}.lmb-pdf-text-body h4,.lmb-pdf-text-body h5,.lmb-pdf-text-body h6{font-size:1em;}.lmb-pdf-text-body :is(h1,h2,h3,h4,h5,h6){color:inherit;margin:.6em 0 .35em;}',
   '.lmb-pdf-text-body blockquote{border-left:3px solid #74b490;padding-left:.7em;}.lmb-pdf-text-body img{max-width:100%;}.lmb-pdf-text-body pre{overflow:auto;}.lmb-pdf-text-body a{color:#1765a3;}',
   '.lmb-pdf-text-resize{position:absolute;right:-7px;top:0;bottom:0;width:14px;cursor:ew-resize;touch-action:none;}.lmb-pdf-text-block:hover>.lmb-pdf-text-resize,.lmb-pdf-text-block:focus-within>.lmb-pdf-text-resize{border-right:3px solid var(--interactive-accent,#6a9);}',
-  '.lmb-pdf-sidebar-item-note.is-collapsed{max-height:160px;overflow:hidden;}.lmb-pdf-sidebar-note-expand{font-size:12px;}',
+  '.lmb-pdf-sidebar-item-note.is-foldable{position:relative;padding-bottom:28px;}.lmb-pdf-sidebar-item-note.is-foldable.is-collapsed{padding-bottom:6px;}.lmb-pdf-sidebar-item-note.is-collapsed .lmb-pdf-sidebar-item-note-body{max-height:160px;overflow:hidden;}',
+  '.lmb-pdf-sidebar-item-note.is-collapsed:after{content:"";position:absolute;bottom:0;left:0;right:0;height:30px;background:linear-gradient(transparent,var(--background-primary));pointer-events:none;border-radius:0 0 5px 5px;}.lmb-pdf-sidebar-note-expand{position:absolute;right:6px;bottom:5px;z-index:1;height:23px;padding:1px 7px;font-size:11px;line-height:1.2;border-radius:5px;background:var(--background-primary);color:var(--text-muted);border:1px solid var(--background-modifier-border);}',
+  '.lmb-pdf-sidebar-item-summary{display:none;}.lmb-pdf-sidebar-item-title{flex-shrink:0;}.lmb-pdf-sidebar-header-actions{display:flex;align-items:center;gap:4px;flex-shrink:0;margin-left:auto;}.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-icon-button{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;min-width:26px;padding:0;background:transparent;border:0;box-shadow:none;color:var(--text-muted);}.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-delete:hover{background:var(--background-modifier-error);color:var(--text-error)!important;}',
+  '.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-summary{display:block;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-muted);}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-header-actions{display:none;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-expand-entry{flex-shrink:0;}',
   '.lmb-pdf-sidebar-expand-entry{display:none;}.lmb-pdf-sidebar-item.is-compact{padding:6px 10px;}.lmb-pdf-sidebar-item.is-compact>:not(.lmb-pdf-sidebar-item-header){display:none!important;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-tags{display:none;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-item-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;}.lmb-pdf-sidebar-item.is-compact .lmb-pdf-sidebar-expand-entry{display:inline-flex;font-size:12px;height:26px;padding:3px 8px;white-space:nowrap;}'
 ];
 
@@ -3685,7 +3688,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.26.1";
+    st.dataset.lmbVersion = "0.26.2";
   }
 
 }
@@ -8871,6 +8874,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
 /* 38-plugin-pdf-sidebar —— PDF 独立占位批注边页（原型混入） */
 Object.assign(LuciasMarginBookPlugin.prototype, {
+  _lmbSidebarSummary(note, excerpt) {
+    // Plain text only: the compact label must never render Markdown/HTML markup.
+    const firstLine = (value) => String(value || "").replace(/<!--[\s\S]*?-->/g, "")
+      .split(/\r?\n/).map((line) => line.trim())
+      .find((line) => line && !/^(?:[-*_]\s*){3,}$/.test(line) && !/^>*\s*\[![^\]]+\]/.test(line));
+    const clean = (value) => String(value || "")
+      .replace(/!?(?:\[([^\]]*)\]\([^)]*\))/g, "$1")
+      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, label) => label || target)
+      .replace(/<[^>]+>/g, "").replace(/^\s*(?:>\s*)*(?:#{1,6}\s+|[-+*]\s+|\d+[.)]\s+)?/, "")
+      .replace(/[*_`~]/g, "").replace(/\s+/g, " ").trim();
+    return clean(firstLine(note)) || clean(firstLine(excerpt)) || "无文字批注";
+  },
+
   _lmbGetActivePdfLeaf() {
     try {
       const active = this.app.workspace.activeLeaf || null;
@@ -9276,12 +9292,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const compact = this.lmbIsTextBlockCollapsed(textView);
         row.toggleClass("is-compact", compact);
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
-        // 卡片头部只呈现定位信息。摘录类型可由内容/操作判断，target 仅供
-        // 内部回绘校验使用，不再把这两项重复展示给用户。
         header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` });
-        const expandEntry = header.createEl("button", { cls: "lmb-pdf-sidebar-expand-entry", text: "在侧栏展开", attr: { "aria-label": `在侧栏展开 P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` } });
+        const summary = header.createDiv({ cls: "lmb-pdf-sidebar-item-summary" });
+        const expandEntry = header.createEl("button", { cls: "lmb-pdf-sidebar-expand-entry", text: "展开", attr: { "aria-label": `在侧栏展开 P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` } });
         expandEntry.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, false).catch((err) => new Notice("设置保存失败：" + err.message)); };
         if (e.tags && e.tags.length) header.createDiv({ cls: "lmb-pdf-sidebar-item-tags", text: e.tags.map((t) => "#" + t).join(" ") });
+        const headerActions = header.createDiv({ cls: "lmb-pdf-sidebar-header-actions" });
         const body = row.createDiv({ cls: "lmb-pdf-sidebar-item-body" });
         const cleanText = String(e.text || "").trim();
         let textEl = null;
@@ -9310,29 +9326,37 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           }
           note = mdCache.get(e.sourceMd).get(e.exId) || "";
         }
+        const summaryText = this._lmbSidebarSummary(note, cleanText);
+        summary.setText(summaryText); summary.setAttribute("title", summaryText);
         if (note) {
           const noteEl = row.createDiv({ cls: "lmb-pdf-sidebar-item-note" });
-          if (note.length > 300 || note.split("\n").length > 8) {
-            noteEl.addClass("is-collapsed");
-            const expand = row.createEl("button", { cls: "lmb-pdf-sidebar-note-expand", text: "展开备注" });
-            expand.onclick = (ev) => { ev.stopPropagation(); const collapsed = noteEl.classList.toggle("is-collapsed"); expand.setText(collapsed ? "展开备注" : "收起备注"); };
-          }
           const noteBody = noteEl.createDiv({ cls: "lmb-pdf-sidebar-item-note-body markdown-rendered" });
+          if (note.length > 300 || note.split("\n").length > 8) {
+            noteEl.addClass("is-collapsed"); noteEl.addClass("is-foldable");
+            const expand = noteEl.createEl("button", { cls: "lmb-pdf-sidebar-note-expand", text: "展开", attr: { title: "展开备注", "aria-label": "展开备注", "aria-expanded": "false" } });
+            expand.onclick = (ev) => {
+              ev.stopPropagation(); const collapsed = noteEl.classList.toggle("is-collapsed");
+              expand.setText(collapsed ? "展开" : "收起");
+              expand.setAttribute("title", collapsed ? "展开备注" : "收起备注");
+              expand.setAttribute("aria-label", collapsed ? "展开备注" : "收起备注");
+              expand.setAttribute("aria-expanded", String(!collapsed));
+            };
+          }
           renderJobs.push(async () => {
             try { await MarkdownRenderer.render(this.app, note, noteBody, e.sourceMd || "", this); }
             catch (_) { noteBody.setText(note); }
           });
         }
         const actions = row.createDiv({ cls: "lmb-pdf-sidebar-item-actions" });
-        const iconButton = (icon, label) => {
-          const button = actions.createEl("button", { cls: "lmb-pdf-sidebar-icon-button", attr: { title: label, "aria-label": label } });
+        const iconButton = (icon, label, parent = actions) => {
+          const button = parent.createEl("button", { cls: "lmb-pdf-sidebar-icon-button", attr: { title: label, "aria-label": label } });
           try { setIcon(button, icon); } catch (_) { button.setText(label.slice(0, 1)); }
           return button;
         };
         const color = iconButton("palette", "修改摘录颜色");
         const place = iconButton("text-cursor-input", textView.page ? "重新放置 Markdown 文本块" : "将 Markdown 备注放到 PDF 页面");
         place.onclick = (ev) => { ev.stopPropagation(); this.lmbStartTextBlockPlacement(Object.assign({}, e, { pdfPath: file.path }), leaf).catch((err) => new Notice("无法放置：" + err.message)); };
-        const visibility = iconButton("chevrons-up", "收起为侧栏入口");
+        const visibility = iconButton("chevrons-up", "收起为侧栏入口", headerActions);
         visibility.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, true).catch((err) => new Notice("设置保存失败：" + err.message)); };
         color.onclick = (ev) => { ev.stopPropagation(); this.lmbChooseExcerptColor(e.exId, color); };
         if (imageEl && cleanText) {
@@ -9356,11 +9380,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           };
         }
         if (!e.quick) {
-        const jump = iconButton("book-open", "在 PDF 中定位");
         const openMd = iconButton("notebook-pen", "在摘录文档中定位");
         const openCanvas = iconButton("waypoints", "在 Canvas 中定位");
         const edit = iconButton(note ? "pencil" : "message-square-plus", note ? "编辑备注" : "添加备注");
-        jump.onclick = (ev) => { ev.stopPropagation(); this.lmbJumpToSelection(e.pdfPath || file.path, e.page, e.selection, e.rect, leaf, e.text); };
         openMd.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInMd(e.exId, e.sourceMd, leaf); };
         openCanvas.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInCanvas(e.exId); };
         edit.onclick = (ev) => {
@@ -9374,7 +9396,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             this.lmbEditTextBlockNote(Object.assign({}, e, { pdfPath: file.path }));
           };
         }
-        const remove = iconButton("trash-2", "删除摘录");
+        const remove = iconButton("trash-2", "删除摘录", headerActions);
+        remove.addClass("lmb-pdf-sidebar-delete");
         remove.onclick = (ev) => {
           ev.stopPropagation();
           const message = e.quick

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.2
+
+- Label compact sidebar entries with the note title/opening text, falling back to excerpt text, and truncate with a single-line ellipsis.
+- Move delete and sidebar-collapse actions to the card's upper-right corner. Remove the redundant PDF locate button while preserving click-card navigation.
+- Embed the long-note expand/collapse control in the note's lower-right corner instead of a separate row.
+
 ## 0.26.1
 
 - Replace sidebar hiding with a compact row containing the page/ordinal and a direct expand button. Previously hidden entries automatically appear as compact rows.
