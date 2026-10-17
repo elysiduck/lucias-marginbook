@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.28.0
+
+- Edit placed notes directly inside the PDF text block, with a small auto-growing Markdown input (60–180px), live preview below, Save/Cancel and Ctrl/Cmd+Enter/Escape shortcuts.
+- Create page notes in place instead of opening a large modal. Unplaced sidebar notes use a compact, stacked editor dialog.
+- Keep unsaved previews isolated from the shared note source; retain drafts after save failures and roll back failed quick-note writes. Guard asynchronous preview ordering and Chinese IME composition.
+- Preserve inline editors through background refreshes and PDF.js page recycling; restore page placement after leaving edit mode.
+- Cover inline preview/save/cancel/failure, stale preview ordering, page recycling and cancelled creation in integration tests.
+
 ## 0.27.0
 
 - Make page-overlay tables, headers and cells follow the block font size, overriding theme table sizes while retaining heading hierarchy.

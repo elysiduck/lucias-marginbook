@@ -29,6 +29,9 @@ class Element {
     return found;
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  get parentElement() { return this.parent || null; }
+  insertBefore(el, reference) { if (el.parent) el.parent.children.splice(el.parent.children.indexOf(el), 1); this.children.splice(this.children.indexOf(reference), 0, el); el.parent = this; }
+  appendChild(el) { if (el.parent) el.parent.children.splice(el.parent.children.indexOf(el), 1); this.children.push(el); el.parent = this; el.isConnected = true; return el; }
   getBoundingClientRect() { return { ...this.rect, bottom: this.rect.top + this.rect.height, right: this.rect.left + this.rect.width }; }
   contains(el) { return !!el && (el === this || this.children.some((child) => child.contains(el))); }
   setAttribute(name, value) { (this.attributes || (this.attributes = {}))[name] = value; }
@@ -134,6 +137,11 @@ async function main() {
   await plugin.lmbSaveTextBlockNote(entry, "## 同步\n新内容");
   assert.equal(await plugin.lmbTextBlockNote(entry), "## 同步\n新内容");
   assert.equal(entry.note, "过时的副本", "do not create a second content store");
+  const normalSave = plugin.saveSettings;
+  plugin.saveSettings = async () => { throw new Error("disk full"); };
+  await assert.rejects(() => plugin.lmbSaveTextBlockNote(entry, "不能留在内容源里的失败草稿"));
+  assert.equal(await plugin.lmbTextBlockNote(entry), "## 同步\n新内容");
+  plugin.saveSettings = normalSave;
   await assert.rejects(() => plugin.lmbSaveTextBlockNote({ ...entry, exId: "deleted" }, "x"));
 
   const source = { path: "notes.md" }; let sourceValue;
@@ -241,11 +249,42 @@ async function main() {
   assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 1, "cancelling placement must not create a draft");
   pageNotes.lmbStartPageNote(pageLeaf);
   await newDoc.emit("pointerdown", { target: newPage, button: 0, clientX: 100, clientY: 280, preventDefault() {}, stopImmediatePropagation() {} });
-  assert(latestModal.opts.title.includes("P.3"));
+  const draftBlock = newPage.querySelector(".lmb-pdf-text-block");
+  assert(draftBlock._lmbInlineEditor); assert.equal(latestModal, undefined, "page-note creation must not open a modal");
   assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 1, "opening/cancelling the editor must not create a draft");
   pageNotes.saveSettings = async () => {};
-  await latestModal.opts.onSubmit("独立页注，不依赖选区");
+  draftBlock._lmbInlineEditor.input.value = "独立页注，不依赖选区";
+  await draftBlock._lmbInlineEditor.save();
   assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 2);
+  assert.equal(newPage.querySelector(".lmb-pdf-text-block"), null, "successful creation closes the temporary draft");
+
+  const editingPage = new Element(), editingView = { page: 1, x: 0, y: 0, w: .5, fontSize: 16 };
+  editingPage.dataset.pageNumber = "1";
+  plugin.lmbTextBlockViews("a.pdf")[entry.exId] = editingView;
+  const editingBlock = plugin.lmbCreateTextBlock(editingPage, entry, editingView);
+  let inlineSaved = "", inlineClosed;
+  const editor = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "原文", onSubmit: async (text) => { inlineSaved = text; }, onClose: (saved) => { inlineClosed = saved; } });
+  editor.input.value = "## 实时预览"; await editor.render();
+  assert.equal(editingBlock.querySelector(".lmb-pdf-text-body").textContent, "## 实时预览"); assert.equal(inlineSaved, "");
+  await editor.save(); assert.equal(inlineSaved, "## 实时预览"); assert.equal(inlineClosed, true); assert.equal(editingBlock._lmbInlineEditor, undefined);
+  const failingEditor = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "草稿", onSubmit: async () => { throw new Error("disk full"); }, onClose: (saved) => { inlineClosed = saved; } });
+  await failingEditor.save(); assert.equal(editingBlock._lmbInlineEditor, failingEditor); assert.equal(failingEditor.input.value, "草稿");
+  await failingEditor.render(); await plugin.lmbRenderTextBlocksOnPage(editingPage, "a.pdf");
+  assert.equal(editingBlock.querySelector(".lmb-pdf-text-body").textContent, "草稿", "background refresh must not overwrite an unsaved preview");
+  editingBlock.remove();
+  const recycledPage = new Element(); recycledPage.dataset.pageNumber = "1";
+  await plugin.lmbRenderTextBlocksOnPage(recycledPage, "a.pdf");
+  assert.equal(recycledPage.querySelector(".lmb-pdf-text-block"), editingBlock); assert.equal(editingBlock._lmbInlineEditor.input.value, "草稿");
+  failingEditor.cancel(); assert.equal(inlineClosed, false); assert.equal(editingBlock._lmbInlineEditor, undefined);
+  const rendererBeforeRace = context.MarkdownRenderer.render, pendingPreviews = [];
+  context.MarkdownRenderer.render = async (_app, text, el) => { await new Promise(resolve => pendingPreviews.push({ text, el, resolve })); el.textContent = text; };
+  const raceEditor = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "initial", onSubmit: async () => {} });
+  raceEditor.input.value = "slow old preview"; const slowPreview = raceEditor.render();
+  raceEditor.input.value = "latest preview"; const latestPreview = raceEditor.render();
+  pendingPreviews[2].resolve(); await latestPreview;
+  pendingPreviews[1].resolve(); pendingPreviews[0].resolve(); await slowPreview;
+  assert.equal(editingBlock.querySelector(".lmb-pdf-text-body").textContent, "latest preview");
+  raceEditor.cancel(); context.MarkdownRenderer.render = rendererBeforeRace;
   const modal = vm.runInContext("new LMBExcerptNoteModal({}, {})", context);
   let closed = false;
   modal.ta = { value: "必须保留的草稿" }; modal.close = () => { closed = true; };

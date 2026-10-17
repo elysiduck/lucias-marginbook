@@ -10,7 +10,7 @@
 Element.prototype.createEl=function(tag,o={}){const e=document.createElement(tag);e.className=o.cls||'';e.textContent=o.text||'';for(const [k,v] of Object.entries(o.attr||{}))e.setAttribute(k,v);this.append(e);return e};
 Element.prototype.createDiv=function(o){return this.createEl('div',o)};Element.prototype.createSpan=function(o){return this.createEl('span',o)};
 Element.prototype.empty=function(){this.replaceChildren()};Element.prototype.setText=function(t){this.textContent=t};Element.prototype.addClass=function(c){this.classList.add(c)};Element.prototype.removeClass=function(c){this.classList.remove(c)};Element.prototype.toggleClass=function(c,on){this.classList.toggle(c,on)};
-class StubModal{constructor(app){this.app=app;this.contentEl=document.createElement('div');this.contentEl.className='modal'}open(){document.body.append(this.contentEl);this.onOpen()}close(){this.onClose();this.contentEl.remove()}}
+class StubModal{constructor(app){this.app=app;this.modalEl=document.createElement('div');this.modalEl.className='modal';this.contentEl=this.modalEl.createDiv({cls:'modal-content'})}open(){document.body.append(this.modalEl);this.onOpen()}close(){this.onClose();this.modalEl.remove()}}
 class StubNotice{constructor(text,duration=3000){this.el=document.body.createDiv({cls:'notice',text});if(duration)setTimeout(()=>this.hide(),duration)}hide(){this.el.remove()}}
 class StubFile{}
 const stubRender=async(_app,text,el)=>{

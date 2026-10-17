@@ -41,8 +41,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const point = { x: (ev.clientX - rect.left) / rect.width, y: (ev.clientY - rect.top) / rect.height };
       const pageNumber = Number(page.dataset.pageNumber);
       cancel();
-      new LMBExcerptNoteModal(this.app, { title: `新建 Markdown 页注 · P.${pageNumber}`, value: "", sourcePath: file.path,
-        onSubmit: (text) => this.lmbCreatePageNote(leaf, file, pageNumber, point, text) }).open();
+      const view = { page: pageNumber, x: Math.max(0, Math.min(.8, point.x)), y: Math.max(0, Math.min(.95, point.y)), w: Math.min(.6, 1 - Math.max(0, Math.min(.8, point.x))), fontSize: 16 };
+      const draft = this.lmbCreateTextBlock(page, { exId: "draft-" + Date.now().toString(36), pdfPath: file.path, quick: true }, view);
+      draft.addClass("is-draft");
+      this.lmbOpenInlineNoteEditor(draft, { title: `新建页注 · P.${pageNumber}`, value: "", sourcePath: file.path,
+        onSubmit: (text) => this.lmbCreatePageNote(leaf, file, pageNumber, point, text), onClose: () => draft.remove() });
+      this.lmbStyleTextBlock(draft, page, view);
     };
     this._lmbCancelTextPlacement = cancel;
     doc.addEventListener("pointerdown", place, true); doc.addEventListener("keydown", key, true);
@@ -67,8 +71,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const list = this.settings.quickExcerpts && this.settings.quickExcerpts[entry.pdfPath];
       const item = Array.isArray(list) && list.find((x) => x.exId === entry.exId);
       if (!item) throw new Error("这条批注已被删除");
-      item.note = String(value || "");
-      await this.saveSettings();
+      const previous = item.note, next = String(value || ""); item.note = next;
+      try { await this.saveSettings(); }
+      catch (err) { if (item.note === next) item.note = previous; throw err; }
     } else {
       const source = this.app.vault.getAbstractFileByPath(entry.sourceMd);
       if (!source || !await this.lmbSaveExcerptNote(source, entry.exId, value)) throw new Error("未找到对应摘录，未修改文档");
@@ -76,11 +81,27 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
   },
 
-  async lmbEditTextBlockNote(entry, afterSave) {
+  async lmbEditTextBlockNote(entry, afterSave, preferredBlock) {
     try {
+      const block = preferredBlock || (this.app.workspace.getLeavesOfType("pdf") || [])
+        .filter((leaf) => leaf.view && leaf.view.file && leaf.view.file.path === entry.pdfPath)
+        .flatMap((leaf) => Array.from(leaf.containerEl.querySelectorAll(".lmb-pdf-text-block")))
+        .find((el) => el.dataset.exId === entry.exId);
+      if (block && block._lmbInlineEditor) { block._lmbInlineEditor.input.focus({ preventScroll: true }); return; }
       const value = await this.lmbTextBlockNote(entry);
+      if (block && block.isConnected) {
+        this.lmbOpenInlineNoteEditor(block, { title: "编辑 Markdown", value, sourcePath: entry.sourceMd || entry.pdfPath || "",
+          onSubmit: (text) => this.lmbSaveTextBlockNote(entry, text),
+          onClose: (saved, text) => {
+            if (this._unloaded) return;
+            this.lmbRefreshTextBlocks().catch((err) => new Notice("预览刷新失败：" + err.message));
+            if (saved) { this.lmbSchedulePdfSidebarRefresh(0); if (afterSave) Promise.resolve(afterSave(text)).catch((err) => new Notice(err.message)); }
+          }
+        });
+        return;
+      }
       new LMBExcerptNoteModal(this.app, {
-        title: "Markdown 批注", value, sourcePath: entry.sourceMd || "",
+        title: "Markdown 批注", value, sourcePath: entry.sourceMd || "", compact: true,
         onSubmit: async (text) => {
             await this.lmbSaveTextBlockNote(entry, text);
             await this.lmbRefreshTextBlocks();
@@ -89,6 +110,68 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }).open();
     } catch (err) { new Notice("无法打开批注：" + err.message); }
+  },
+
+  lmbOpenInlineNoteEditor(block, opts) {
+    if (block._lmbInlineEditor) { block._lmbInlineEditor.input.focus(); return block._lmbInlineEditor; }
+    const body = block.querySelector(".lmb-pdf-text-body"), panel = block.createDiv({ cls: "lmb-inline-note-editor" });
+    block.insertBefore(panel, body);
+    const controls = panel.createDiv({ cls: "lmb-inline-note-controls" });
+    controls.createSpan({ text: opts.title || "编辑 Markdown" });
+    const status = controls.createSpan({ cls: "lmb-inline-note-status", text: "实时预览" });
+    const save = controls.createEl("button", { text: "保存", attr: { type: "button" } });
+    const cancel = controls.createEl("button", { text: "取消", attr: { type: "button" } });
+    const input = panel.createEl("textarea", { cls: "lmb-inline-note-input", attr: { "aria-label": "页内 Markdown 编辑", placeholder: "直接输入 Markdown…" } });
+    input.value = opts.value || "";
+    const state = { input, closed: false, busy: false, sequence: 0, timer: null };
+    block._lmbInlineEditor = state; block.addClass("is-editing");
+    const active = this._lmbActiveInlineBlocks || (this._lmbActiveInlineBlocks = new Set()); active.add(block);
+    const resize = () => {
+      input.style.height = "auto"; input.style.height = Math.max(60, Math.min(180, input.scrollHeight || 60)) + "px";
+      if (block.parentElement && block._lmbTextView) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView);
+    };
+    state.render = async () => {
+      const sequence = ++state.sequence, text = input.value;
+      const content = block.ownerDocument.createElement("div");
+      try { await MarkdownRenderer.render(this.app, text || "*在上方输入，预览会在这里更新*", content, opts.sourcePath || "", this); }
+      catch (_) { content.textContent = text; }
+      if (state.closed || sequence !== state.sequence) return;
+      body.replaceChildren(content);
+    };
+    state.close = (saved) => {
+      if (state.closed) return;
+      state.closed = true; state.sequence++; clearTimeout(state.timer);
+      if (state.observer) state.observer.disconnect();
+      panel.remove(); block.classList.remove("is-editing"); delete block._lmbInlineEditor;
+      active.delete(block);
+      body._lmbMarkdown = undefined;
+      if (block.parentElement && block._lmbTextView) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView);
+      if (opts.onClose) opts.onClose(saved, input.value);
+    };
+    state.save = async () => {
+      if (state.busy || state.closed) return;
+      state.busy = true; input.readOnly = true; save.disabled = cancel.disabled = true; status.setText("保存中…");
+      try { await opts.onSubmit(input.value); state.close(true); }
+      catch (err) { status.setText("保存失败，草稿已保留"); new Notice("保存失败：" + err.message); }
+      finally { state.busy = false; input.readOnly = false; save.disabled = cancel.disabled = false; }
+    };
+    state.cancel = () => { if (!state.busy) state.close(false); };
+    save.onclick = (ev) => { ev.stopPropagation(); state.save(); };
+    cancel.onclick = (ev) => { ev.stopPropagation(); state.cancel(); };
+    const schedule = () => { resize(); clearTimeout(state.timer); state.timer = setTimeout(state.render, 100); };
+    input.addEventListener("input", (ev) => { resize(); if (!ev.isComposing) schedule(); });
+    input.addEventListener("compositionend", schedule);
+    input.addEventListener("keydown", (ev) => {
+      if (ev.isComposing) return;
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); state.save(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); state.cancel(); }
+    });
+    resize(); state.render(); input.focus({ preventScroll: true });
+    if (typeof ResizeObserver !== "undefined" && block.parentElement && block._lmbTextView) {
+      state.observer = new ResizeObserver(() => { if (!state.closed && block.isConnected) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView); });
+      state.observer.observe(block.parentElement);
+    }
+    return state;
   },
 
   lmbIsTextBlockCollapsed(view) {
@@ -157,9 +240,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   async lmbRenderTextBlocksOnPage(page, path) {
     const token = {}; page._lmbTextBlockToken = token;
+    // PDF.js may recycle a page while it contains an unsaved editor. Reattach
+    // that editor (including its draft/caret) when the same page returns.
+    for (const block of this._lmbActiveInlineBlocks || []) {
+      if (!block.isConnected && block._lmbTextEntry.pdfPath === path && Number(block._lmbTextView.page) === Number(page.dataset.pageNumber)) {
+        page.appendChild(block); this.lmbStyleTextBlock(block, page, block._lmbTextView);
+        const state = block._lmbInlineEditor;
+        if (state && state.observer) { state.observer.disconnect(); state.observer.observe(page); }
+      }
+    }
     const views = this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[path] || {};
     if (!Object.values(views).some((view) => view && Number(view.page) === Number(page.dataset.pageNumber))) {
-      page.querySelectorAll(":scope > .lmb-pdf-text-block").forEach((el) => el.remove());
+      page.querySelectorAll(":scope > .lmb-pdf-text-block").forEach((el) => { if (!el._lmbInlineEditor) el.remove(); });
       this.lmbReleaseTextBlockPage(page);
       return;
     }
@@ -183,9 +275,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (this._unloaded || page._lmbTextBlockToken !== token || !page.isConnected) return;
       let block = Array.from(page.querySelectorAll(":scope > .lmb-pdf-text-block")).find((el) => el.dataset.exId === entry.exId);
       const sourceKey = JSON.stringify([path, entry.sourceMd || "", !!entry.quick]);
-      if (block && block._lmbTextSourceKey !== sourceKey) { block.remove(); block = null; }
+      if (block && block._lmbTextSourceKey !== sourceKey && !block._lmbInlineEditor) { block.remove(); block = null; }
       if (!block) block = this.lmbCreateTextBlock(page, Object.assign({}, entry, { pdfPath: path }), view);
       this.lmbStyleTextBlock(block, page, view);
+      if (block._lmbInlineEditor) continue;
       const body = block.querySelector(".lmb-pdf-text-body");
       if (body._lmbMarkdown !== note || !body.childNodes.length) {
         body._lmbMarkdown = note; body.empty();
@@ -197,18 +290,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
     }
     if (page._lmbTextBlockToken !== token) return;
-    page.querySelectorAll(":scope > .lmb-pdf-text-block").forEach((el) => { if (!wanted.has(el.dataset.exId)) el.remove(); });
+    page.querySelectorAll(":scope > .lmb-pdf-text-block").forEach((el) => { if (!wanted.has(el.dataset.exId) && !el._lmbInlineEditor) el.remove(); });
   },
 
   lmbStyleTextBlock(block, page, view) {
     block.style.left = (view.x || 0) * 100 + "%";
-    block.style.top = (view.y || 0) * 100 + "%";
+    const pageHeight = page.getBoundingClientRect().height;
+    const y = block._lmbInlineEditor ? Math.min(view.y || 0, Math.max(0, 1 - 260 / pageHeight)) : view.y || 0;
+    block.style.top = y * 100 + "%";
     block.style.width = (view.w || .55) * 100 + "%";
     // 1000 reference units keep type proportional when PDF.js zooms or resizes.
     block.style.fontSize = (view.fontSize || 16) * page.getBoundingClientRect().width / 1000 + "px";
     block.style.setProperty("--lmb-pdf-text-size", block.style.fontSize);
     const body = block.querySelector(".lmb-pdf-text-body");
-    body.style.maxHeight = Math.max(24, page.getBoundingClientRect().height * (1 - (view.y || 0)) - 8) + "px";
+    const editor = block.querySelector(".lmb-inline-note-editor");
+    body.style.maxHeight = Math.max(24, pageHeight * (1 - y) - (editor ? editor.offsetHeight || 100 : 0) - 8) + "px";
     body.title = "双击编辑 Markdown；长文超出页面时可在块内滚动";
     block.querySelector("input").value = String(view.fontSize || 16);
     const tools = block.querySelector(".lmb-pdf-text-tools");
@@ -222,6 +318,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   lmbCreateTextBlock(page, entry, view) {
     const block = page.createDiv({ cls: "lmb-pdf-text-block" }); block.dataset.exId = entry.exId;
+    block._lmbTextEntry = entry;
+    block._lmbTextView = view;
     block._lmbTextSourceKey = JSON.stringify([entry.pdfPath, entry.sourceMd || "", !!entry.quick]);
     block.tabIndex = 0;
     const bar = block.createDiv({ cls: "lmb-pdf-text-tools" });
@@ -231,7 +329,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       b.onclick = (ev) => { ev.stopPropagation(); Promise.resolve(action()).catch((err) => new Notice("操作失败：" + err.message)); }; return b;
     };
     const persist = async () => { await this.saveSettings(); this.lmbSchedulePdfSidebarRefresh(0); };
-    button("编辑", () => this.lmbEditTextBlockNote(entry));
+    button("编辑", () => this.lmbEditTextBlockNote(entry, null, block));
     const size = bar.createEl("input", { attr: { type: "number", min: "8", max: "72", step: "1", "aria-label": "文本块字号（随 PDF 缩放）", title: "字号（随 PDF 缩放）" } });
     size.onchange = async () => {
       view.fontSize = Math.max(8, Math.min(72, Number(size.value) || 16));
@@ -256,7 +354,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       delete view.page; block.remove(); await persist(); await this.lmbRefreshTextBlocks();
     });
     const body = block.createDiv({ cls: "lmb-pdf-text-body markdown-rendered" });
-    body.ondblclick = (ev) => { ev.stopPropagation(); this.lmbEditTextBlockNote(entry); };
+    body.ondblclick = (ev) => { ev.stopPropagation(); this.lmbEditTextBlockNote(entry, null, block); };
     // Keep overlay interaction out of PDF selection/ink gestures while preserving text selection.
     ["pointerdown", "click", "dblclick"].forEach((type) => block.addEventListener(type, (ev) => ev.stopPropagation()));
     const resize = block.createDiv({ cls: "lmb-pdf-text-resize", attr: { title: "拖动调整宽度" } });
@@ -300,9 +398,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }));
     this.register(() => {
       if (this._lmbCancelTextPlacement) this._lmbCancelTextPlacement();
+      for (const block of Array.from(this._lmbActiveInlineBlocks || [])) if (block._lmbInlineEditor) block._lmbInlineEditor.close(false);
       for (const observer of (this._lmbTextResizeObservers || new Map()).values()) observer.disconnect();
       if (this._lmbTextResizeObservers) this._lmbTextResizeObservers.clear();
-      document.querySelectorAll(".lmb-pdf-text-block").forEach((el) => el.remove());
+      document.querySelectorAll(".lmb-pdf-text-block").forEach((el) => { if (el._lmbInlineEditor) el._lmbInlineEditor.close(false); el.remove(); });
     });
   },
 

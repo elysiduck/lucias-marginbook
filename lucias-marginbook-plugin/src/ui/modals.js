@@ -75,20 +75,22 @@ class LMBExcerptNoteModal extends Modal {
   constructor(app, opts) { super(app); this.opts = opts || {}; this.value = this.opts.value || ""; }
   onOpen() {
     const { contentEl } = this; contentEl.empty(); contentEl.addClass("lmb-note-editor");
+    if (this.opts.compact) contentEl.addClass("lmb-note-editor-compact");
     contentEl.createEl("h3", { text: this.opts.title || "摘录笔记" });
     const grid = contentEl.createDiv({ cls: "lmb-note-editor-grid" });
     const ta = grid.createEl("textarea", { cls: "lmb-note-editor-input" });
     const preview = grid.createDiv({ cls: "lmb-note-editor-preview markdown-rendered" });
     ta.value = this.value; ta.placeholder = "写下理解、疑问、联想；支持 Markdown、公式和链接……";
+    const fitInput = () => { if (this.opts.compact) { ta.style.height = "auto"; ta.style.height = Math.max(72, Math.min(180, ta.scrollHeight)) + "px"; } };
     const render = async () => {
       preview.empty();
       if (!ta.value.trim()) { preview.createEl("span", { text: "实时预览", cls: "lmb-note-preview-empty" }); return; }
       try { await MarkdownRenderer.render(this.app, ta.value, preview, this.opts.sourcePath || "", this); }
       catch (_) { preview.setText(ta.value); }
     };
-    ta.addEventListener("input", () => { clearTimeout(this._renderTimer); this._renderTimer = setTimeout(render, 80); });
+    ta.addEventListener("input", () => { fitInput(); clearTimeout(this._renderTimer); this._renderTimer = setTimeout(render, 80); });
     ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); this.submit(); } });
-    this.ta = ta; render();
+    this.ta = ta; fitInput(); render();
     const bar = contentEl.createDiv({ cls: "lmb-note-editor-actions" });
     const remove = bar.createEl("button", { text: "删除笔记" });
     const cancel = bar.createEl("button", { text: "取消" });
