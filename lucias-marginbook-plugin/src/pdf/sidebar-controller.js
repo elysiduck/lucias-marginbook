@@ -336,6 +336,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const index = Array.isArray(list) ? list.findIndex((item) => item && item.exId === e.exId) : -1;
       if (index < 0) { new Notice("未找到这条简洁摘录"); return false; }
       list.splice(index, 1);
+      if (e.pageNote && this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[path]) delete this.settings.pdfTextBlocks[path][e.exId];
       await this.saveSettings();
       this.lmbRefreshAllMarks();
       await this.lmbRenderPdfSidebarForLeaf(leaf);
@@ -399,7 +400,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       const renderSig = JSON.stringify({
         file: file.path,
-        entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags]),
+        entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags, e.pageNote]),
         sources: Array.from(sourceVersions),
         views: this.settings && this.settings.excerptViews,
         // Geometry, font size and compact state do not change sidebar content.
@@ -451,7 +452,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const compact = this.lmbIsTextBlockCollapsed(textView);
         row.toggleClass("is-compact", compact);
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
-        header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` });
+        header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}${e.pageNote ? " · 页注" : ""}` });
         const summary = header.createDiv({ cls: "lmb-pdf-sidebar-item-summary" });
         const expandEntry = header.createEl("button", { cls: "lmb-pdf-sidebar-expand-entry", text: "展开", attr: { "aria-label": `在侧栏展开 P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` } });
         expandEntry.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, false).catch((err) => new Notice("设置保存失败：" + err.message)); };
@@ -559,7 +560,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         remove.addClass("lmb-pdf-sidebar-delete");
         remove.onclick = (ev) => {
           ev.stopPropagation();
-          const message = e.quick
+          const message = e.pageNote ? "将删除这条页注及其页面文本块。"
+            : e.quick
             ? "将删除这条仅保存在 PDF 侧栏的简洁摘录。"
             : "将删除关联的 Canvas 卡片及连线、Markdown 摘录记录和插件管理的截图。它们会先移入 .lmb-trash，方便恢复。";
           new LMBConfirmModal(this.app, {

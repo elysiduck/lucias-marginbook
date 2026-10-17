@@ -786,6 +786,20 @@ class LuciasMarginBookPlugin extends Plugin {
         btn.toggleClass("is-active", !!this.inkMode);
       }
 
+      if (!group.querySelector(".lmb-toolbar-page-note")) {
+        const btn = document.createElement("button");
+        btn.className = "clickable-icon lmb-toolbar-page-note";
+        btn.setAttribute("aria-label", "新建 Markdown 页注");
+        btn.setAttribute("title", "新建 Markdown 页注（无需选中文字）");
+        try { setIcon(btn, "square-pen"); } catch (_) { btn.setText("T+"); }
+        btn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const currentLeaf = this.app.workspace.getLeavesOfType("pdf").find((candidate) => candidate.containerEl && candidate.containerEl.contains(btn));
+          this.lmbStartPageNote(currentLeaf);
+        });
+        group.appendChild(btn);
+      }
+
       // ① 图片框选
       if (!group.querySelector(".lmb-toolbar-crop")) {
         const btn = document.createElement("div");
@@ -1059,7 +1073,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.26.3";
+    st.dataset.lmbVersion = "0.27.0";
   }
 
 }

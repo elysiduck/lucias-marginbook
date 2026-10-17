@@ -5,7 +5,7 @@ const vm = require("node:vm");
 class Element {
   constructor(cls = "", tag = "div") {
     this.cls = new Set(cls.split(" ")); this.tag = tag; this.children = []; this.childNodes = this.children;
-    this.dataset = {}; this.style = {}; this.events = {}; this.isConnected = true;
+    this.dataset = {}; this.style = { setProperty(key, value) { this[key] = value; } }; this.events = {}; this.isConnected = true;
     this.scrollTop = 0;
     this.classList = { contains: (x) => this.cls.has(x), add: (x) => this.cls.add(x), remove: (x) => this.cls.delete(x), toggle: (x, on) => {
       const value = on === undefined ? !this.cls.has(x) : on; value ? this.cls.add(x) : this.cls.delete(x); return value;
@@ -50,7 +50,7 @@ class Element {
 class Plugin {}
 const context = vm.createContext({ LuciasMarginBookPlugin: Plugin, Notice: class { hide() {} },
   MarkdownRenderer: { render: async (_app, text, el) => { el.textContent = text; } }, console, setTimeout, clearTimeout });
-for (const file of ["src/pdf/sidebar-controller.js", "src/pdf/text-block-controller.js", "src/core/settings-store.js"])
+for (const file of ["src/pdf/sidebar-controller.js", "src/pdf/text-block-controller.js", "src/pdf/mark-service.js", "src/core/settings-store.js"])
   vm.runInContext(fs.readFileSync(file, "utf8"), context);
 const proto = Plugin.prototype;
 async function main() {
@@ -103,6 +103,26 @@ async function main() {
   rendering._lmbApplySidebarPageFilter(renderingLeaf);
   assert.equal(sidebar.dataset.page, "3", "unfollowed sidebar retains the selected page during refresh");
   context.MarkdownRenderer.render = originalRender;
+  const pageNotes = new Plugin(), pageFile = { path: "page-notes.pdf", extension: "pdf", name: "page-notes.pdf" };
+  const pageLeaf = { view: { file: pageFile } };
+  pageNotes.settings = {}; pageNotes.excerptIndex = new Map(); pageNotes.getExcerptsForPdf = () => [];
+  pageNotes.app = { workspace: { getLeavesOfType: () => [] } };
+  let pageNoteSaves = 0;
+  pageNotes.saveSettings = async () => { pageNoteSaves++; };
+  pageNotes.lmbRefreshTextBlocks = async () => {}; pageNotes.lmbRenderPdfSidebarForLeaf = async () => {};
+  const pageNote = await pageNotes.lmbCreatePageNote(pageLeaf, pageFile, 3, { x: .2, y: .4 }, "## 独立知识脉络\n| A | B |\n| - | - |\n| 1 | 2 |");
+  assert.equal(pageNote.pageNote, true); assert.equal(pageNote.page, 3);
+  assert.equal(pageNote.selection, undefined); assert.equal(pageNote.rect, undefined); assert.equal(pageNote.text, "");
+  assert.equal(proto.lmbDrawEntryMark({}, pageNote), undefined, "page notes must not create excerpt fallback marks");
+  assert.equal(pageNotes._lmbGetPdfSidebarEntries(pageFile)[0].exId, pageNote.exId);
+  assert.equal(pageNotes.lmbTextBlockViews(pageFile.path)[pageNote.exId].page, 3);
+  assert.equal(await pageNotes.lmbTextBlockNote({ ...pageNote, quick: true, pdfPath: pageFile.path }), pageNote.note);
+  assert.equal(await pageNotes.lmbCreatePageNote(pageLeaf, pageFile, 3, { x: 0, y: 0 }, "  "), null); assert.equal(pageNoteSaves, 1);
+  await assert.rejects(() => pageNotes.lmbCreatePageNote({ view: { file: {} } }, pageFile, 1, {}, "stale PDF"));
+  pageNotes.saveSettings = async () => { throw new Error("disk full"); };
+  await assert.rejects(() => pageNotes.lmbCreatePageNote(pageLeaf, pageFile, 3, {}, "must roll back"));
+  assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 1);
+  assert.equal(Object.keys(pageNotes.lmbTextBlockViews(pageFile.path)).length, 1);
   let saves = 0, refreshes = 0;
   const plugin = new Plugin();
   plugin.settings = { quickExcerpts: { "a.pdf": [{ exId: "ex-a", note: "**原备注**" }] } };
@@ -141,6 +161,14 @@ async function main() {
   const block = plugin.lmbCreateTextBlock(page, entry, view);
   plugin.lmbStyleTextBlock(block, page, view);
   assert.equal(block.style.fontSize, "20px"); assert.equal(block.style.width, "50%");
+  assert.equal(block.style["--lmb-pdf-text-size"], "20px");
+  const grow = block.querySelectorAll("button").find((b) => b.attributes && b.attributes["aria-label"] === "增大字号");
+  const shrink = block.querySelectorAll("button").find((b) => b.attributes && b.attributes["aria-label"] === "减小字号");
+  await grow.onclick({ stopPropagation() {} }); assert.equal(view.fontSize, 21);
+  await shrink.onclick({ stopPropagation() {} }); assert.equal(view.fontSize, 20);
+  view.fontSize = 72; await grow.onclick({ stopPropagation() {} }); assert.equal(view.fontSize, 72);
+  view.fontSize = 8; await shrink.onclick({ stopPropagation() {} }); assert.equal(view.fontSize, 8);
+  view.fontSize = 20;
   page.rect.width = 500; plugin.lmbStyleTextBlock(block, page, view);
   assert.equal(block.style.fontSize, "10px"); assert.equal(block.style.left, "20%");
   page.rect.width = 1000;
@@ -200,8 +228,24 @@ async function main() {
   assert.equal(plugin.lmbIsTextBlockCollapsed(view), false);
   assert.equal(await plugin.lmbTextBlockNote(entry), "## 同步\n新内容", "expanding preserves content");
 
-  context.Modal = class {}; context.FuzzySuggestModal = class {};
+  let latestModal;
+  context.Modal = class { open() { latestModal = this; } }; context.FuzzySuggestModal = class {};
   vm.runInContext(fs.readFileSync("src/ui/modals.js", "utf8"), context);
+  const newDoc = new Element(), newRoot = new Element(), newPage = new Element();
+  newRoot.ownerDocument = newDoc; newRoot.contains = (el) => el === newPage;
+  newPage.dataset.pageNumber = "3"; newPage.closest = (selector) => selector.startsWith(".page") ? newPage : null;
+  pageLeaf.containerEl = newRoot;
+  pageNotes.lmbStartPageNote(pageLeaf);
+  await newDoc.emit("keydown", { key: "Escape", preventDefault() {} });
+  assert.equal(pageNotes._lmbCancelTextPlacement, null); assert.equal(latestModal, undefined);
+  assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 1, "cancelling placement must not create a draft");
+  pageNotes.lmbStartPageNote(pageLeaf);
+  await newDoc.emit("pointerdown", { target: newPage, button: 0, clientX: 100, clientY: 280, preventDefault() {}, stopImmediatePropagation() {} });
+  assert(latestModal.opts.title.includes("P.3"));
+  assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 1, "opening/cancelling the editor must not create a draft");
+  pageNotes.saveSettings = async () => {};
+  await latestModal.opts.onSubmit("独立页注，不依赖选区");
+  assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 2);
   const modal = vm.runInContext("new LMBExcerptNoteModal({}, {})", context);
   let closed = false;
   modal.ta = { value: "必须保留的草稿" }; modal.close = () => { closed = true; };

@@ -3,7 +3,7 @@
 :root{--background-primary:#292929;--background-secondary:#333;--background-modifier-border:#555;--text-normal:#ddd;--text-muted:#aaa;--text-faint:#888;--interactive-accent:#70bd94;--font-text:Arial,sans-serif;--font-interface:Arial,sans-serif;--font-text-size:16px}
 *{box-sizing:border-box}body{margin:0;background:#1e1e1e;color:#ddd;font:16px Arial}button,input,textarea{background:#333;color:#ddd;border:1px solid #555;border-radius:5px;padding:6px}button{cursor:pointer}.view-content{height:100vh;overflow:auto;position:relative}.pdf-viewer-container{padding:28px}.page{position:relative;background:white;color:#222;width:800px;height:1100px;margin:0 auto 30px;padding:70px;box-shadow:0 2px 12px #0005}.page>p{font-family:Georgia,serif;line-height:1.7}.modal{position:fixed;inset:7vh 8vw;background:#292929;border:1px solid #777;border-radius:12px;z-index:10000;padding:20px;overflow:auto}.modal textarea{min-height:350px;width:100%}.notice{position:fixed;top:10px;left:20px;background:#335c49;color:white;padding:12px;z-index:10001}
 </style>
-<div class="workspace-leaf-content" data-type="pdf"><div class="view-content"><div class="pdf-viewer-container"><div class="page" data-page-number="1"><p><b>Short answer (30 points):</b> Describe Prospect Theory: the value function, probability weighting and loss aversion.</p><p>Explain the four-fold pattern of risk attitudes.</p></div></div></div></div>
+<div class="workspace-leaf-content" data-type="pdf"><div class="view-content"><div class="pdf-toolbar" style="position:sticky;top:0;z-index:100;background:#292929;height:40px;display:flex;align-items:center;padding:5px">PDF</div><div class="pdf-viewer-container"><div class="page" data-page-number="1"><p><b>Short answer (30 points):</b> Describe Prospect Theory: the value function, probability weighting and loss aversion.</p><p>Explain the four-fold pattern of risk attitudes.</p></div></div></div></div>
 <script>
 // Browser smoke fixture: real plugin controls and styles, with small Obsidian API
 // substitutes. PDF.js and Obsidian's Markdown engine require the host application.
@@ -13,7 +13,21 @@ Element.prototype.empty=function(){this.replaceChildren()};Element.prototype.set
 class StubModal{constructor(app){this.app=app;this.contentEl=document.createElement('div');this.contentEl.className='modal'}open(){document.body.append(this.contentEl);this.onOpen()}close(){this.onClose();this.contentEl.remove()}}
 class StubNotice{constructor(text,duration=3000){this.el=document.body.createDiv({cls:'notice',text});if(duration)setTimeout(()=>this.hide(),duration)}hide(){this.el.remove()}}
 class StubFile{}
-const stubRender=async(_app,text,el)=>{for(const line of text.split('\n')){const h=line.match(/^(#{1,6})\s+(.*)/);const p=el.createEl(h?'h'+h[1].length:'p');p.textContent=h?h[2]:line;p.innerHTML=p.innerHTML.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}};
+const stubRender=async(_app,text,el)=>{
+  const lines=text.split('\n');
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i];
+    if(line.trim().startsWith('|') && /^\s*\|[\s:|\-]+\|\s*$/.test(lines[i+1]||'')){
+      const table=el.createEl('table');
+      const cells=value=>value.trim().replace(/^\||\|$/g,'').split('|').map(s=>s.trim());
+      const header=table.createEl('thead').createEl('tr');cells(line).forEach(t=>header.createEl('th',{text:t}));i++;
+      const body=table.createEl('tbody');
+      while((lines[i+1]||'').trim().startsWith('|')){const row=body.createEl('tr');cells(lines[++i]).forEach(t=>row.createEl('td',{text:t}));}
+      continue;
+    }
+    const h=line.match(/^(#{1,6})\s+(.*)/);const p=el.createEl(h?'h'+h[1].length:'p');p.textContent=h?h[2]:line;p.innerHTML=p.innerHTML.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
+  }
+};
 window.module={exports:{}};window.require=()=>({Plugin:class{},TFile:StubFile,Notice:StubNotice,PluginSettingTab:class{},Setting:class{},Modal:StubModal,FuzzySuggestModal:class{},MarkdownRenderer:{render:stubRender},setIcon:(el,icon)=>el.textContent=({'palette':'◉','text-cursor-input':'T','chevrons-up':'⌃','message-square-plus':'+','pencil':'✎','trash-2':'×','image':'▧','file-text':'▤','notebook-pen':'▤','waypoints':'⑂'}[icon]||'•'),normalizePath:p=>p,Platform:{}});
 </script><script src="../main.js"></script><script>
 const plugin=new module.exports();
@@ -43,4 +57,7 @@ if(new URLSearchParams(location.search).has('stress')){
 plugin.lmbJumpToSelection=()=>{};plugin.lmbChooseExcerptColor=()=>{};
 const style=document.createElement('style');style.textContent=module.exports.__lmbStyles.LMB_STYLES.join('');document.head.append(style);
 plugin.lmbRenderPdfSidebarForLeaf(leaf);
+plugin.lmbEnsureToolbarButtons();
+// Simulate a host theme with fixed table sizes; overlay styles must override it.
+document.head.createEl('style',{text:'.markdown-rendered table{font-size:30px}.markdown-rendered th,.markdown-rendered td{font-size:30px;color:#bbb;border:1px solid #777}'});
 </script></html>

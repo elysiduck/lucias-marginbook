@@ -199,6 +199,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /** 画单条摘录的标记（跨行会有多个矩形，每个矩形一个 div） */
   lmbDrawEntryMark(pageEl, entry, destination) {
+    if (entry && entry.pageNote) return;
     try {
       let pcts = null;
       if (entry && entry.selection) {
@@ -339,6 +340,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const nextMarks = pageEl.ownerDocument.createDocumentFragment();
         for (let ei = 0; ei < list.length; ei++) {
           const e = Object.assign({}, list[ei], { pageOrdinal: ei + 1 });
+          if (e.pageNote) continue; // Page notes have their own text block, no excerpt highlight/fallback mark.
           const rectOnly = !!(e.rect && e.rect.length === 4 && e.rect[2] > 0 && e.rect[3] > 0);
           if (!hasLayer && !rectOnly) continue;
           this.lmbDrawEntryMark(pageEl, e, nextMarks);

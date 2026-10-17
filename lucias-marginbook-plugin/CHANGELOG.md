@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.27.0
+
+- Make page-overlay tables, headers and cells follow the block font size, overriding theme table sizes while retaining heading hierarchy.
+- Add labeled A−/A+ font-size controls with 8–72 bounds and larger touch targets.
+- Add a PDF toolbar action for standalone Markdown page notes: click an empty page position, edit, and save to both page and sidebar without selecting source text.
+- Persist standalone notes in the existing quick-note store, avoid excerpt highlights/fallback marks, update page ownership on replacement, and remove page placement on deletion. Cancelled creation leaves no draft; failed saves roll back new records.
+- Add page-note creation, cancellation, stale-file protection, failed-save rollback and size-button regression coverage; expand the browser fixture to test tables against fixed theme sizes.
+
 ## 0.26.3
 
 - Update sidebar collapse state in place instead of rebuilding the sidebar and rerendering Markdown. Preserve the page counter, search, focus and scroll position.

@@ -1,6 +1,53 @@
 /* Editable Markdown overlays. Content stays in the existing excerpt note store;
  * this store contains presentation only, keyed by PDF path and stable excerpt ID. */
 Object.assign(LuciasMarginBookPlugin.prototype, {
+  async lmbCreatePageNote(leaf, file, page, point, markdown) {
+    if (this._unloaded || !leaf.view || leaf.view.file !== file) throw new Error("PDF 已切换，请在目标页面重新创建");
+    if (!String(markdown || "").trim()) return null;
+    const path = file.path, exId = "page-note-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+    const item = { exId, pageNote: true, page, text: "", note: String(markdown) };
+    const store = this.settings.quickExcerpts || (this.settings.quickExcerpts = {});
+    const list = store[path] || (store[path] = []);
+    const views = this.lmbTextBlockViews(path);
+    const x = Math.max(0, Math.min(.8, Number(point.x) || 0)), y = Math.max(0, Math.min(.95, Number(point.y) || 0));
+    list.push(item); views[exId] = { page, x, y, w: Math.min(.6, 1 - x), fontSize: 16 };
+    try { await this.saveSettings(); }
+    catch (err) { list.splice(list.indexOf(item), 1); delete views[exId]; throw err; }
+    await this.lmbRefreshTextBlocks();
+    await this.lmbRenderPdfSidebarForLeaf(leaf);
+    return item;
+  },
+
+  lmbStartPageNote(leaf) {
+    const file = leaf && leaf.view && leaf.view.file;
+    if (!file || file.extension !== "pdf") { new Notice("请先打开 PDF"); return; }
+    if (this._lmbCancelTextPlacement) this._lmbCancelTextPlacement();
+    if (this.inkMode) this.lmbSetInkMode(false);
+    if (this.rectMode) this.setRectMode(false);
+    const root = leaf.containerEl, doc = root.ownerDocument;
+    const notice = new Notice("点击 PDF 空白处新建 Markdown 页注；Esc 取消", 0);
+    root.classList.add("lmb-text-placing");
+    const cancel = () => {
+      root.classList.remove("lmb-text-placing"); notice.hide();
+      doc.removeEventListener("pointerdown", place, true); doc.removeEventListener("keydown", key, true);
+      this._lmbCancelTextPlacement = null;
+    };
+    const key = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); cancel(); } };
+    const place = (ev) => {
+      const page = ev.target.closest && ev.target.closest(".page[data-page-number]");
+      if (!page || !root.contains(page) || ev.button !== 0 || ev.target.closest(".lmb-pdf-text-block")) return;
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      const rect = page.getBoundingClientRect();
+      const point = { x: (ev.clientX - rect.left) / rect.width, y: (ev.clientY - rect.top) / rect.height };
+      const pageNumber = Number(page.dataset.pageNumber);
+      cancel();
+      new LMBExcerptNoteModal(this.app, { title: `新建 Markdown 页注 · P.${pageNumber}`, value: "", sourcePath: file.path,
+        onSubmit: (text) => this.lmbCreatePageNote(leaf, file, pageNumber, point, text) }).open();
+    };
+    this._lmbCancelTextPlacement = cancel;
+    doc.addEventListener("pointerdown", place, true); doc.addEventListener("keydown", key, true);
+  },
+
   lmbTextBlockViews(path) {
     const store = this.settings.pdfTextBlocks || (this.settings.pdfTextBlocks = {});
     return store[path] || (store[path] = {});
@@ -85,6 +132,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         page: Number(page.dataset.pageNumber), x, y, w: Math.min(.55, 1 - x),
         fontSize: Number(views[entry.exId] && views[entry.exId].fontSize) || 16
       });
+      if (entry.pageNote) {
+        const list = this.settings.quickExcerpts && this.settings.quickExcerpts[path];
+        const item = Array.isArray(list) && list.find((e) => e.exId === entry.exId);
+        if (item) item.page = Number(page.dataset.pageNumber);
+        this.lmbSchedulePdfSidebarRefresh(0);
+      }
       cancel();
       try { await this.saveSettings(); await this.lmbRefreshTextBlocks(); }
       catch (err) { new Notice("文本块保存失败：" + err.message); }
@@ -153,15 +206,16 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     block.style.width = (view.w || .55) * 100 + "%";
     // 1000 reference units keep type proportional when PDF.js zooms or resizes.
     block.style.fontSize = (view.fontSize || 16) * page.getBoundingClientRect().width / 1000 + "px";
+    block.style.setProperty("--lmb-pdf-text-size", block.style.fontSize);
     const body = block.querySelector(".lmb-pdf-text-body");
     body.style.maxHeight = Math.max(24, page.getBoundingClientRect().height * (1 - (view.y || 0)) - 8) + "px";
     body.title = "双击编辑 Markdown；长文超出页面时可在块内滚动";
     block.querySelector("input").value = String(view.fontSize || 16);
     const tools = block.querySelector(".lmb-pdf-text-tools");
-    const nearTop = (view.y || 0) * page.getBoundingClientRect().height < 60;
+    const nearTop = (view.y || 0) * page.getBoundingClientRect().height < Math.max(76, tools.offsetHeight || 0);
     tools.style.bottom = nearTop ? "auto" : "100%";
     tools.style.top = nearTop ? "0" : "auto";
-    tools.style.left = Math.min(0, page.getBoundingClientRect().width * (1 - (view.x || 0)) - 280) + "px";
+    tools.style.left = Math.min(0, page.getBoundingClientRect().width * (1 - (view.x || 0)) - Math.max(360, tools.offsetWidth || 0)) + "px";
     block.querySelector(".lmb-text-sidebar-toggle").textContent = this.lmbIsTextBlockCollapsed(view) ? "侧栏展开" : "侧栏收起";
     block.classList.toggle("is-note-style", view.style === "note");
   },
@@ -188,6 +242,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const value = Number(size.value);
       if (value >= 8 && value <= 72) size.onchange();
     };
+    const adjustSize = (delta) => {
+      size.value = String(Math.max(8, Math.min(72, (Number(view.fontSize) || 16) + delta)));
+      return size.onchange();
+    };
+    const smaller = button("A−", () => adjustSize(-1), "lmb-text-size-step");
+    smaller.setAttribute("aria-label", "减小字号"); smaller.setAttribute("title", "减小字号");
+    const larger = button("A+", () => adjustSize(1), "lmb-text-size-step");
+    larger.setAttribute("aria-label", "增大字号"); larger.setAttribute("title", "增大字号");
     button("样式", () => { view.style = view.style === "note" ? "transparent" : "note"; this.lmbStyleTextBlock(block, page, view); return persist(); });
     button("侧栏收起", () => this.lmbSetTextBlockCollapsed(entry, entry.pdfPath, !this.lmbIsTextBlockCollapsed(view)), "lmb-text-sidebar-toggle");
     button("移除", async () => {

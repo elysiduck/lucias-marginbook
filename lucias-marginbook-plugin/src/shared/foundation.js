@@ -651,7 +651,10 @@ const LMB_STYLES = [
   '.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-delete:hover{border-color:var(--text-error);background:color-mix(in srgb,var(--text-error) 14%,var(--background-secondary));color:var(--text-error)!important;}',
   '.lmb-pdf-sidebar-header-actions button:active,.lmb-pdf-sidebar-expand-entry:active,.lmb-pdf-sidebar-note-expand:active,.lmb-pdf-sidebar-item-actions button:active{transform:translateY(1px);box-shadow:inset 0 1px 3px #0003;}',
   '.lmb-pdf-sidebar-header-actions button:focus-visible,.lmb-pdf-sidebar-expand-entry:focus-visible,.lmb-pdf-sidebar-note-expand:focus-visible,.lmb-pdf-sidebar-item-actions button:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px;}',
-  '@media(prefers-reduced-motion:reduce){.lmb-pdf-sidebar-header-actions button,.lmb-pdf-sidebar-expand-entry,.lmb-pdf-sidebar-note-expand,.lmb-pdf-sidebar-item-actions button{transition:none!important;transform:none!important;}}'
+  '@media(prefers-reduced-motion:reduce){.lmb-pdf-sidebar-header-actions button,.lmb-pdf-sidebar-expand-entry,.lmb-pdf-sidebar-note-expand,.lmb-pdf-sidebar-item-actions button{transition:none!important;transform:none!important;}}',
+  '.lmb-pdf-text-body{--table-text-size:var(--lmb-pdf-text-size);--table-header-size:var(--lmb-pdf-text-size);}.lmb-pdf-text-body :is(.table-wrapper,table,thead,tbody,tfoot,tr,th,td){font-size:var(--lmb-pdf-text-size)!important;line-height:1.5!important;color:inherit!important;}.lmb-pdf-text-body :is(th,td)>:is(p,ul,ol,div){font-size:inherit!important;}.lmb-pdf-text-body table{border-collapse:collapse;max-width:100%;}.lmb-pdf-text-body :is(th,td){padding:.3em .5em;overflow-wrap:anywhere;}',
+  '.lmb-pdf-text-tools .lmb-text-size-step{min-width:34px;min-height:32px;padding:4px 7px;}.lmb-pdf-text-tools{min-width:min(360px,calc(100vw - 40px));}.pdf-embed .lmb-toolbar-page-note,.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-page-note{display:none!important;}.lmb-toolbar-group .lmb-toolbar-page-note{cursor:pointer;border:0;background:transparent;box-shadow:none;}',
+  '@media(pointer:coarse){.lmb-pdf-text-tools button,.lmb-pdf-text-tools input{min-height:44px;height:44px;}.lmb-pdf-text-tools .lmb-text-size-step{min-width:44px;}.lmb-toolbar-page-note{min-width:40px;min-height:40px;}}'
 ];
 
 if (typeof module !== "undefined" && module.exports) {
