@@ -1,0 +1,24 @@
+{
+  "version": "0.40.0",
+  "buildSha256": "27fc46807458ee109dda623e5d1f8ba975c4bfa0727d79c47e0173b23f95628f",
+  "nodeSuitesPassed": 9,
+  "browserChecksPassed": 440,
+  "selectionChecks": 21,
+  "trustedMouse": {
+    "singleClickSelects": true,
+    "hoverAwayKeepsToolbar": true,
+    "overlapToolbarClickable": true,
+    "doubleClickEdits": true,
+    "blankSavesAndClears": true
+  },
+  "regressions": [
+    "Single click selects and pins toolbar without editing; double click enters live Markdown.",
+    "Blank click clears selection record, badge, hover and retained DOM focus after a successful save.",
+    "Escape releases selection and cancelling editing clears its highlight.",
+    "Failed saving retains the editor, full draft and focus; switching does not open another editor.",
+    "Cancelled delayed double-click requests cannot reopen an editor later.",
+    "The selected toolbar wins DOM hit testing against an overlapping later note and remains clickable."
+  ],
+  "dataScope": "Only plugin code and manifest installed; no changes to stored excerpts, ink, Markdown, Canvas geometry or note placement.",
+  "limits": "Browser DOM, mouse operations and screenshots verified. Touch/pen events are synthetic. Native Obsidian and physical tablet not operated in this run."
+}

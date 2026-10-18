@@ -1,0 +1,28 @@
+{
+  "checks": 21,
+  "results": [
+    "mouse single click only selects",
+    "mouse toolbar remains visible after selection",
+    "mouse blank clears persistent outline and badge",
+    "touch single click only selects",
+    "touch toolbar remains visible after selection",
+    "touch blank clears persistent outline and badge",
+    "pen single click only selects",
+    "pen toolbar remains visible after selection",
+    "pen blank clears persistent outline and badge",
+    "blank releases focus inside the old block",
+    "Escape cancels non-editing selection",
+    "double click opens rendered Markdown editing",
+    "switching saves first and selects the other block without editing",
+    "failed blank save retains editor and draft",
+    "failed switch never opens another editor",
+    "successful retry saves and removes selection",
+    "blank click invalidates a delayed double-click editor opening",
+    "cancelling editing also releases its selected outline",
+    "selected toolbar wins actual hit testing over overlapping note content",
+    "overlapping toolbar action updates the intended note",
+    "toolbar click keeps selection pinned"
+  ],
+  "physicalTablet": false,
+  "nativeObsidian": false
+}

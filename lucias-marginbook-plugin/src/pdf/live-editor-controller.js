@@ -215,13 +215,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const page = target.closest && target.closest(".page[data-page-number]");
         if (!page || !opts.pageRoot.contains(page)) return;
         const next = target.closest(".lmb-pdf-text-block");
-        // Toolbar actions are separate interactions; clicking a note body switches editors.
+        // A different body saves the current editor and selects its target;
+        // only the target's double-click handler requests a new editor.
         if (next && !target.closest(".lmb-pdf-text-body")) return;
         event.preventDefault(); event.stopImmediatePropagation();
+        if (next && next._lmbTextEntry) { this.lmbActivateTextBlock(next, false, event); return; }
         const request = ++outsideRequest;
         if (!await state.save()) { input.focus({ preventScroll: true }); return; }
         if (request !== outsideRequest || this._unloaded) return;
-        if (next && next.isConnected) await this.lmbEditTextBlockNote(next._lmbTextEntry, null, next, event);
       };
       opts.pageRoot.addEventListener("click", state.outsideClick, true);
     }

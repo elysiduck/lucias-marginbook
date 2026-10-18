@@ -648,14 +648,14 @@ const LMB_STYLES = [
   '.lmb-pdf-text-block:hover,.lmb-pdf-text-block:focus-within{border-color:var(--interactive-accent,#6a9);}',
   '.lmb-pdf-text-block.is-note-style{background:#fff6d8;box-shadow:0 2px 6px #0002;}',
   '.lmb-pdf-text-tools{position:absolute;bottom:100%;left:0;display:flex;flex-wrap:wrap;gap:3px;min-width:260px;max-width:100%;padding:4px;background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:5px;opacity:0;pointer-events:none;z-index:2;color:var(--text-normal);font:12px/1.3 var(--font-interface);}',
-  '.lmb-pdf-text-block:hover>.lmb-pdf-text-tools,.lmb-pdf-text-block:focus-within>.lmb-pdf-text-tools{opacity:1;pointer-events:auto;}',
+  '.lmb-pdf-text-block.lmb-note-selected>.lmb-pdf-text-tools{opacity:1;pointer-events:auto;}',
   '.lmb-pdf-text-tools button{font-size:12px;padding:3px 6px;height:26px;}.lmb-pdf-text-tools button:first-child{cursor:move;touch-action:none;}',
   '.lmb-pdf-text-tools input{width:52px;height:26px;font-size:12px;padding:2px;}',
   '.lmb-pdf-text-body{padding:.45em .6em;overflow:auto;overflow-wrap:anywhere;font-size:inherit!important;color:inherit;line-height:inherit;}',
   '.lmb-pdf-text-body :is(p,li,blockquote,table){font-size:1em;line-height:1.5;color:inherit;}.lmb-pdf-text-body :is(p,ul,ol,blockquote){margin-block:.5em;}',
   '.lmb-pdf-text-body h1{font-size:1.7em;}.lmb-pdf-text-body h2{font-size:1.4em;}.lmb-pdf-text-body h3{font-size:1.2em;}.lmb-pdf-text-body h4,.lmb-pdf-text-body h5,.lmb-pdf-text-body h6{font-size:1em;}.lmb-pdf-text-body :is(h1,h2,h3,h4,h5,h6){color:inherit;margin:.6em 0 .35em;}',
   '.lmb-pdf-text-body blockquote{border-left:3px solid #74b490;padding-left:.7em;}.lmb-pdf-text-body img{max-width:100%;}.lmb-pdf-text-body pre{overflow:auto;}.lmb-pdf-text-body a{color:#1765a3;}',
-  '.lmb-pdf-text-resize{position:absolute;right:-7px;top:0;bottom:0;width:14px;cursor:ew-resize;touch-action:none;}.lmb-pdf-text-block:hover>.lmb-pdf-text-resize,.lmb-pdf-text-block:focus-within>.lmb-pdf-text-resize{border-right:3px solid var(--interactive-accent,#6a9);}',
+  '.lmb-pdf-text-resize{position:absolute;right:-7px;top:0;bottom:0;width:14px;cursor:ew-resize;touch-action:none;}.lmb-pdf-text-resize{pointer-events:none;}.lmb-pdf-text-block.lmb-note-selected>.lmb-pdf-text-resize{pointer-events:auto;border-right:3px solid var(--interactive-accent,#6a9);}',
   '.lmb-pdf-sidebar-item-note.is-foldable{position:relative;padding-bottom:28px;}.lmb-pdf-sidebar-item-note.is-foldable.is-collapsed{padding-bottom:6px;}.lmb-pdf-sidebar-item-note.is-collapsed .lmb-pdf-sidebar-item-note-body{max-height:160px;overflow:hidden;}',
   '.lmb-pdf-sidebar-item-note.is-collapsed:after{content:"";position:absolute;bottom:0;left:0;right:0;height:30px;background:linear-gradient(transparent,var(--background-primary));pointer-events:none;border-radius:0 0 5px 5px;}.lmb-pdf-sidebar-note-expand{position:absolute;right:6px;bottom:5px;z-index:1;height:23px;padding:1px 7px;font-size:11px;line-height:1.2;border-radius:5px;background:var(--background-primary);color:var(--text-muted);border:1px solid var(--background-modifier-border);}',
   '.lmb-pdf-sidebar-item-summary{display:none;}.lmb-pdf-sidebar-item-title{flex-shrink:0;}.lmb-pdf-sidebar-header-actions{display:flex;align-items:center;gap:4px;flex-shrink:0;margin-left:auto;}.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-icon-button{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;min-width:26px;padding:0;background:transparent;border:0;box-shadow:none;color:var(--text-muted);}.lmb-pdf-sidebar-header-actions .lmb-pdf-sidebar-delete:hover{background:var(--background-modifier-error);color:var(--text-error)!important;}',
@@ -671,7 +671,7 @@ const LMB_STYLES = [
   '.lmb-pdf-text-body{--table-text-size:var(--lmb-pdf-text-size);--table-header-size:var(--lmb-pdf-text-size);}.lmb-pdf-text-body :is(.table-wrapper,table,thead,tbody,tfoot,tr,th,td){font-size:var(--lmb-pdf-text-size)!important;line-height:1.5!important;color:inherit!important;}.lmb-pdf-text-body :is(th,td)>:is(p,ul,ol,div){font-size:inherit!important;}.lmb-pdf-text-body table{border-collapse:collapse;max-width:100%;}.lmb-pdf-text-body :is(th,td){padding:.3em .5em;overflow-wrap:anywhere;}',
   '.lmb-pdf-text-tools .lmb-text-size-step{min-width:34px;min-height:32px;padding:4px 7px;}.lmb-pdf-text-tools{min-width:min(360px,calc(100vw - 40px));}.pdf-embed .lmb-toolbar-page-note,.workspace-leaf-content:not([data-type="pdf"]) .lmb-toolbar-page-note{display:none!important;}.lmb-toolbar-group .lmb-toolbar-page-note{cursor:pointer;border:0;background:transparent;box-shadow:none;}',
   '@media(pointer:coarse){.lmb-pdf-text-tools button,.lmb-pdf-text-tools input{min-height:44px;height:44px;}.lmb-pdf-text-tools .lmb-text-size-step{min-width:44px;}.lmb-toolbar-page-note{min-width:40px;min-height:40px;}}',
-  '.lmb-pdf-text-block.is-editing{z-index:75;border-color:var(--interactive-accent);}.lmb-pdf-text-block.is-editing>.lmb-pdf-text-tools,.lmb-pdf-text-block.is-editing>.lmb-pdf-text-resize{display:none;}.lmb-inline-note-editor{padding:7px;background:var(--background-primary);color:var(--text-normal);border:1px solid var(--interactive-accent);border-radius:5px;box-shadow:0 3px 10px #0002;}',
+  '.lmb-pdf-text-block.is-editing{z-index:95;border-color:var(--interactive-accent);}.lmb-pdf-text-block.is-editing>.lmb-pdf-text-tools,.lmb-pdf-text-block.is-editing>.lmb-pdf-text-resize{display:none;}.lmb-inline-note-editor{padding:7px;background:var(--background-primary);color:var(--text-normal);border:1px solid var(--interactive-accent);border-radius:5px;box-shadow:0 3px 10px #0002;}',
   '.lmb-inline-note-controls{display:flex;align-items:center;gap:5px;font:12px/1.3 var(--font-interface);margin-bottom:5px;}.lmb-inline-note-controls>span:first-child{white-space:nowrap;}.lmb-inline-note-status{flex:1;min-width:0;font-size:11px;color:var(--text-muted);}.lmb-inline-note-controls button{height:28px;min-width:40px;padding:2px 7px;font-size:12px;}.lmb-inline-note-input{display:block;width:100%;box-sizing:border-box;min-height:60px;max-height:180px;padding:6px 8px;resize:vertical;overflow:auto;font:15px/1.5 var(--font-text);color:var(--text-normal);background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:4px;}',
   '.lmb-pdf-text-block.is-editing>.lmb-pdf-text-body{background:color-mix(in srgb,white 97%,transparent);color:#222;}.lmb-pdf-text-block.is-draft>.lmb-pdf-text-tools{display:none;}.modal:has(.lmb-note-editor-compact){width:min(620px,calc(100vw - 32px));max-height:80vh;}.lmb-note-editor-compact .lmb-note-editor-grid{grid-template-columns:1fr;min-height:0;height:auto;gap:8px;}.lmb-note-editor-compact .lmb-note-editor-input{min-height:72px;max-height:180px;height:72px;padding:8px;}.lmb-note-editor-compact .lmb-note-editor-preview{height:auto;max-height:220px;min-height:40px;padding:8px;}',
   '.lmb-inline-note-controls>span:first-child{min-width:0;max-width:50%;overflow:hidden;text-overflow:ellipsis;}.lmb-inline-note-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.lmb-inline-note-controls button{flex-shrink:0;}',
@@ -682,7 +682,7 @@ const LMB_STYLES = [
   '@media(any-pointer:coarse){.lmb-live-markdown-input{font-size:max(16px,var(--lmb-pdf-text-size,16px));}}',
   '.lmb-pdf-text-tools,.lmb-inline-note-controls,.lmb-pdf-text-resize,.lmb-mark{user-select:none!important;-webkit-user-select:none!important;}',
   '.lmb-pdf-text-tools{width:max-content;min-width:0;max-width:calc(100vw - 24px);align-items:center;gap:3px;padding:4px;}.lmb-pdf-text-tools button,.lmb-pdf-text-tools input{box-sizing:border-box;height:30px!important;min-height:30px!important;margin:0!important;line-height:1!important;font:12px/1 var(--font-interface);border:1px solid var(--background-modifier-border);border-radius:5px;box-shadow:none;padding:3px 6px;}.lmb-pdf-text-tools .lmb-text-size-step,.lmb-pdf-text-tools button:first-child{min-width:28px;padding:3px 5px;}.lmb-pdf-text-tools input{width:38px!important;min-width:38px;max-width:38px;padding:2px 3px;text-align:center;appearance:textfield;}.lmb-pdf-text-tools input::-webkit-inner-spin-button,.lmb-pdf-text-tools input::-webkit-outer-spin-button{appearance:none;margin:0;}',
-  '.lmb-pdf-text-block.lmb-note-hover{outline:1px solid var(--interactive-accent,#70bd94);outline-offset:2px;}.lmb-pdf-text-block.lmb-note-selected{border-color:var(--interactive-accent,#70bd94);outline:2px solid var(--interactive-accent,#70bd94);outline-offset:2px;box-shadow:0 0 0 5px #70bd941c;}.lmb-pdf-text-block.lmb-note-selected:before{content:attr(data-lmb-badge);position:absolute;right:0;bottom:calc(100% + 5px);z-index:1;padding:2px 6px;background:var(--interactive-accent,#70bd94);color:var(--text-on-accent,#132f22);font:11px/1.4 var(--font-interface);border-radius:4px;pointer-events:none;user-select:none;}.lmb-mark.lmb-note-selected{outline:2px solid var(--interactive-accent,#70bd94);outline-offset:1px;}.lmb-pdf-sidebar-item.is-active{border-color:var(--interactive-accent,#70bd94);box-shadow:inset 3px 0 var(--interactive-accent,#70bd94);}',
+  '.lmb-pdf-text-block.lmb-note-hover{outline:1px solid var(--interactive-accent,#70bd94);outline-offset:2px;}.lmb-pdf-text-block.lmb-note-selected{z-index:90;border-color:var(--interactive-accent,#70bd94);outline:2px solid var(--interactive-accent,#70bd94);outline-offset:2px;box-shadow:0 0 0 5px #70bd941c;}.lmb-pdf-text-block.lmb-note-selected:before{content:attr(data-lmb-badge);position:absolute;right:0;bottom:calc(100% + 5px);z-index:1;padding:2px 6px;background:var(--interactive-accent,#70bd94);color:var(--text-on-accent,#132f22);font:11px/1.4 var(--font-interface);border-radius:4px;pointer-events:none;user-select:none;}.lmb-mark.lmb-note-selected{outline:2px solid var(--interactive-accent,#70bd94);outline-offset:1px;}.lmb-pdf-sidebar-item.is-active{border-color:var(--interactive-accent,#70bd94);box-shadow:inset 3px 0 var(--interactive-accent,#70bd94);}',
   '.lmb-pdf-sidebar-item-note.is-sidebar-editing{position:relative;max-height:none;padding:0 0 4px;overflow:visible;}.is-sidebar-editing>.lmb-inline-note-editor{position:static;inset:auto;margin-bottom:4px;box-shadow:none;border:1px solid var(--background-modifier-border);}.is-sidebar-editing>.lmb-pdf-sidebar-item-note-body{max-height:none!important;overflow:visible;background:transparent;color:var(--text-normal);padding:0 4px;}.is-sidebar-editing>.lmb-pdf-sidebar-note-expand,.lmb-pdf-sidebar-item.is-note-editing>.lmb-pdf-sidebar-item-actions{display:none;}.lmb-pdf-sidebar-item.is-note-editing{display:block!important;}.lmb-pdf-sidebar-item.is-note-editing>.lmb-pdf-sidebar-item-note{display:block!important;}',
   '@media(any-pointer:coarse){.lmb-pdf-text-tools button,.lmb-pdf-text-tools input{height:40px!important;min-height:40px!important;font-size:13px;}.lmb-pdf-text-tools button:first-child,.lmb-pdf-text-tools .lmb-text-size-step{min-width:36px;}.lmb-pdf-text-tools input{width:44px!important;min-width:44px;max-width:44px;}}',
   '.lmb-ink-tools-content>.lmb-ink-width-control{flex:0 0 105px;min-width:105px;}.lmb-ink-link-drag{touch-action:none;user-select:none;cursor:grab!important;}.lmb-ink-link-drag:active{cursor:grabbing!important;}.lmb-ink-link-ghost{position:fixed;z-index:100000;pointer-events:none;background:var(--interactive-accent);color:var(--text-on-accent);padding:7px 11px;border-radius:8px;box-shadow:0 3px 12px #0005;font-size:13px;}',
@@ -3949,7 +3949,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.39.2";
+    st.dataset.lmbVersion = "0.40.0";
   }
 
 }
@@ -10776,6 +10776,57 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 /* Editable Markdown overlays. Content stays in the existing excerpt note store;
  * this store contains presentation only, keyed by PDF path and stable excerpt ID. */
 Object.assign(LuciasMarginBookPlugin.prototype, {
+  async lmbFinishTextBlockEditors(leaf, except) {
+    const sidebar = leaf.containerEl.querySelector('.lmb-pdf-excerpt-sidebar');
+    const sidebarEditor = sidebar?._lmbSidebarEditor;
+    if (sidebarEditor && !await sidebarEditor.save()) { sidebarEditor.input.focus({ preventScroll: true }); return false; }
+    for (const block of [...(this._lmbActiveInlineBlocks || [])]) {
+      const editor = block._lmbInlineEditor;
+      if (block !== except && leaf.containerEl.contains(block) && editor && !await editor.save()) { editor.input.focus({ preventScroll: true }); return false; }
+    }
+    return true;
+  },
+
+  async lmbActivateTextBlock(block, edit = false, event) {
+    const leaf = (this.app.workspace.getLeavesOfType('pdf') || []).find(l => l.containerEl.contains(block));
+    if (!leaf || !block.isConnected) return false;
+    const request = leaf._lmbTextInteraction = {};
+    if (!await this.lmbFinishTextBlockEditors(leaf, block)) return false;
+    if (leaf._lmbTextInteraction !== request || !block.isConnected || leaf.view.file?.path !== block._lmbTextEntry.pdfPath || this._unloaded) return false;
+    this.lmbSelectPdfSidebarEntry(leaf, block._lmbTextEntry);
+    if (edit) await this.lmbEditTextBlockNote(block._lmbTextEntry, null, block, event, request);
+    return true;
+  },
+
+  lmbEnsureTextBlockInteractions(leaf) {
+    if (!leaf || leaf._lmbTextSelectionListener) return;
+    const root = leaf.containerEl, doc = root.ownerDocument;
+    const clear = async (event, force = false) => {
+      const target = event.target;
+      if (!target?.closest || event.button > 0 || !force && root.contains(target) && target.closest('.lmb-pdf-text-block')) return;
+      if (root.contains(target) && target.closest('.lmb-pdf-excerpt-sidebar,.lmb-sidebar-header-actions,.lmb-mark')) return;
+      if (!root.querySelector('.lmb-pdf-text-block.lmb-note-selected,.lmb-pdf-text-block.is-editing')) return;
+      const request = leaf._lmbTextInteraction = {};
+      const editing = root.querySelector('.lmb-pdf-text-block.is-editing');
+      if (editing && root.contains(target) && target.closest('.page')) { event.preventDefault(); event.stopImmediatePropagation(); }
+      if (!await this.lmbFinishTextBlockEditors(leaf)) return;
+      if (leaf._lmbTextInteraction !== request || this._unloaded) return;
+      leaf._lmbSelectedExcerpt = null;
+      root.querySelectorAll('.lmb-pdf-text-block').forEach(block => {
+        block.classList.remove('lmb-note-hover');
+        if (block.contains(doc.activeElement)) doc.activeElement.blur();
+      });
+      this.lmbSyncPdfNoteSelection(leaf);
+    };
+    const escape = event => {
+      if (event.key !== 'Escape' || event.isComposing || root.querySelector('.lmb-pdf-text-block.is-editing') || /INPUT|TEXTAREA/.test(event.target?.tagName)) return;
+      if (root.querySelector('.lmb-pdf-text-block.lmb-note-selected')) clear(event, true);
+    };
+    leaf._lmbTextSelectionListener = clear;
+    doc.addEventListener('click', clear, true); root.addEventListener('keydown', escape);
+    if (this.register) this.register(() => { doc.removeEventListener('click', clear, true); root.removeEventListener('keydown', escape); delete leaf._lmbTextSelectionListener; });
+  },
+
   async lmbCreatePageNote(leaf, file, page, point, markdown, placement = {}) {
     if (this._unloaded || !leaf.view || leaf.view.file !== file) throw new Error("PDF 已切换，请在目标页面重新创建");
     if (!String(markdown || "").trim()) return null;
@@ -10885,7 +10936,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
   },
 
-  async lmbEditTextBlockNote(entry, afterSave, preferredBlock, editEvent) {
+  async lmbEditTextBlockNote(entry, afterSave, preferredBlock, editEvent, interactionToken) {
     if (this.inkMode) await this.lmbSetInkMode(false);
     try {
       const block = preferredBlock || (this.app.workspace.getLeavesOfType("pdf") || [])
@@ -10896,6 +10947,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const sidebarDraft = this._lmbSidebarNoteDrafts && this._lmbSidebarNoteDrafts.get(this.lmbNoteEditorKey(entry));
       if ((!block || !block.isConnected) && sidebarDraft && !sidebarDraft.closed) { sidebarDraft.input.focus({ preventScroll: true }); return; }
       const value = await this.lmbTextBlockNote(entry);
+      const interactionLeaf = interactionToken && (this.app.workspace.getLeavesOfType('pdf') || []).find(l => l.containerEl.contains(block));
+      if (interactionToken && (!interactionLeaf || interactionLeaf._lmbTextInteraction !== interactionToken)) return;
       if (block && block.isConnected) {
         const owner = (this.app.workspace.getLeavesOfType("pdf") || []).find(l => l.containerEl.contains(block));
         if (owner) {
@@ -10904,12 +10957,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           const editors = Array.from(this._lmbActiveInlineBlocks || []).filter(el => el !== block && owner.containerEl.contains(el) && el._lmbInlineEditor);
           for (const other of editors) if (!await other._lmbInlineEditor.save()) { other._lmbInlineEditor.input.focus({ preventScroll: true }); return; }
           if (!owner.view.file || owner.view.file.path !== entry.pdfPath) return;
+          if (interactionToken && owner._lmbTextInteraction !== interactionToken) return;
         }
         const cursorOffset = editEvent ? this.lmbLivePointerOffset(block.querySelector(".lmb-pdf-text-body"), value, editEvent) : 0;
         this.lmbOpenInlineNoteEditor(block, { title: "实时编辑", autosave: true, pageRoot: owner && owner.containerEl, value, cursorOffset, sourcePath: entry.sourceMd || entry.pdfPath || "",
           onSubmit: async (text) => { await this.lmbSaveTextBlockNote(entry, text); this.lmbSchedulePdfSidebarRefresh(0); },
           onClose: (saved, text) => {
             if (this._unloaded) return;
+            if (!saved && owner?._lmbSelectedExcerpt?.exId === entry.exId) {
+              owner._lmbTextInteraction = {}; owner._lmbSelectedExcerpt = null;
+              this.lmbSyncPdfNoteSelection(owner);
+            }
             this.lmbRefreshTextBlocks().catch((err) => new Notice("预览刷新失败：" + err.message));
             if (saved) { this.lmbSchedulePdfSidebarRefresh(0); if (afterSave) Promise.resolve(afterSave(text)).catch((err) => new Notice(err.message)); }
           }
@@ -11069,7 +11127,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     block.style.setProperty("--lmb-pdf-text-size", block.style.fontSize);
     const body = block.querySelector(".lmb-pdf-text-body");
     body.style.maxHeight = Math.max(24, pageHeight * (1 - y) - 8) + "px";
-    body.title = block._lmbInlineEditor ? "点击段落切换源码；Ctrl/Cmd+Enter 保存，Esc 取消" : "点击文字原位编辑 Markdown；长文可在块内滚动";
+    body.title = block._lmbInlineEditor ? "点击段落切换源码；Ctrl/Cmd+Enter 保存，Esc 取消" : "单击选中并显示工具栏；双击编辑 Markdown；长文可在块内滚动";
     block.querySelector("input").value = String(view.fontSize || 16);
     const tools = block.querySelector(".lmb-pdf-text-tools");
     const nearTop = (view.y || 0) * page.getBoundingClientRect().height < Math.max(76, tools.offsetHeight || 0);
@@ -11086,6 +11144,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     block._lmbTextView = view;
     block._lmbTextSourceKey = JSON.stringify([entry.pdfPath, entry.sourceMd || "", !!entry.quick]);
     block.tabIndex = 0;
+    const owner = (this.app.workspace.getLeavesOfType('pdf') || []).find(l => l.containerEl.contains(page));
+    this.lmbEnsureTextBlockInteractions(owner);
     const bar = block.createDiv({ cls: "lmb-pdf-text-tools" });
     const grip = bar.createEl("button", { text: "⠿", attr: { title: "拖动移动文本块", "aria-label": "移动文本块" } });
     const button = (text, action, cls) => {
@@ -11122,17 +11182,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (block._lmbInlineEditor || ev.ctrlKey || ev.metaKey) return;
       const selection = body.ownerDocument.defaultView && body.ownerDocument.defaultView.getSelection();
       if (selection && !selection.isCollapsed) return;
-      const leaf = (this.app.workspace.getLeavesOfType("pdf") || []).find(l => l.view && l.view.file && l.view.file.path === entry.pdfPath);
-      if (leaf) this.lmbSelectPdfSidebarEntry(leaf, entry);
-      ev.preventDefault(); ev.stopPropagation(); this.lmbEditTextBlockNote(entry, null, block, ev);
+      ev.stopPropagation(); this.lmbActivateTextBlock(block, false, ev);
     }, true);
-    body.ondblclick = (ev) => { ev.stopPropagation(); this.lmbEditTextBlockNote(entry, null, block, ev); };
+    body.ondblclick = (ev) => { if (ev.ctrlKey || ev.metaKey) return; ev.preventDefault(); ev.stopPropagation(); this.lmbActivateTextBlock(block, true, ev); };
+    block.addEventListener('keydown', ev => { if (ev.target === block && (ev.key === 'Enter' || ev.key === 'F2')) { ev.preventDefault(); this.lmbActivateTextBlock(block, true); } });
     // Keep overlay interaction out of PDF selection/ink gestures while preserving text selection.
     ["pointerdown", "click", "dblclick"].forEach((type) => block.addEventListener(type, (ev) => ev.stopPropagation()));
     const resize = block.createDiv({ cls: "lmb-pdf-text-resize", attr: { title: "拖动调整宽度" } });
     const start = (ev, widthOnly) => {
       if (ev.button !== 0) return;
       ev.preventDefault(); ev.stopPropagation();
+      if (owner) this.lmbSelectPdfSidebarEntry(owner, entry);
       const rect = page.getBoundingClientRect(), origin = { x: view.x, y: view.y, w: view.w }, sx = ev.clientX, sy = ev.clientY;
       const control = ev.currentTarget; control.setPointerCapture(ev.pointerId);
       const move = (event) => {
@@ -11402,13 +11462,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const page = target.closest && target.closest(".page[data-page-number]");
         if (!page || !opts.pageRoot.contains(page)) return;
         const next = target.closest(".lmb-pdf-text-block");
-        // Toolbar actions are separate interactions; clicking a note body switches editors.
+        // A different body saves the current editor and selects its target;
+        // only the target's double-click handler requests a new editor.
         if (next && !target.closest(".lmb-pdf-text-body")) return;
         event.preventDefault(); event.stopImmediatePropagation();
+        if (next && next._lmbTextEntry) { this.lmbActivateTextBlock(next, false, event); return; }
         const request = ++outsideRequest;
         if (!await state.save()) { input.focus({ preventScroll: true }); return; }
         if (request !== outsideRequest || this._unloaded) return;
-        if (next && next.isConnected) await this.lmbEditTextBlockNote(next._lmbTextEntry, null, next, event);
       };
       opts.pageRoot.addEventListener("click", state.outsideClick, true);
     }
@@ -13636,7 +13697,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.39.2") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.40.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
