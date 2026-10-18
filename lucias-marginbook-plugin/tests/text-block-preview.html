@@ -28,7 +28,10 @@ const stubRender=async(_app,text,el)=>{
     const h=line.match(/^(#{1,6})\s+(.*)/);const p=el.createEl(h?'h'+h[1].length:'p');p.textContent=h?h[2]:line;p.innerHTML=p.innerHTML.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
   }
 };
-window.module={exports:{}};window.require=()=>({Plugin:class{},TFile:StubFile,Notice:StubNotice,PluginSettingTab:class{},Setting:class{},Modal:StubModal,FuzzySuggestModal:class{},MarkdownRenderer:{render:stubRender},setIcon:(el,icon)=>el.textContent=({'palette':'◉','text-cursor-input':'T','chevrons-up':'⌃','message-square-plus':'+','pencil':'✎','trash-2':'×','image':'▧','file-text':'▤','notebook-pen':'▤','waypoints':'⑂'}[icon]||'•'),normalizePath:p=>p,Platform:{}});
+// This mode deliberately preserves existing label nodes, as the host icon API
+// can do. A textContent-replacing stub masked repeated-label regressions.
+const hostLikeIcon=(el,icon)=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.classList.add('svg-icon');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.dataset.icon=icon;const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',icon==='chevron-left'?'M15 6l-6 6 6 6':icon==='chevron-right'?'M9 6l6 6-6 6':'M3 3h18v18H3z M9 3v18');svg.append(path);el.append(svg);};
+window.module={exports:{}};window.require=()=>({Plugin:class{},TFile:StubFile,Notice:StubNotice,PluginSettingTab:class{},Setting:class{},Modal:StubModal,FuzzySuggestModal:class{},MarkdownRenderer:{render:stubRender},setIcon:new URLSearchParams(location.search).has('controls')?hostLikeIcon:(el,icon)=>el.textContent=({'palette':'◉','text-cursor-input':'T','chevrons-up':'⌃','message-square-plus':'+','pencil':'✎','trash-2':'×','image':'▧','file-text':'▤','notebook-pen':'▤','waypoints':'⑂'}[icon]||'•'),normalizePath:p=>p,Platform:{}});
 </script><script src="../main.js"></script><script>
 const plugin=new module.exports();
 const pdf=Object.assign(new StubFile(),{path:'demo.pdf',name:'ProblemSet 2 Neurofinance.pdf',extension:'pdf'});
@@ -60,4 +63,4 @@ plugin.lmbRenderPdfSidebarForLeaf(leaf);
 plugin.lmbEnsureToolbarButtons();
 // Simulate a host theme with fixed table sizes; overlay styles must override it.
 document.head.createEl('style',{text:'.markdown-rendered table{font-size:30px}.markdown-rendered th,.markdown-rendered td{font-size:30px;color:#bbb;border:1px solid #777}'});
-</script><script>for(const [flag,src]of [['layout','live-editor-layout.js'],['sidebar','sidebar-live-preview.js'],['flow','pdf-note-flow-preview.js'],['ink','ink-workflow-preview.js'],['inklinks','ink-links-preview.js']])if(new URLSearchParams(location.search).has(flag)){const test=document.createElement('script');test.src=src+'?v=0360-1';document.body.append(test);}</script></html>
+</script><script>for(const [flag,src]of [['layout','live-editor-layout.js'],['sidebar','sidebar-live-preview.js'],['flow','pdf-note-flow-preview.js'],['ink','ink-workflow-preview.js'],['inklinks','ink-links-preview.js'],['controls','sidebar-controls-preview.js']])if(new URLSearchParams(location.search).has(flag)){const test=document.createElement('script');test.src=src+'?v=0392-1';document.body.append(test);}</script></html>

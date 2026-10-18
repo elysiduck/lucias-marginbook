@@ -178,6 +178,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const open = leaf._lmbPdfSidebarOpen !== false, label = open ? "收起批注侧栏" : "打开批注侧栏";
     const left = this.settings.pdfSidebarSide === "left";
     const pointsLeft = open ? left : !left;
+    button.replaceChildren();
     try { setIcon(button, pointsLeft ? "chevron-left" : "chevron-right"); }
     catch (_) { button.setText(pointsLeft ? "‹" : "›"); }
     button.setAttribute("aria-label", label); button.setAttribute("title", label);
@@ -187,6 +188,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   lmbSyncSidebarSideButton(button) {
     if (!button) return;
     const left = this.settings.pdfSidebarSide === "left";
+    // setIcon is not a replace-all API in the host. Rebuild our own content
+    // explicitly so refreshes cannot accumulate old icons or text labels.
+    button.replaceChildren();
     try { setIcon(button, left ? "panel-left" : "panel-right"); } catch (_) { button.empty(); }
     button.createSpan({ text: left ? "左侧" : "右侧" });
     button.title = left ? "侧栏位于左侧，点击移到右侧" : "侧栏位于右侧，点击移到左侧";

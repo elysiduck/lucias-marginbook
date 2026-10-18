@@ -1,0 +1,44 @@
+{
+  "version": "0.39.2",
+  "buildSha256": "63de62a0b68122319626569ff4a6dab86dfe447e6daa38bc729e4644b4c46863",
+  "cause": "Refresh appended icons and label spans without first clearing the button; the old setIcon test double replaced textContent, masking the accumulation.",
+  "regressionDemonstratedBeforeFix": [
+    "Append-only icon fixture failed on its first refresh.",
+    "After the icon fix alone, the narrow-sidebar overflow case still failed."
+  ],
+  "checksPassed": {
+    "nodeSuites": 9,
+    "existingBrowserChecks": 335,
+    "hostLikeControlsAndOverflow": 84
+  },
+  "visual": {
+    "clientWidth": 339,
+    "scrollWidth": 339,
+    "overflowX": "hidden",
+    "labelCount": 1,
+    "iconCount": 1
+  },
+  "layoutCases": {
+    "refreshCycles": 24,
+    "widths": [
+      260,
+      340,
+      560
+    ],
+    "sides": [
+      "left",
+      "right"
+    ],
+    "mobileStyles": [
+      false,
+      true
+    ],
+    "content": [
+      "expanded Markdown commentary",
+      "unbroken code",
+      "long table URLs",
+      "wrapping action buttons"
+    ]
+  },
+  "limits": "Verified browser DOM and rendered screenshots, with a host-like append-only icon API. Native Obsidian and physical tablet interaction were not automated in this run."
+}
