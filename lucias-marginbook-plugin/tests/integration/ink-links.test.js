@@ -184,6 +184,28 @@ async function main() {
   resume.p._lmbInkContinuation=session;delete resume.p.settings.inkExcerptLinks[resume.pdf.path][resumeLink.exId];
   assert.equal(resume.p.lmbAssignInkContinuation({id:'deleted-reference'},resume.pdf.path,1),false);
   assert.equal(resume.p._lmbInkContinuation,null,'removed reference cannot capture further writing');
-  console.log("Ink associations: durable references, notes, eraser lineage, current bounds, Canvas layout/idempotence/concurrency, rollback and rename passed");
+  const unlink = fixture(), bound = await unlink.p.lmbLinkInkSelection(unlink.snapshot, unlink.excerpt);
+  const savedInk = clone(unlink.p._lmbInkDocs), savedExcerpt = clone(unlink.excerpt);
+  unlink.p.lmbSaveEditorsBeforeInkNavigation = async () => false;
+  assert.equal(await unlink.p.lmbUnlinkInkReference(bound.link.id), false);
+  assert(unlink.p.lmbFindInkReference(bound.link.id), 'unsaved Markdown blocks unlinking');
+  unlink.p.lmbSaveEditorsBeforeInkNavigation = async () => true;
+  const save = unlink.p.saveData; unlink.p.saveData = async () => { throw Error('unlink write failed'); };
+  await assert.rejects(unlink.p.lmbUnlinkInkReference(bound.link.id), /unlink write failed/);
+  assert.equal(unlink.p.lmbFindInkReference(bound.link.id).link, bound.link, 'failed unlink restores the exact previous reference');
+  unlink.p.saveData = save;
+  bound.link.groups.push({ id:'other-group', page:2, objectIds:['elsewhere'] });
+  await unlink.p.lmbUnlinkInkReference(bound.link.id, bound.link.groups[0].id);
+  assert.equal(unlink.p.lmbFindInkReference(bound.link.id).link.groups.length, 1, 'one-region unlink leaves other linked regions intact');
+  // Unlinking must also work when no original strokes remain.
+  await unlink.p.lmbUnlinkInkReference(bound.link.id);
+  assert.equal(unlink.p.lmbFindInkReference(bound.link.id), null);
+  assert.equal(unlink.p.disk.inkExcerptLinks[unlink.pdf.path][unlink.excerpt.exId], undefined);
+  assert.deepEqual(unlink.p._lmbInkDocs, savedInk, 'unlink never erases editable strokes or their metadata');
+  assert.deepEqual(unlink.excerpt, savedExcerpt, 'unlink never alters original excerpt or Markdown commentary');
+  const again = await unlink.p.lmbLinkInkSelection(unlink.snapshot, unlink.excerpt);
+  assert.notEqual(again.link.id, bound.link.id, 'relinking cannot reactivate detached Canvas references');
+  assert(again.link.number > bound.link.number, 'removed H numbers are not reused');
+  console.log("Ink associations: durable references, notes, eraser lineage, current bounds, Canvas layout/idempotence/concurrency, rollback, unlink and rename passed");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

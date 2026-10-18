@@ -274,6 +274,17 @@ LuciasMarginBookPlugin.prototype.lmbSetInkMode = async function (on) {
   }
   document.querySelectorAll(".page[data-lmb-ink-bound]").forEach(page => { if (page._lmbFinishInk) page._lmbFinishInk(); });
   this.inkMode = !!on;
+  if (!on) {
+    this._lmbInkSelection = []; this._lmbInkSelectionContext = null;
+    this.lmbCancelInkAssociation();
+    // Offscreen pages can skip the normal refresh. Clear every live overlay
+    // immediately, including pending animation frames which could repaint it.
+    document.querySelectorAll(".lmb-ink-live-layer").forEach(live => {
+      if (live._lmbInkFrame) cancelAnimationFrame(live._lmbInkFrame);
+      live._lmbInkFrame = 0; live._lmbInkPendingActive = null;
+      this.lmbDrawInkLiveLayer(live, null);
+    });
+  }
   if (!this.inkTool || !LMB_INK_TOOLS.includes(this.inkTool)) this.inkTool = this.settings.inkLastTool || "pen";
   this.inkColor = this.inkColor || this.settings.inkPenColor || "#e05252";
   this.inkWidth = Number(this.inkWidth || this.settings.inkPenWidth) || 3;
@@ -493,6 +504,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     }
     const objects = this.lmbInkObjects(path(), page(), true), point = this.lmbInkPoint(pageEl, event);
     let tool = this.inkTool;
+    if (tool === "select") this.lmbCancelInkAssociation();
     if (stylus && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
     event.preventDefault(); event.stopPropagation();
     navigation.pen = event.pointerId; navigation.penUntil = Date.now() + 300;
@@ -911,6 +923,7 @@ LuciasMarginBookPlugin.prototype.lmbClearInk = function () {
 };
 
 LuciasMarginBookPlugin.prototype.lmbDeleteInkSelection = function (preferredCanvas) {
+  this.lmbCancelInkAssociation();
   const context = this._lmbInkSelectionContext;
   if (preferredCanvas && (!context || context.canvas !== preferredCanvas)) return false;
   const canvas = context && context.canvas && context.canvas.isConnected ? context.canvas : preferredCanvas || this.lmbActiveInkCanvas();
@@ -944,6 +957,7 @@ LuciasMarginBookPlugin.prototype.lmbApplyInkStyleToSelection = function (propert
 
 LuciasMarginBookPlugin.prototype.lmbSetInkTool = function (tool) {
   if (!LMB_INK_TOOLS.includes(tool)) return;
+  if (tool !== "select") this.lmbCancelInkAssociation();
   if (["hand", "select", "text"].includes(tool)) this.lmbEndInkContinuation(false);
   if (["pen", "highlighter", "line", "rect"].includes(this.inkTool)) this._lmbInkLastDrawTool = this.inkTool;
   if (typeof document !== "undefined") document.querySelectorAll(".page[data-lmb-ink-bound]").forEach(page => { if (page._lmbFinishInk) page._lmbFinishInk(); });
@@ -1001,7 +1015,7 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     const width = document.createElement("input"); width.type = "range"; width.min = isEraser ? "8" : "1"; width.max = isEraser ? "48" : this.inkTool === "highlighter" ? "30" : "14"; width.step = isEraser ? "2" : "1"; width.value = String(isEraser ? Number(this.settings.inkEraserSize) || 18 : this.inkWidth || 3); width.title = `${widthLabel} ${width.value}`; width.setAttribute("aria-label", width.title);
     const widthValue = document.createElement("span"); widthValue.className = "lmb-ink-width-value"; widthValue.textContent = width.value;
     width.addEventListener("input", () => { width.title = `${widthLabel} ${width.value}`; width.setAttribute("aria-label", width.title); widthValue.textContent = width.value; if (isEraser) this.settings.inkEraserSize = Number(width.value); else { this.inkWidth = Number(width.value); if (this.inkTool === "highlighter") this.settings.inkHighlighterWidth = this.inkWidth; else this.settings.inkPenWidth = this.inkWidth; } });
-    width.addEventListener("change", () => { if (!isEraser) this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); widthControl.appendChild(width); widthControl.appendChild(widthValue); advanced.appendChild(widthControl);
+    width.addEventListener("change", () => { if (!isEraser) this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); widthControl.appendChild(width); widthControl.appendChild(widthValue); content.appendChild(widthControl);
     const eraseMode = document.createElement("select"); eraseMode.className = "lmb-ink-eraser-mode"; eraseMode.setAttribute("aria-label", "橡皮模式");
     for (const [value, label] of [["partial", "局部橡皮"], ["stroke", "整笔橡皮"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; eraseMode.appendChild(option); }
     eraseMode.value = this.settings.inkEraserMode || "partial";
@@ -1033,6 +1047,11 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
       }
       action("link", "将所选笔迹关联已有摘录", () => this.lmbChooseInkExcerpt(), "关联");
       const associate = actions.lastElementChild; associate.className = "lmb-ink-link-action"; associate.appendChild(document.createTextNode("关联摘录")); selectionTools.appendChild(associate);
+      const drag = document.createElement("button"); drag.type = "button"; drag.className = "lmb-ink-link-action lmb-ink-link-drag"; drag.textContent = "拖到摘录";
+      drag.title = "按住拖到侧栏摘录卡片；也可点击后再点目标卡片";
+      drag.addEventListener("pointerdown", event => this.lmbStartInkAssociationDrag(event));
+      drag.addEventListener("click", () => { if (!drag._lmbSuppressClick) this.lmbChooseInkExcerpt(); });
+      selectionTools.appendChild(drag);
       action("sticky-note", "用所选笔迹新建手写备注", () => this.lmbCreateInkNoteFromSelection(), "新建");
       const create = actions.lastElementChild; create.className = "lmb-ink-link-action"; create.appendChild(document.createTextNode("新建手写")); selectionTools.appendChild(create);
       bar.appendChild(selectionTools);
@@ -1040,7 +1059,6 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     const more = document.createElement("button"); more.type = "button"; more.title = "更多工具与笔迹设置"; more.setAttribute("aria-label", more.title); more.setAttribute("aria-expanded", String(!!this._lmbInkToolsExpanded)); applyIcon(more, "ellipsis", "…");
     more.addEventListener("click", () => { this._lmbInkToolsExpanded = !this._lmbInkToolsExpanded; this.lmbRenderInkTools(); }); actions.appendChild(more);
     action("trash-2", "删除所选", () => this.lmbDeleteInkSelection(leafCanvas()), "删");
-    advanced.appendChild(actions.lastElementChild);
     bar.appendChild(advanced);
     const status = document.createElement("span"); status.className = "lmb-ink-save-status"; content.appendChild(status); host.appendChild(bar);
   }

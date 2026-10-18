@@ -99,14 +99,139 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   lmbChooseInkExcerpt() {
     try {
       const snapshot = this.lmbInkSelectionSnapshot(), file = this.app.vault.getAbstractFileByPath(snapshot.path);
-      const items = this._lmbGetPdfSidebarEntries(file).filter(e => e.exId).map(entry => ({ entry,
-        label: `P.${entry.page || "?"} · ${String(entry.text || entry.note || "未命名备注").replace(/\s+/g, " ").slice(0, 120)}` }));
-      if (!items.length) { new Notice("此 PDF 尚无摘录，可先新建手写备注"); return; }
-      new LMBNodeSuggester(this.app, items, item => {
-        this.lmbLinkInkSelection(snapshot, { ...item.entry, pdfPath: snapshot.path }).then(() => new Notice("已关联摘录，原笔迹仍可编辑"))
-          .catch(error => new Notice("关联失败，笔迹和选择已保留：" + error.message, 5000));
-      }).open();
+      if (!this._lmbGetPdfSidebarEntries(file).some(e => e.exId)) { new Notice("此 PDF 尚无摘录，可先新建手写备注"); return null; }
+      if (this._lmbInkAssociation?.busy) return null;
+      this.lmbCancelInkAssociation();
+      const session = this._lmbInkAssociation = { snapshot, bars: new Set(), searches: new Map(), busy: false };
+      for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) if (leaf.view?.file?.path === snapshot.path) {
+        this.lmbEnsurePdfSidebarEl(leaf); this.lmbSetPdfSidebarVisible(leaf, true);
+        this.lmbSyncInkAssociationTargets(leaf);
+        this.lmbRenderPdfSidebarForLeaf(leaf).then(() => this.lmbSyncInkAssociationTargets(leaf));
+      }
+      return session;
     } catch (error) { new Notice(error.message); }
+  },
+
+  lmbSyncInkAssociationTargets(leaf) {
+    const session = this._lmbInkAssociation;
+    if (!session || leaf.view?.file?.path !== session.snapshot.path) return;
+    const bar = leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar"), head = bar?.querySelector(".lmb-pdf-sidebar-title");
+    if (!head) return;
+    const search = bar.querySelector(".lmb-pdf-sidebar-search");
+    if (!session.bars.has(bar) && search) { session.searches.set(bar, search.value); search.value = ""; }
+    session.bars.add(bar); bar.classList.add("is-ink-associating");
+    let hint = head.querySelector(".lmb-ink-association-hint");
+    if (!hint) {
+      hint = head.createDiv({ cls: "lmb-ink-association-hint" });
+      hint.createSpan({ text: "选择目标：拖到或点击一张摘录卡片（显示全部）" });
+      const cancel = hint.createEl("button", { text: "取消", attr: { type: "button" } });
+      cancel.onclick = event => { event.stopPropagation(); if (!session.busy) this.lmbCancelInkAssociation(); };
+    }
+    for (const row of bar.querySelectorAll(".lmb-pdf-sidebar-item")) {
+      row.classList.add("is-ink-link-target"); row.classList.remove("is-page-hidden", "is-search-hidden");
+    }
+    search?.oninput?.();
+  },
+
+  lmbCancelInkAssociation() {
+    const session = this._lmbInkAssociation; this._lmbInkAssociation = null;
+    if (!session) return;
+    if (session.stopDrag) session.stopDrag();
+    for (const bar of session.bars) {
+      bar.classList.remove("is-ink-associating");
+      bar.querySelectorAll(".lmb-ink-association-hint").forEach(el => el.remove());
+      bar.querySelectorAll(".is-ink-link-target,.is-ink-drop-target").forEach(row => row.classList.remove("is-ink-link-target", "is-ink-drop-target"));
+      const leaf = (this.app.workspace.getLeavesOfType("pdf") || []).find(l => l.containerEl.contains(bar));
+      if (leaf) this._lmbApplySidebarPageFilter(leaf);
+      const search = bar.querySelector(".lmb-pdf-sidebar-search");
+      if (search && session.searches.has(bar)) search.value = session.searches.get(bar);
+      search?.oninput?.();
+    }
+  },
+
+  async lmbCommitInkAssociation(entry, path) {
+    const session = this._lmbInkAssociation;
+    if (!session || session.busy || path !== session.snapshot.path) return false;
+    session.busy = true;
+    try {
+      if (!await this.lmbSaveEditorsBeforeInkNavigation()) return false;
+      if (this._lmbInkAssociation !== session || this._unloaded) return false;
+      await this.lmbLinkInkSelection(session.snapshot, { ...entry, pdfPath: path });
+      if (this._lmbInkAssociation === session) this.lmbCancelInkAssociation();
+      new Notice("已关联摘录，原备注和笔迹保留"); return true;
+    } catch (error) { new Notice("关联失败，选择与备注保留，可重试：" + error.message, 5000); return false; }
+    finally { session.busy = false; }
+  },
+
+  lmbStartInkAssociationDrag(event) {
+    if (event.button !== 0 || event.isPrimary === false || this._lmbInkAssociation?.busy) return;
+    const button = event.currentTarget, doc = button.ownerDocument;
+    const session = this.lmbChooseInkExcerpt(); if (!session) return;
+    event.preventDefault(); event.stopPropagation(); button._lmbSuppressClick = true;
+    const ghost = doc.createElement("div"); ghost.className = "lmb-ink-link-ghost"; ghost.textContent = `关联 ${session.snapshot.objectIds.length} 笔 → 摘录卡片`; doc.body.appendChild(ghost);
+    let target, moved = false, timer, lastX = event.clientX, lastY = event.clientY;
+    const hit = (x, y) => {
+      ghost.style.left = x + 12 + "px"; ghost.style.top = y + 12 + "px";
+      const row = doc.elementFromPoint(x, y)?.closest(".is-ink-link-target");
+      if (target !== row) { target?.classList.remove("is-ink-drop-target"); target = row; target?.classList.add("is-ink-drop-target"); }
+    };
+    const move = e => {
+      if (e.pointerId !== event.pointerId) return;
+      e.preventDefault(); moved ||= Math.hypot(e.clientX - event.clientX, e.clientY - event.clientY) > 8;
+      lastX = e.clientX; lastY = e.clientY; hit(lastX, lastY);
+    };
+    const stop = () => {
+      clearInterval(timer); ghost.remove(); target?.classList.remove("is-ink-drop-target");
+      doc.removeEventListener("pointermove", move, true); doc.removeEventListener("pointerup", up, true); doc.removeEventListener("pointercancel", cancel, true);
+      session.stopDrag = null; setTimeout(() => { button._lmbSuppressClick = false; }, 0);
+    };
+    const up = e => {
+      if (e.pointerId !== event.pointerId) return;
+      hit(e.clientX, e.clientY); const row = target; stop();
+      if (!moved || !row) return;
+      // Mouse/pen browsers can synthesize a click after pointerup even when
+      // pointerup is cancelled. Do not let that click navigate the target card.
+      this._lmbInkAssociationClick = { until: Date.now() + 800, x: e.clientX, y: e.clientY };
+      e.preventDefault(); e.stopImmediatePropagation();
+      const file = this.app.vault.getAbstractFileByPath(session.snapshot.path);
+      const entry = this._lmbGetPdfSidebarEntries(file).find(item => item.exId === row.dataset.exId);
+      if (entry) this.lmbCommitInkAssociation(entry, session.snapshot.path);
+    };
+    const cancel = e => { if (e.pointerId === event.pointerId) { stop(); this.lmbCancelInkAssociation(); } };
+    session.stopDrag = stop; hit(lastX, lastY);
+    timer = setInterval(() => {
+      const bar = doc.elementFromPoint(lastX, lastY)?.closest(".is-ink-associating");
+      if (!bar) return;
+      const rect = bar.getBoundingClientRect(), head = bar.querySelector(".lmb-pdf-sidebar-title");
+      const top = head ? head.getBoundingClientRect().bottom : rect.top;
+      if (lastY > rect.bottom - 45) bar.scrollTop += 12;
+      else if (lastY < top + 30 && lastY > top) bar.scrollTop -= 12;
+      hit(lastX, lastY);
+    }, 40);
+    doc.addEventListener("pointermove", move, { capture: true, passive: false }); doc.addEventListener("pointerup", up, true); doc.addEventListener("pointercancel", cancel, true);
+  },
+
+  async lmbUnlinkInkReference(ref, groupId) {
+    if (!await this.lmbSaveEditorsBeforeInkNavigation()) return false;
+    const previous = this._lmbInkLinkQueue || Promise.resolve();
+    const task = previous.catch(() => {}).then(async () => {
+      if (this._unloaded) return false;
+      const found = this.lmbFindInkReference(ref); if (!found) return true;
+      const records = this.lmbInkLinks(found.path), before = records[found.exId];
+      const remaining = groupId ? before.groups.filter(group => group.id !== groupId) : [];
+      if (remaining.length) records[found.exId] = { ...before, groups: remaining }; else delete records[found.exId];
+      try { await this.saveSettings(); } catch (error) { records[found.exId] = before; throw error; }
+      if (this._lmbInkContinuation?.ref === ref) this.lmbEndInkContinuation(false);
+      this.lmbSchedulePdfSidebarRefresh(0); this.lmbScheduleInkReferenceRefresh();
+      if (typeof document !== "undefined") setTimeout(() => {
+        if (this._unloaded) return;
+        try { document.querySelectorAll(".lmb-ink-layer").forEach(canvas => this.lmbRedrawInkPage(canvas)); this.lmbRenderInkTools(); }
+        catch (error) { console.warn("[lmb] unlink presentation refresh", error); }
+      }, 0);
+      return true;
+    });
+    this._lmbInkLinkQueue = task;
+    try { return await task; } finally { if (this._lmbInkLinkQueue === task) this._lmbInkLinkQueue = null; }
   },
 
   lmbCreateInkNoteFromSelection() {
@@ -243,6 +368,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     edit.title = "回到 PDF 补画，新笔迹自动加入这条手写备注";
     edit._lmbInkAction = () => this.lmbLocateInkReference(ref, { groupId, continue: true });
     edit.onclick = event => { event.stopPropagation(); edit._lmbInkAction(); }; actions.appendChild(edit); host.appendChild(actions);
+    const unlink = host.ownerDocument.createElement("button"); unlink.type = "button"; unlink.className = "lmb-ink-ref-unlink"; unlink.textContent = "解除关联";
+    unlink.title = "仅移除手写绑定，保留摘录、备注和原笔迹";
+    unlink._lmbInkAction = async () => {
+      if (unlink.disabled) return; unlink.disabled = true;
+      try { if (await this.lmbUnlinkInkReference(ref, groupId)) new Notice("已解除关联，摘录、备注和原笔迹保留"); }
+      catch (error) { new Notice("解除关联失败，原绑定已保留：" + error.message, 5000); }
+      finally { unlink.disabled = false; }
+    };
+    unlink.onclick = event => { event.stopPropagation(); unlink._lmbInkAction(); }; actions.appendChild(unlink);
     // Canvas consumes pointerdown to select/drag a card. Explicit controls must
     // receive the first tap; the preview remains draggable as before.
     actions.addEventListener("pointerdown", event => event.stopPropagation());
@@ -364,11 +498,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   lmbSetupInkReferences() {
     if (this.app.workspace.on && this.registerEvent) this.registerEvent(this.app.workspace.on("active-leaf-change", leaf => {
       if (this._lmbInkContinuation && leaf?.view?.file?.path !== this._lmbInkContinuation.path) this.lmbEndInkContinuation();
+      if (this._lmbInkAssociation && leaf?.view?.file?.path !== this._lmbInkAssociation.snapshot.path) this.lmbCancelInkAssociation();
     }));
     // Native Canvas selects a previously inactive node in its capture handler,
     // swallowing the first click before a button's handler can run. Reserve
     // only explicit controls; leave preview/card drags to the Canvas host.
     if (this.registerDomEvent) {
+      this.registerDomEvent(window, "blur", () => { if (!this._lmbInkAssociation?.busy) this.lmbCancelInkAssociation(); });
+      this.registerDomEvent(document, "click", event => {
+        const drop = this._lmbInkAssociationClick;
+        if (event.isTrusted && drop && Date.now() < drop.until && Math.hypot(event.clientX - drop.x, event.clientY - drop.y) < 24) {
+          this._lmbInkAssociationClick = null; event.preventDefault(); event.stopImmediatePropagation();
+        }
+      }, true);
       const control = event => {
         const direct = event.target?.closest?.(".canvas-node .lmb-ink-ref-actions button");
         if (direct) return direct;
@@ -417,6 +559,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       this._lmbInkCardObservers?.clear();
       this._lmbInkActionPress = this._lmbInkActionClick = null;
       this._lmbInkContinuation = null;
+      this._lmbInkAssociationClick = null;
+      this.lmbCancelInkAssociation();
     });
   }
 });

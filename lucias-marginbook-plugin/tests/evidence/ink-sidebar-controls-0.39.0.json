@@ -1,0 +1,33 @@
+{
+  "version": "0.39.0",
+  "buildSha256": "793131c581f86e3ec244a1cd3eb12a3296c445123ac88e286f60809a5b84049b",
+  "nodeSuitesPassed": 9,
+  "browserChecksPassed": 335,
+  "trustedBrowserMouseDrag": {
+    "linked": true,
+    "unwantedNavigation": 0,
+    "ghost": false
+  },
+  "regressions": [
+    "Width and delete controls remain in the primary toolbar.",
+    "Unlink supports erased groups, preserves notes and ink, rolls back on write failure and does not reuse H identifiers.",
+    "Actual sidebar cards replace the dense association modal; pointer drag, touch cancellation, click target and failure retry are covered.",
+    "Post-drop compatibility clicks cannot navigate the target card.",
+    "Exiting ink clears selection state, pending frames and live-overlay pixels.",
+    "Left/right sidebar placement persists with failure rollback; left placement reserves PDF space.",
+    "Existing Markdown page/sidebar live editing, autosave, layout and pen/palm workflows remain covered."
+  ],
+  "dataVerification": {
+    "existingFilesCompared": 66,
+    "existingCanvasCompared": 41,
+    "allOriginalCanvasUnchanged": true,
+    "allOriginalMarkdownPdfUnchanged": true,
+    "allOriginalInkFilesUnchanged": true,
+    "allOriginalNoteSettingsUnchanged": true
+  },
+  "nativeObservation": "Obsidian loaded the update and displayed the side-position button. Further native interaction was stopped when human input/window changes were detected. Full native workflow validation is not claimed.",
+  "limits": [
+    "Pointer/touch tests are browser-synthetic; physical tablet/stylus not exercised.",
+    "Full native unlink/drag and process restart were not exercised this run."
+  ]
+}

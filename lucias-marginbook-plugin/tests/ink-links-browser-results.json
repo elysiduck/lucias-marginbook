@@ -1,5 +1,5 @@
 {
-  "checks": 51,
+  "checks": 70,
   "results": [
     "registers the Canvas/Markdown reference renderer",
     "create two original editable strokes",
@@ -51,7 +51,26 @@
     "PDF location carries the same association number",
     "location marker persists beyond the former 1.8-second timeout",
     "selecting a different annotation clears the previous persistent location",
-    "placing Markdown from ink mode disables the capture layer before a text block can be edited"
+    "placing Markdown from ink mode disables the capture layer before a text block can be edited",
+    "width and deletion stay in the primary toolbar when more tools are collapsed",
+    "sidebar left placement is applied and persisted",
+    "left sidebar reserves PDF space without double right padding",
+    "failed side preference save preserves the prior layout",
+    "sidebar can move back to the right",
+    "association uses actual readable sidebar cards instead of a dense modal",
+    "choosing a target does not overwrite the current-page preference",
+    "failed association keeps the target chooser and selected strokes for retry",
+    "click target binds without navigating or altering notes and vectors",
+    "pen drag resolves and highlights the actual sidebar drop target",
+    "successful pen drop commits once and removes drag feedback",
+    "cancelled touch drag removes target mode and leaves data unchanged",
+    "exiting ink immediately clears selection handles and live overlay pixels",
+    "exiting an unused selection never erases the underlying ink",
+    "handwriting preview offers a separate unlink action",
+    "failed unlink preserves the original binding",
+    "unlink removes the handwriting region while preserving the sidebar note",
+    "detached Canvas reference retains its original card and layout",
+    "unlink preserves all editable strokes and the saved Markdown commentary"
   ],
   "physicalTablet": false,
   "nativeCanvasHost": false

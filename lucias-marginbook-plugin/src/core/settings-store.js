@@ -41,6 +41,7 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   inkEraserMode: "partial",
   inkEraserAutoReturn: true,
   inkToolbarCollapsed: false,
+  pdfSidebarSide: "right",
   inkAnnotations: {},
   inkExcerptLinks: {},
   inkLinkCounters: {}
@@ -100,6 +101,7 @@ class LmbSettingsStore {
       nodeViews: settings.nodeViews && typeof settings.nodeViews === "object" ? settings.nodeViews : {},
       excerptViews: settings.excerptViews && typeof settings.excerptViews === "object" ? settings.excerptViews : {},
       quickExcerpts: settings.quickExcerpts && typeof settings.quickExcerpts === "object" ? settings.quickExcerpts : {},
+      pdfSidebarSide: settings.pdfSidebarSide === "left" ? "left" : "right",
       inkExcerptLinks: settings.inkExcerptLinks && typeof settings.inkExcerptLinks === "object" ? settings.inkExcerptLinks : {},
       inkLinkCounters: settings.inkLinkCounters && typeof settings.inkLinkCounters === "object" ? settings.inkLinkCounters : {},
       pdfTextBlocks: settings.pdfTextBlocks && typeof settings.pdfTextBlocks === "object" ? settings.pdfTextBlocks : {},
