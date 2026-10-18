@@ -132,6 +132,11 @@ LuciasMarginBookPlugin.prototype.lmbHandleInkPdfRename = async function (file, o
     }
     this.lmbMarkInkDirty(file.path);
     await this.lmbFlushInkStorage();
+    if (this.settings.inkExcerptLinks && this.settings.inkExcerptLinks[oldPath]) {
+      const oldLinks = this.settings.inkExcerptLinks[oldPath];
+      this.settings.inkExcerptLinks[file.path] = { ...oldLinks, ...(this.settings.inkExcerptLinks[file.path] || {}) };
+      delete this.settings.inkExcerptLinks[oldPath]; await this.saveSettings(); this.lmbScheduleInkReferenceRefresh();
+    }
     this.lmbScheduleInkRefresh(0); return true;
   } catch (error) { console.warn("[lmb] PDF ink rename migration failed", oldPath, file.path, error); return false; }
 };
@@ -175,6 +180,7 @@ LuciasMarginBookPlugin.prototype.lmbMarkInkDirty = function (path) {
   this._lmbInkDirtyRevisions.set(path, (this._lmbInkDirtyRevisions.get(path) || 0) + 1);
   this._lmbInkRetryCount = 0;
   this._lmbInkSaveState = "saving";
+  if (typeof document !== "undefined" && this.settings.inkExcerptLinks && this.settings.inkExcerptLinks[path]) this.lmbScheduleInkReferenceRefresh();
   this.lmbUpdateInkSaveStatus();
   clearTimeout(this._lmbInkSaveTimer);
   // Coalesce short pen lifts into one durable snapshot. 350ms caused a full
@@ -584,6 +590,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     else this.lmbCommitInkChange(path(), page(), current.beforePage, current.kind);
     this._lmbInkHiddenIds = null;
     this.lmbDrawInkLayer(canvas); this.lmbDrawInkLiveLayer(live, null);
+    if (this.inkTool === "select") this.lmbRenderInkTools();
     if (current.kind === "erase" && current.returnTool && !cancelled && this.inkTool === "eraser") this.lmbSetInkTool(current.returnTool);
   };
   const captureActive = { capture: true, passive: false };
@@ -704,6 +711,7 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkLiveLayer = function (canvas, active)
     active.points.forEach((point, index) => index ? ctx.lineTo(point.x * width, point.y * height) : ctx.moveTo(point.x * width, point.y * height)); ctx.stroke(); ctx.restore();
   }
   const selected = new Set(Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : []);
+  for (const id of this.lmbInkFocusIds(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) selected.add(id);
   const objects = this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage);
   for (const object of objects.filter((item) => selected.has(item.id))) {
     const bounds = lmbInkBounds(object);
@@ -747,7 +755,8 @@ LuciasMarginBookPlugin.prototype.lmbStartInkSelection = function (canvas, point,
   const hit = objects.slice().reverse().find((object) => lmbInkObjectHit(object, point, tolerance));
   const prior = Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : [];
   if (!hit) { if (!additive) this._lmbInkSelection = []; return null; }
-  const ids = additive ? (prior.includes(hit.id) ? prior.filter((id) => id !== hit.id) : prior.concat(hit.id)) : [hit.id];
+  const ids = additive ? (prior.includes(hit.id) ? prior.filter((id) => id !== hit.id) : prior.concat(hit.id))
+    : prior.includes(hit.id) && prior.length > 1 ? prior.slice() : [hit.id];
   this._lmbInkSelection = ids; this._lmbInkSelectionContext = { canvas, path: canvas.dataset.lmbInkPath, page: canvas.dataset.lmbInkPage };
   if (!ids.includes(hit.id)) return { kind: "selectionOnly", start: point };
   if (ids.length > 1) return { kind: "moveMulti", start: point, entries: objects.filter((object) => ids.includes(object.id)).map((object) => ({ object, before: lmbInkClone(object), bounds: lmbInkBounds(object) })) };
@@ -801,6 +810,7 @@ LuciasMarginBookPlugin.prototype.lmbEraseAt = function (canvas, point, active) {
     else {
       const pieces = fragments.map((points, part) => ({ ...object,
         id: part === 0 ? object.id : this.lmbInkId(), type: object.type === "highlighter" ? "highlighter" : "pen", points,
+        inkSourceIds: Array.from(new Set([...(object.inkSourceIds || []), object.id])),
         x1: points[0].x, y1: points[0].y, x2: points[points.length - 1].x, y2: points[points.length - 1].y,
         pressureMode: object.type === "line" || object.type === "rect" ? "fixed" : object.pressureMode || "natural"
       }));
@@ -986,6 +996,15 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     const action = (icon, title, handler, fallback) => { const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); applyIcon(button, icon, fallback); button.addEventListener("click", handler); actions.appendChild(button); };
     action("undo-2", "撤销", () => this.lmbUndoInk(leafCanvas()), "↶");
     action("redo-2", "重做", () => this.lmbRedoInk(leafCanvas()), "↷");
+    if (this.inkTool === "select" && this._lmbInkSelection && this._lmbInkSelection.length) {
+      const selectionTools = document.createElement("div"); selectionTools.className = "lmb-ink-selection-actions";
+      const count = document.createElement("span"); count.textContent = `已选 ${this._lmbInkSelection.length} 笔`; selectionTools.appendChild(count);
+      action("link", "将所选笔迹关联已有摘录", () => this.lmbChooseInkExcerpt(), "关联");
+      const associate = actions.lastElementChild; associate.className = "lmb-ink-link-action"; associate.appendChild(document.createTextNode("关联摘录")); selectionTools.appendChild(associate);
+      action("sticky-note", "用所选笔迹新建手写备注", () => this.lmbCreateInkNoteFromSelection(), "新建");
+      const create = actions.lastElementChild; create.className = "lmb-ink-link-action"; create.appendChild(document.createTextNode("新建手写")); selectionTools.appendChild(create);
+      bar.appendChild(selectionTools);
+    }
     const more = document.createElement("button"); more.type = "button"; more.title = "更多工具与笔迹设置"; more.setAttribute("aria-label", more.title); more.setAttribute("aria-expanded", String(!!this._lmbInkToolsExpanded)); applyIcon(more, "ellipsis", "…");
     more.addEventListener("click", () => { this._lmbInkToolsExpanded = !this._lmbInkToolsExpanded; this.lmbRenderInkTools(); }); actions.appendChild(more);
     action("trash-2", "删除所选", () => this.lmbDeleteInkSelection(leafCanvas()), "删");

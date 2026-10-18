@@ -207,7 +207,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /** 画单条摘录的标记（跨行会有多个矩形，每个矩形一个 div） */
   lmbDrawEntryMark(pageEl, entry, destination) {
-    if (entry && entry.pageNote) return;
+    if (entry && (entry.pageNote || entry.inkNote)) return;
     try {
       let pcts = null;
       if (entry && entry.selection) {

@@ -37,7 +37,7 @@ async function main(){
  assert.equal(fresh.settings.storageRoot,"Lucia's Marginbook");
  const renamed=new P();renamed.settings={...fresh.settings};assert.equal(renamed.lmbStoragePaths(a).md,"Lucia's Marginbook/USC/508/作业2/作业2-摘录.md");
  const existing=await new ctx.Store({loadData:async()=>({storageLayout:'central',storageRoot:'MarginBook'})}).load();assert.equal(existing.settings.storageRoot,'MarginBook','existing explicit roots require a backed-up migration');
- const store=new ctx.Store({_lmbSerializedRuntimeCaches:{}});p.settings.storageLayout='central';const serialized=store.serialize(p.settings,{});assert.equal(serialized.storageLayout,'central');assert.equal(serialized.storageBindings[a.path].canvasDocuments['MarginBook/综合画布/English.canvas'],historic);
+ const store=new ctx.Store({_lmbSerializedRuntimeCaches:{}});p.settings.storageLayout='central';p.settings.inkExcerptLinks={[a.path]:{'ink-note-id':{id:'inkref-stable',groups:[{page:2,objectIds:['stroke1']}]}}};const serialized=store.serialize(p.settings,{});assert.equal(serialized.storageLayout,'central');assert.equal(serialized.storageBindings[a.path].canvasDocuments['MarginBook/综合画布/English.canvas'],historic);assert.equal(serialized.inkExcerptLinks[a.path]['ink-note-id'].id,'inkref-stable');
  console.log('Central MarginBook storage: path isolation, creation/reuse, historical Canvas sync, note retention and settings roundtrip passed');
 }
 main().catch(e=>{console.error(e);process.exitCode=1});

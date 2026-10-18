@@ -113,7 +113,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         page: page,
         selection: sm ? [+sm[1], +sm[2], +sm[3], +sm[4]] : null,
         rect: rm ? [+rm[1], +rm[2], +rm[3], +rm[4]] : null,
-        target: target
+        target: target,
+        ...(params.get("ink") ? { inkRef: params.get("ink") } : {})
       };
     } catch (_) { return null; }
   },
@@ -154,7 +155,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           ev.preventDefault();
           ev.stopPropagation();
           ev.stopImmediatePropagation();                     // Obsidian / 其他插件都别想碰
-          this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
+          if (hit.inkRef) this.lmbLocateInkReference(hit.inkRef);
+          else this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
         } catch (err) {
           console.warn("[lmb] pdf 链接拦截出错:", err);
         }
@@ -192,7 +194,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         try {
           const hit = this.lmbParsePdfLink(linktext);
           if (hit) {
-            this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
+            if (hit.inkRef) this.lmbLocateInkReference(hit.inkRef);
+            else this.lmbJumpToSelection(hit.filePath, hit.page, hit.selection, hit.rect, null, hit.target);
             return;                                       // 接管
           }
         } catch (err) {

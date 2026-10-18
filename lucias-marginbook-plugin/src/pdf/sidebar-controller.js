@@ -331,6 +331,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       block.classList.toggle("lmb-note-selected", on);
       if (on) block.dataset.lmbBadge = `P.${selected.page || "?"} · ${selected.ordinal || "批注"}`;
     });
+    this.lmbFocusLinkedInk(leaf, id);
   },
 
   _lmbHighlightPdfSidebarTarget(exId, on, leaf) {
@@ -446,7 +447,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       const renderSig = JSON.stringify({
         file: file.path,
-        entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags, e.pageNote]),
+        entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags, e.pageNote, e.inkNote]),
+        inkLinks: this.settings.inkExcerptLinks && this.settings.inkExcerptLinks[file.path],
         sources: Array.from(sourceVersions),
         views: this.settings && this.settings.excerptViews,
         // Geometry, font size and compact state do not change sidebar content.
@@ -499,13 +501,18 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const compact = this.lmbIsTextBlockCollapsed(textView);
         row.toggleClass("is-compact", compact);
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
-        header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}${e.pageNote ? " · 页注" : ""}` });
+        header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}${e.inkNote ? " · 手写" : e.pageNote ? " · 页注" : ""}` });
         const summary = header.createDiv({ cls: "lmb-pdf-sidebar-item-summary" });
         const expandEntry = header.createEl("button", { cls: "lmb-pdf-sidebar-expand-entry", text: "展开", attr: { "aria-label": `在侧栏展开 P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` } });
         expandEntry.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, false).catch((err) => new Notice("设置保存失败：" + err.message)); };
         if (e.tags && e.tags.length) header.createDiv({ cls: "lmb-pdf-sidebar-item-tags", text: e.tags.map((t) => "#" + t).join(" ") });
         const headerActions = header.createDiv({ cls: "lmb-pdf-sidebar-header-actions" });
         const body = row.createDiv({ cls: "lmb-pdf-sidebar-item-body" });
+        const inkLink = this.lmbInkLinks(file.path)[e.exId];
+        if (inkLink) {
+          const preview = body.createDiv({ cls: "lmb-ink-reference lmb-ink-sidebar-reference" });
+          renderJobs.push(() => this.lmbRenderInkReference(preview, inkLink.id));
+        }
         const cleanText = String(e.text || "").trim();
         let textEl = null;
         if (cleanText) {
@@ -566,6 +573,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const visibility = iconButton("chevrons-up", "收起为侧栏入口", headerActions);
         visibility.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, true).catch((err) => new Notice("设置保存失败：" + err.message)); };
         color.onclick = (ev) => { ev.stopPropagation(); this.lmbChooseExcerptColor(e.exId, color); };
+        if (inkLink) {
+          const canvasInk = iconButton("waypoints", "将手写引用放入 Canvas");
+          canvasInk.onclick = ev => { ev.stopPropagation(); this.lmbPutInkReferenceInCanvas(file.path, e.exId).catch(error => new Notice("Canvas 操作失败：" + error.message)); };
+        }
         if (imageEl && cleanText) {
           const persistedImage = !!(e.exId && this.settings.excerptViews
             && this.settings.excerptViews[e.exId] === "image");
@@ -607,7 +618,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         remove.addClass("lmb-pdf-sidebar-delete");
         remove.onclick = (ev) => {
           ev.stopPropagation();
-          const message = e.pageNote ? "将删除这条页注及其页面文本块。"
+          const message = e.inkNote ? "将删除侧栏中的手写备注记录。原笔迹及已有 Canvas 引用会保留。" : e.pageNote ? "将删除这条页注及其页面文本块。"
             : e.quick
             ? "将删除这条仅保存在 PDF 侧栏的简洁摘录。"
             : "将删除关联的 Canvas 卡片及连线、Markdown 摘录记录和插件管理的截图。它们会先移入 .lmb-trash，方便恢复。";
@@ -628,6 +639,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             if (!await this.lmbOpenSidebarNoteEditor({ ...e, pdfPath: file.path }, leaf, row)) return;
           }
           this.lmbSelectPdfSidebarEntry(leaf, e);
+          if (e.inkNote && inkLink) { await this.lmbLocateInkReference(inkLink.id); return; }
           this.lmbJumpToSelection(e.pdfPath || file.path, e.page, e.selection, e.rect, leaf, e.text);
         };
       }

@@ -1,0 +1,112 @@
+// Connected DOM workflow. Canvas file I/O and Markdown code-block registration
+// are host substitutes; rendering, navigation, ink and note handlers are real.
+(async () => {
+  const out = document.body.createEl('pre', { attr: { id: 'ink-links-results' } });
+  out.style.cssText = 'position:fixed;bottom:4px;left:4px;z-index:99999;background:#20372c;color:white;padding:8px;white-space:pre-wrap;max-width:95vw';
+  const results = [], check = (ok, label) => { if (!ok) throw Error(label); results.push(label); };
+  const clone = x => JSON.parse(JSON.stringify(x)), frame = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const until = async (fn, label) => { const t = performance.now(); while (!fn()) { if (performance.now() - t > 6000) throw Error('Timeout: ' + label); await frame(); } };
+  try {
+    let disk, fail = false, codeProcessor;
+    plugin.settings = { storageLayout: 'central', storageRoot: "Lucia's Marginbook", pdfSourceRoot: 'Books/pdf书籍', inkInputMode: 'pen-only', inkEraserMode: 'partial', inkEraserAutoReturn: false, quickExcerpts: {}, inkExcerptLinks: {}, pdfTextBlocks: {} };
+    const source = Object.assign(new StubFile(), { path: 'original-notes.md', extension: 'md', stat: { mtime: 1 } });
+    const original = { exId: 'ex-source-ink', pdfPath: pdf.path, sourceMd: source.path, page: 1, text: 'Original PDF excerpt — Prospect Theory.' };
+    plugin.excerptIndex = new Map([[pdf.path, [original]]]); plugin.getExcerptsForPdf = () => [original];
+    plugin._lmbReadSidebarNotes = async () => '已经写好的备注 **保留原样**'; plugin._lmbBuildExcerptNoteMap = text => new Map([[original.exId, text]]);
+    plugin.saveSettings = async () => { if (fail) throw Error('Simulated settings failure'); disk = clone(plugin.settings); };
+    plugin.lmbFlushInkStorage = async () => { plugin.inkDisk = clone(plugin.lmbInkStore()); return true; };
+    const files = new Map([[pdf.path, pdf], [source.path, source]]), raw = new Map();
+    plugin.app.vault = { getAbstractFileByPath: path => files.get(path), cachedRead: async () => '',
+      createFolder: async path => files.set(path, { path }), create: async (path, text) => { const f = Object.assign(new StubFile(), { path, extension: path.split('.').pop() }); files.set(path, f); raw.set(path, text); return f; },
+      adapter: { read: async path => raw.get(path), write: async (path, text) => raw.set(path, text) } };
+    const canvasRoot = document.body.createDiv({ cls: 'workspace-leaf-content ink-links-canvas' });
+    canvasRoot.style.cssText = 'position:fixed;right:355px;bottom:65px;width:350px;padding:10px;z-index:100;background:#292929;border:1px solid #777;border-radius:8px';
+    canvasRoot.createEl('div', { text: 'Canvas · 手写引用（测试卡片）' });
+    const canvasLeaf = { containerEl: canvasRoot, view: { file: { path: 'fixture.canvas' } } };
+    const ws = plugin.app.workspace; ws.activeLeaf = leaf; leaf.view.containerEl = leaf.containerEl;
+    ws.getLeavesOfType = type => type === 'pdf' ? [leaf] : type === 'canvas' ? [canvasLeaf] : [];
+    ws.getActiveFile = () => ws.activeLeaf.view.file; ws.setActiveLeaf = active => { ws.activeLeaf = active; };
+    plugin.selfWritten = new Map(); plugin.lmbFocusCanvasNode = async file => { canvasLeaf.view.file = file; ws.activeLeaf = canvasLeaf; return true; };
+    plugin.register = () => {}; plugin.registerDomEvent = (target, type, fn, options) => target.addEventListener(type, fn, options);
+    plugin.registerMarkdownCodeBlockProcessor = (language, processor) => { check(language === 'marginbook-ink', 'registers the Canvas/Markdown reference renderer'); codeProcessor = processor; };
+    plugin.lmbSetupInkReferences(); plugin.lmbSetupInk(); await plugin.lmbSetInkMode(true); await frame();
+    const page = leaf.containerEl.querySelector('.page'), live = page.querySelector('.lmb-ink-live-layer'), canvas = page.querySelector('.lmb-ink-layer');
+    const pen = (type, x, y, id = 7) => { const rect = page.getBoundingClientRect(); live.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: 'pen', pointerId: id, pressure: .5, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: rect.left + x, clientY: rect.top + y })); };
+    const draw = (x1, y1, x2, y2) => { pen('pointerdown', x1, y1); pen('pointermove', x2, y2); pen('pointerup', x2, y2); };
+    draw(120, 300, 520, 300); draw(120, 340, 520, 340);
+    const strokes = clone(plugin.lmbInkObjects(pdf.path, 1)); check(strokes.length === 2, 'create two original editable strokes');
+    plugin.lmbSetInkTool('select');
+    for (const [type, x, y] of [['pointerdown', 80, 260], ['pointermove', 560, 260], ['pointermove', 560, 380], ['pointermove', 80, 380], ['pointerup', 80, 260]]) pen(type, x, y);
+    check(plugin._lmbInkSelection.length === 2, 'real lasso selects both strokes');
+    check(!!leaf.containerEl.querySelector('[aria-label="将所选笔迹关联已有摘录"]') && !!leaf.containerEl.querySelector('[aria-label="用所选笔迹新建手写备注"]'), 'lasso reveals both association actions');
+    const snapshot = plugin.lmbInkSelectionSnapshot();
+    const linked = await plugin.lmbLinkInkSelection(snapshot, original);
+    await plugin.lmbRenderPdfSidebarForLeaf(leaf); await frame();
+    const row = () => leaf.containerEl.querySelector('[data-ex-id="ex-source-ink"].lmb-pdf-sidebar-item');
+    check(row().textContent.includes('已经写好的备注'), 'linking retains the existing Markdown commentary');
+    check(row().querySelectorAll('svg').length > 0, 'existing excerpt gains a live SVG ink preview');
+    check(JSON.stringify(plugin.lmbInkObjects(pdf.path, 1)) === JSON.stringify(strokes), 'association does not replace or flatten ink');
+    // A failed create retains both the title editor and selection for retry.
+    plugin.lmbCreateInkNoteFromSelection(); const modal = document.querySelector('.modal'), input = modal.querySelector('input'); input.value = '手写公式推导';
+    fail = true; modal.querySelector('button').click(); await until(() => modal.textContent.includes('创建失败'), 'failure keeps modal');
+    check(input.isConnected && input.value === '手写公式推导' && !(plugin.settings.quickExcerpts[pdf.path] || []).length, 'failed creation keeps title and creates no ghost note');
+    fail = false; modal.querySelector('button').click(); await until(() => !modal.isConnected, 'create retry');
+    const note = plugin.settings.quickExcerpts[pdf.path][0], link = plugin.lmbInkLinks(pdf.path)[note.exId];
+    check(note.inkNote && note.text === '手写公式推导', 'retry creates exactly one named handwritten note');
+    await plugin.lmbRenderPdfSidebarForLeaf(leaf); await frame();
+    const noteRow = () => [...leaf.containerEl.querySelectorAll('.lmb-pdf-sidebar-item')].find(el => el.dataset.exId === note.exId);
+    check(noteRow().textContent.includes('手写') && !!noteRow().querySelector('svg'), 'new handwritten note appears in sidebar with preview');
+    await plugin.lmbOpenSidebarNoteEditor({ ...note, pdfPath: pdf.path, quick: true }, leaf, noteRow());
+    const bar = leaf.containerEl.querySelector('.lmb-pdf-excerpt-sidebar'); let state = bar._lmbSidebarEditor;
+    state.input.value = '推导说明 **支持 Markdown**'; state.input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    await until(() => disk.quickExcerpts[pdf.path][0].note.includes('支持 Markdown'), 'note autosave');
+    check(!state.closed, 'handwritten note commentary autosaves in the existing sidebar editor');
+    const target = plugin.lmbStoragePaths(pdf).canvas; await plugin.lmbEnsureStorageParent(target);
+    const oldLayout = { nodes: [{ id: 'keep', type: 'text', text: '我的原卡片', x: -230, y: 710, width: 360, height: 700 }], edges: [{ id: 'keep-edge', fromNode: 'keep', toNode: 'keep' }] };
+    await plugin.app.vault.create(target, JSON.stringify(oldLayout));
+    await plugin.lmbPutInkReferenceInCanvas(pdf.path, note.exId);
+    const data = JSON.parse(raw.get(target)), card = data.nodes[1];
+    check(JSON.stringify(data.nodes[0]) === JSON.stringify(oldLayout.nodes[0]) && JSON.stringify(data.edges) === JSON.stringify(oldLayout.edges), 'Canvas addition preserves original positions, sizes and edges');
+    const preview = canvasRoot.createDiv(); await codeProcessor(JSON.stringify({ ref: link.id }), preview);
+    check(!!preview.querySelector('svg') && !card.text.includes('"points"'), 'Canvas renders original ink from a stable reference without copying stroke payload');
+    // Navigation must save any active note before changing views, and stop on failure.
+    state.input.value = '定位之前的失败草稿'; state.input.dispatchEvent(new InputEvent('input', { bubbles: true })); fail = true;
+    preview.querySelector('.lmb-ink-ref-preview').click(); await frame();
+    check(!state.closed && state.getText() === '定位之前的失败草稿' && ws.activeLeaf === canvasLeaf, 'failed note save blocks PDF navigation and retains the draft');
+    fail = false; preview.querySelector('.lmb-ink-ref-preview').click(); await until(() => ws.activeLeaf === leaf && !!page.querySelector('.lmb-ink-location'), 'Canvas to PDF');
+    check(state.closed && disk.quickExcerpts[pdf.path][0].note === '定位之前的失败草稿', 'successful Canvas navigation saves the exact latest note first');
+    check(plugin._lmbInkLinkedFocus.exId === note.exId, 'PDF location highlights the associated original ink');
+    ws.activeLeaf = canvasLeaf; preview.querySelector('.lmb-ink-ref-edit').click(); await until(() => plugin.inkMode && plugin.inkTool === 'select' && plugin._lmbInkSelection.length === 2, 'edit original');
+    check(plugin._lmbInkSelectionContext.canvas === canvas, 'edit action selects original PDF vectors rather than a preview image');
+    const beforeBounds = module.exports.__test.lmbInkGroupBounds(plugin.lmbInkObjects(pdf.path, 1));
+    pen('pointerdown', 220, 300); pen('pointermove', 270, 350); pen('pointerup', 270, 350);
+    const afterBounds = module.exports.__test.lmbInkGroupBounds(plugin.lmbInkObjects(pdf.path, 1));
+    check(afterBounds.x > beforeBounds.x && afterBounds.y > beforeBounds.y, 'drag after group edit moves the whole selected group');
+    const priorSvg = preview.querySelector('svg').getAttribute('viewBox'); plugin.lmbScheduleInkReferenceRefresh();
+    await until(() => preview.querySelector('svg').getAttribute('viewBox') !== priorSvg, 'preview follows moving ink');
+    check(!!preview.querySelector('svg'), 'Canvas preview refreshes after editing original ink');
+    plugin.lmbSetInkTool('eraser'); pen('pointerdown', 360, 350); pen('pointerup', 360, 350);
+    const remaining = module.exports.__test.lmbInkGroupObjects(plugin.lmbInkStore()[pdf.path], link.groups[0]);
+    check(remaining.length >= 3, 'partial erasing preserves reference membership across stroke fragments');
+    await plugin.lmbRenderInkReference(preview, link.id); check(preview.textContent.includes(remaining.length + ' 笔'), 'Canvas reflects current fragment count');
+    plugin.lmbUndoInk(canvas); await plugin.lmbRenderInkReference(preview, link.id); check(preview.textContent.includes('2 笔'), 'undo restores the referenced original strokes');
+    plugin.lmbClearInk(); await plugin.lmbRenderInkReference(preview, link.id);
+    check(preview.textContent.includes('笔迹已擦除') && plugin.settings.quickExcerpts[pdf.path][0].note === '定位之前的失败草稿', 'clearing ink leaves note and Canvas placeholder intact');
+    check(await plugin.lmbLocateInkReference(link.id) === false, 'missing ink reports failure instead of navigating to stale coordinates');
+    plugin.lmbUndoInk(canvas); await plugin.lmbRenderInkReference(preview, link.id);
+    check(!!preview.querySelector('svg'), 'undo recovers the live preview without relinking');
+    await plugin.lmbPutInkReferenceInCanvas(pdf.path, note.exId);
+    check(JSON.parse(raw.get(target)).nodes.length === 2, 'repeated Canvas export reuses the same reference card');
+    // Ordinary PDF links remain unchanged; custom ink links use the shared ref.
+    check(!plugin.lmbParsePdfLink('demo.pdf#page=1&rect=1,2,3,4').inkRef, 'regular PDF links retain their original navigation path');
+    await plugin.lmbSetInkMode(false); await plugin.lmbRenderPdfSidebarForLeaf(leaf);
+    ws.activeLeaf = canvasLeaf; noteRow().click(); await until(() => ws.activeLeaf === leaf, 'sidebar locate');
+    check(plugin._lmbInkLinkedFocus.exId === note.exId, 'clicking handwritten sidebar card locates its live PDF ink');
+    const beforeDrag = ws.activeLeaf; ws.activeLeaf = canvasLeaf;
+    const button = preview.querySelector('.lmb-ink-ref-preview'); button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 20, clientY: 20 })); button.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 80, clientY: 80 })); button.click(); await frame();
+    check(ws.activeLeaf === canvasLeaf, 'dragging a Canvas preview does not trigger an accidental PDF jump'); ws.activeLeaf = beforeDrag;
+    await plugin.lmbRenderInkReference(preview, link.id);
+    out.textContent = 'PASS ' + results.length + ' ink / excerpt / sidebar / Canvas checks';
+    out.dataset.report = JSON.stringify({ checks: results.length, results, physicalTablet: false, nativeCanvasHost: false });
+  } catch (error) { out.textContent = 'FAIL after ' + results.length + ': ' + error.stack; throw error; }
+})();

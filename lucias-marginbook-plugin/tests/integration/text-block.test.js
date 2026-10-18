@@ -52,9 +52,9 @@ class Element {
   remove() { this.isConnected = false; if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); }
 }
 class Plugin {}
-const context = vm.createContext({ LuciasMarginBookPlugin: Plugin, Notice: class { hide() {} },
+const context = vm.createContext({ LuciasMarginBookPlugin: Plugin, Modal: class {}, Notice: class { hide() {} },
   MarkdownRenderer: { render: async (_app, text, el) => { el.textContent = text; } }, console, setTimeout, clearTimeout });
-for (const file of ["src/pdf/pure-live-markdown.js", "src/pdf/sidebar-controller.js", "src/pdf/text-block-controller.js", "src/pdf/live-editor-controller.js", "src/pdf/sidebar-note-editor.js", "src/pdf/mark-service.js", "src/core/settings-store.js"])
+for (const file of ["src/pdf/pure-ink.js", "src/pdf/pure-ink-links.js", "src/pdf/ink-links-controller.js", "src/pdf/pure-live-markdown.js", "src/pdf/sidebar-controller.js", "src/pdf/text-block-controller.js", "src/pdf/live-editor-controller.js", "src/pdf/sidebar-note-editor.js", "src/pdf/mark-service.js", "src/core/settings-store.js"])
   vm.runInContext(fs.readFileSync(file, "utf8"), context);
 const proto = Plugin.prototype;
 async function main() {

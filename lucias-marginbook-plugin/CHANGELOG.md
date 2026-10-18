@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.36.0
+
+- Add contextual lasso actions to associate selected ink with an existing excerpt or create a named handwritten note. Persist references only after original ink is durable; creation failures retain the title and selection for retry.
+- Show live ink previews and edit/source actions in the sidebar. Existing excerpt text and Markdown notes retain their original stores; handwritten notes use the existing sidebar autosave editor.
+- Add idempotent Canvas reference cards in the configured MarginBook workspace. Store a stable reference, not copied strokes or image snapshots; preserve existing card geometry and edges, including unsaved live Canvas positions.
+- Resolve references from current stroke geometry. Preserve reference lineage through partial erasing, movement, undo/redo and PDF rename; keep commentary and placeholders if all referenced ink is erased.
+- Save active Markdown editors before navigating from a preview. Stop navigation on save failure or stale/cancelled view requests; keep normal PDF link behavior and avoid preview clicks after Canvas dragging.
+- Add association, persistence, Canvas concurrency/rollback, rename and navigation regressions plus a connected browser workflow. Native Obsidian Canvas and physical tablet behavior remain separate host checks.
+
 ## 0.35.0
 
 - Correct stylus detection: ordinary browser touch/mouse events also have a default altitude angle and must not be mistaken for a pen. Quarantine palm contacts through pen lift, share finger navigation across PDF pages and use the host PDF scale for two-finger zoom.
