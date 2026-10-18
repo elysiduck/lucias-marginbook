@@ -1,0 +1,35 @@
+{
+  "version": "0.38.0",
+  "host": "Windows / Obsidian 1.14.4",
+  "buildSha256": "54d5a8702079f68e59e2320fe7bf88ffa1b3f2781ade9127cd2de32d7f14d091",
+  "nodeSuitesPassed": 9,
+  "browserChecksPassed": 316,
+  "nativeChecks": [
+    "Create an original vector stroke and associate it with an existing excerpt without replacing commentary.",
+    "Continue from the sidebar and Canvas using the pen; new strokes join the same H reference.",
+    "Finish continuation; subsequent stroke remains independent.",
+    "After autosave and full application reload, Canvas restores three linked strokes; four total strokes remain on disk.",
+    "Original saved PDF, Markdown, Canvas and ink files remain byte-identical; original note settings remain equal."
+  ],
+  "dataVerification": {
+    "version": "0.38.0",
+    "originalCanvasFilesByteIdentical": true,
+    "originalMarkdownAndPdfByteIdentical": true,
+    "originalInkFilesByteIdentical": true,
+    "originalQuickNotesUnchanged": true,
+    "originalPageNotesUnchanged": true,
+    "fixtureMarkdownIdenticalToInitialCopy": true,
+    "savedStrokes": 4,
+    "linkedStrokes": 3,
+    "continuedStrokes": 2,
+    "sameInkAfterReload": true,
+    "fixtureCanvasSeedLayoutPreserved": true,
+    "installedMatchesBuild": true
+  },
+  "regressionFixed": "A no-op ink flush cached a resolved promise, blocking later saves. Empty flushes no longer occupy the save queue; regression verifies later strokes reach the sidecar.",
+  "limits": [
+    "Mouse-operated native validation and synthetic pointer tests; no physical tablet/stylus validation.",
+    "Application reload verified; complete process exit and restart not exercised.",
+    "Previously lost strokes that never reached disk cannot be reconstructed precisely from a screenshot. Existing disk files and supplied screenshot were backed up."
+  ]
+}

@@ -161,6 +161,29 @@ async function main() {
   await fit.p.lmbFitInkReferenceCards(host); assert.equal(writes, 2, 'never resize a card while Markdown is being edited');
   wrapper.querySelector = () => null; host.isConnected = false;
   await fit.p.lmbFitInkReferenceCards(host); assert.equal(writes, 2, 'detached cards cannot overwrite a current Canvas');
+  // Continuation membership is committed in the same ink payload as the stroke.
+  const resume = fixture(), resumeLink = await resume.p.lmbLinkInkSelection(resume.snapshot, null, "resume");
+  const resumeGroup = resumeLink.link.groups[0], session = { path:resume.pdf.path, page:1, exId:resumeLink.exId, ref:resumeLink.link.id, groupId:resumeGroup.id };
+  resume.p._lmbInkContinuation = session;
+  const extraStroke = { ...clone(resume.p._lmbInkDocs[resume.pdf.path]['1'].objects[0]), id:'new-stroke', points:[{x:.1,y:.5,p:.5,t:0},{x:.8,y:.6,p:.7,t:80}] };
+  assert(resume.p.lmbAssignInkContinuation(extraStroke,resume.pdf.path,1));
+  resume.p._lmbInkDocs[resume.pdf.path]['1'].objects.push(extraStroke);
+  await resume.p.lmbFlushInkStorage();
+  const reopenedInk = JSON.parse(JSON.stringify(resume.p.inkDisk));
+  assert.equal(pure.lmbInkGroupObjects(reopenedInk[resume.pdf.path],resumeGroup).length,2,'new stroke stays linked after reopening without a second settings write');
+  assert.deepEqual(extraStroke.inkGroupIds,[resumeGroup.id]);
+  assert.equal(resumeGroup.objectIds.length,1,'continuation never rewrites the original selected strokes or association IDs');
+  resume.p.lmbEndInkContinuation(); const independent = {id:'independent'};
+  assert.equal(resume.p.lmbAssignInkContinuation(independent,resume.pdf.path,1),false);
+  assert(!independent.inkGroupIds,'drawing after finishing never leaks into the previous note');
+  for(const [path,page]of [[resume.pdf.path,2],['other.pdf',1]]) {
+    resume.p._lmbInkContinuation = session;
+    assert.equal(resume.p.lmbAssignInkContinuation({id:'elsewhere'},path,page),false);
+    assert.equal(resume.p._lmbInkContinuation,null,'drawing outside target page ends continuation');
+  }
+  resume.p._lmbInkContinuation=session;delete resume.p.settings.inkExcerptLinks[resume.pdf.path][resumeLink.exId];
+  assert.equal(resume.p.lmbAssignInkContinuation({id:'deleted-reference'},resume.pdf.path,1),false);
+  assert.equal(resume.p._lmbInkContinuation,null,'removed reference cannot capture further writing');
   console.log("Ink associations: durable references, notes, eraser lineage, current bounds, Canvas layout/idempotence/concurrency, rollback and rename passed");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

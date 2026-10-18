@@ -3,7 +3,8 @@ function lmbInkGroupObjects(pages, group) {
   if (!group || !Array.isArray(group.objectIds)) return [];
   const value = pages && pages[String(group.page)], objects = Array.isArray(value) ? value : value && value.objects || [];
   const ids = new Set(group.objectIds);
-  return objects.filter(object => ids.has(object.id) || (object.inkSourceIds || []).some(id => ids.has(id)));
+  return objects.filter(object => ids.has(object.id) || (object.inkSourceIds || []).some(id => ids.has(id))
+    || group.id && Array.isArray(object.inkGroupIds) && object.inkGroupIds.includes(group.id));
 }
 
 function lmbInkGroupBounds(objects) {

@@ -195,6 +195,12 @@ LuciasMarginBookPlugin.prototype.lmbMarkInkDirty = function (path) {
 
 LuciasMarginBookPlugin.prototype.lmbFlushInkStorage = async function () {
   if (this._lmbInkFlushPromise) return this._lmbInkFlushPromise;
+  // Do not memoize a synchronously resolved empty flush. Otherwise the async
+  // IIFE returns before its finally block and leaves a completed promise here
+  // forever, preventing every later stroke from reaching disk.
+  if (!this._lmbInkDirtyPaths || !this._lmbInkDirtyPaths.size) {
+    this._lmbInkSaveState = "saved"; this.lmbUpdateInkSaveStatus(); return true;
+  }
   if (!this._lmbInkLastBackup) this._lmbInkLastBackup = new Map();
   this._lmbInkFlushPromise = (async () => {
     const paths = Array.from(this._lmbInkDirtyPaths || []).map((path) => [path, this._lmbInkDirtyRevisions && this._lmbInkDirtyRevisions.get(path) || 0]);
@@ -256,6 +262,7 @@ LuciasMarginBookPlugin.prototype.lmbSaveInkSoon = function (path) {
 };
 
 LuciasMarginBookPlugin.prototype.lmbSetInkMode = async function (on) {
+  if (!on) this.lmbEndInkContinuation(false);
   const request = this._lmbInkModeRequest = (this._lmbInkModeRequest || 0) + 1;
   if (on) {
     // Finish notes through their existing save queue, including IME/failure
@@ -512,6 +519,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
       ? { color: this.settings.inkHighlighterColor || "#ffd84d", width: Number(this.settings.inkHighlighterWidth) || 12, opacity: .3 }
       : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
     const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
+    this.lmbAssignInkContinuation(object, path(), page());
     active = { kind: "draw", object, before, pointerId: event.pointerId }; redrawLive();
   };
   const move = (event) => {
@@ -936,6 +944,7 @@ LuciasMarginBookPlugin.prototype.lmbApplyInkStyleToSelection = function (propert
 
 LuciasMarginBookPlugin.prototype.lmbSetInkTool = function (tool) {
   if (!LMB_INK_TOOLS.includes(tool)) return;
+  if (["hand", "select", "text"].includes(tool)) this.lmbEndInkContinuation(false);
   if (["pen", "highlighter", "line", "rect"].includes(this.inkTool)) this._lmbInkLastDrawTool = this.inkTool;
   if (typeof document !== "undefined") document.querySelectorAll(".page[data-lmb-ink-bound]").forEach(page => { if (page._lmbFinishInk) page._lmbFinishInk(); });
   this.inkTool = tool; this.settings.inkLastTool = tool;
@@ -1005,6 +1014,14 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     const action = (icon, title, handler, fallback) => { const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); applyIcon(button, icon, fallback); button.addEventListener("click", handler); actions.appendChild(button); };
     action("undo-2", "撤销", () => this.lmbUndoInk(leafCanvas()), "↶");
     action("redo-2", "重做", () => this.lmbRedoInk(leafCanvas()), "↷");
+    const session = this._lmbInkContinuation;
+    if (session && leaf.view?.file?.path === session.path) {
+      const continuation = document.createElement("div"); continuation.className = "lmb-ink-selection-actions lmb-ink-continuation";
+      const label = document.createElement("span"); label.className = "lmb-ink-link-badge";
+      label.textContent = `续写 ${this.lmbInkLinkLabel(session.path, session.exId).replace(/^手写 /, "")} · P.${session.page}`; continuation.appendChild(label);
+      const done = document.createElement("button"); done.type = "button"; done.className = "lmb-ink-link-action"; done.textContent = "完成续写";
+      done.addEventListener("click", () => this.lmbEndInkContinuation()); continuation.appendChild(done); bar.appendChild(continuation);
+    }
     if (this.inkTool === "select" && this._lmbInkSelection && this._lmbInkSelection.length) {
       const selectionTools = document.createElement("div"); selectionTools.className = "lmb-ink-selection-actions";
       const count = document.createElement("span"); count.textContent = `已选 ${this._lmbInkSelection.length} 笔`; selectionTools.appendChild(count);

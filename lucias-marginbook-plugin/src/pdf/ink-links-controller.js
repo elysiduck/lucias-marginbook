@@ -85,7 +85,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         throw error;
       }
       this.lmbSchedulePdfSidebarRefresh(0); this.lmbScheduleInkReferenceRefresh();
-      if (typeof document !== "undefined") this.lmbRenderInkTools();
+      if (typeof document !== "undefined") setTimeout(() => {
+        // The host suggester may still be closing and moving focused elements.
+        // A presentation failure must never report a durable association as lost.
+        if (!this._unloaded) try { this.lmbRenderInkTools(); } catch (error) { console.warn("[lmb] ink toolbar refresh", error); }
+      }, 0);
       return { path, exId, link: record, entry: created || entry };
     });
     this._lmbInkLinkQueue = task;
@@ -121,6 +125,27 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     return true;
   },
 
+  lmbEndInkContinuation(render = true) {
+    if (!this._lmbInkContinuation) return;
+    this._lmbInkContinuation = null;
+    if (render && typeof document !== "undefined") this.lmbRenderInkTools();
+  },
+
+  lmbAssignInkContinuation(object, path, page) {
+    const session = this._lmbInkContinuation;
+    if (!session) return false;
+    const link = this.lmbInkLinks(path)[session.exId];
+    const group = link && link.id === session.ref && (link.groups || []).find(g => g.id === session.groupId);
+    if (session.path !== path || Number(session.page) !== Number(page) || !group || Number(group.page) !== Number(page)) {
+      this.lmbEndInkContinuation(); return false;
+    }
+    // Membership travels in the SAME durable ink record as the new stroke.
+    // No asynchronous data.json write per pen-up and no chance of a saved stroke
+    // becoming detached because its later association write failed.
+    object.inkGroupIds = Array.from(new Set([...(object.inkGroupIds || []), group.id]));
+    return true;
+  },
+
   async lmbLocateInkReference(ref, options = {}) {
     if (this._unloaded) return false;
     const token = this._lmbInkLocateToken = {};
@@ -133,7 +158,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const groups = found.link.groups || [], group = groups.find(g => g.id === options.groupId)
         || groups.find(g => lmbInkGroupObjects(this.lmbInkStore()[found.path], g).length) || groups[0];
       const objects = lmbInkGroupObjects(this.lmbInkStore()[found.path], group), bounds = lmbInkGroupBounds(objects);
-      if (!bounds) { new Notice("这组笔迹已被擦除；备注和卡片仍保留，可撤销擦除后再定位"); return false; }
+      if (!bounds && !(options.continue && group && group.id && group.page)) { new Notice("这组笔迹已被擦除；备注和卡片仍保留，可撤销擦除后再定位"); return false; }
       const file = this.app.vault.getAbstractFileByPath(found.path);
       if (!file) { new Notice("找不到关联的 PDF，未修改备注"); return false; }
       const existing = (this.app.workspace.getLeavesOfType("pdf") || []).find(l => l.view && l.view.file && l.view.file.path === found.path);
@@ -144,14 +169,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const current = () => this._lmbNavigationCurrent(request) && token === this._lmbInkLocateToken && leaf.view === view && view.file?.path === found.path && pageEl && pageEl.isConnected !== false;
       if (!current()) return false;
       pageEl.scrollIntoView({ block: "center" }); pageEl._lmbInkNearViewport = true;
-      if (options.edit) {
+      if (options.edit || options.continue) {
         if (await this.lmbSetInkMode(true) === false || !current()) return false;
-        this.lmbSetInkTool("select");
+        this.lmbSetInkTool(options.continue ? "pen" : "select");
       }
       this.lmbEnsureInkLayer(pageEl, found.path, Number(group.page) - 1);
       this.lmbSelectPdfSidebarEntry(leaf, { exId: found.exId, page: group.page });
       const canvas = pageEl.querySelector(":scope > .lmb-ink-layer");
-      if (options.edit && canvas) {
+      this.lmbEndInkContinuation(false);
+      if (options.continue && canvas) {
+        this._lmbInkContinuation = { path: found.path, page: Number(group.page), exId: found.exId, ref, groupId: group.id };
+        this._lmbInkSelection = []; this._lmbInkSelectionContext = null;
+        this.lmbRenderInkTools(); this.lmbRedrawInkPage(canvas);
+      } else if (options.edit && canvas) {
         this._lmbInkSelection = objects.map(o => o.id); this._lmbInkSelectionContext = { canvas, path: found.path, page: group.page };
         this.lmbRenderInkTools(); this.lmbRedrawInkPage(canvas);
       }
@@ -165,6 +195,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   lmbFocusLinkedInk(leaf, exId) {
     const path = leaf.view && leaf.view.file && leaf.view.file.path;
+    if (this._lmbInkContinuation && (this._lmbInkContinuation.path !== path || this._lmbInkContinuation.exId !== exId)) this.lmbEndInkContinuation();
     const before = this._lmbInkLinkedFocus;
     if (before && before.path === path && before.exId === exId) return;
     this._lmbInkLinkedFocus = { path, exId };
@@ -208,11 +239,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const title = host.ownerDocument.createElement("div"); title.className = "lmb-ink-ref-caption";
     title.textContent = this.lmbInkLinkLabel(found.path, found.exId) + " · " + items.map(i => `P.${i.group.page} · ${i.objects.length} 笔`).join(" / "); host.appendChild(title);
     const actions = host.ownerDocument.createElement("div"); actions.className = "lmb-ink-ref-actions";
-    const back = host.ownerDocument.createElement("button"); back.type = "button"; back.className = "lmb-ink-ref-back"; back.textContent = "返回原笔迹";
-    back._lmbInkAction = () => this.lmbLocateInkReference(ref, { groupId });
-    back.onclick = event => { event.stopPropagation(); back._lmbInkAction(); }; actions.appendChild(back);
-    const edit = host.ownerDocument.createElement("button"); edit.type = "button"; edit.textContent = "编辑原笔迹"; edit.className = "lmb-ink-ref-edit";
-    edit._lmbInkAction = () => this.lmbLocateInkReference(ref, { groupId, edit: true });
+    const edit = host.ownerDocument.createElement("button"); edit.type = "button"; edit.textContent = "继续手写"; edit.className = "lmb-ink-ref-edit";
+    edit.title = "回到 PDF 补画，新笔迹自动加入这条手写备注";
+    edit._lmbInkAction = () => this.lmbLocateInkReference(ref, { groupId, continue: true });
     edit.onclick = event => { event.stopPropagation(); edit._lmbInkAction(); }; actions.appendChild(edit); host.appendChild(actions);
     // Canvas consumes pointerdown to select/drag a card. Explicit controls must
     // receive the first tap; the preview remains draggable as before.
@@ -333,6 +362,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   lmbSetupInkReferences() {
+    if (this.app.workspace.on && this.registerEvent) this.registerEvent(this.app.workspace.on("active-leaf-change", leaf => {
+      if (this._lmbInkContinuation && leaf?.view?.file?.path !== this._lmbInkContinuation.path) this.lmbEndInkContinuation();
+    }));
     // Native Canvas selects a previously inactive node in its capture handler,
     // swallowing the first click before a button's handler can run. Reserve
     // only explicit controls; leave preview/card drags to the Canvas host.
@@ -384,6 +416,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       for (const host of this._lmbInkCardObservers || []) { host._lmbInkSizeObserver.disconnect(); delete host._lmbInkSizeObserver; clearTimeout(host._lmbInkFitTimer); }
       this._lmbInkCardObservers?.clear();
       this._lmbInkActionPress = this._lmbInkActionClick = null;
+      this._lmbInkContinuation = null;
     });
   }
 });

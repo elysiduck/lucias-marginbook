@@ -399,6 +399,17 @@ async function main() {
   const concurrentTarget = Array.from(concurrentFiles.entries()).find(([path]) => path.endsWith(".json"));
   assert.equal(JSON.parse(concurrentTarget[1]).pages["1"].objects.length, 2);
 
+  // An explicit flush after autosave has no pending data. It must not lock
+  // the promise cache and silently suppress the user's subsequent handwriting.
+  await concurrentCtx.lmbFlushInkStorage(); await concurrentCtx.lmbFlushInkStorage();
+  assert.equal(concurrentCtx._lmbInkFlushPromise, null);
+  concurrentCtx._lmbInkDocs["busy.pdf"]["1"].objects.push({ id:"after-empty-flush", inkGroupIds:["group-resume"] });
+  concurrentCtx.lmbMarkInkDirty("busy.pdf"); clearTimeout(concurrentCtx._lmbInkSaveTimer);
+  await concurrentCtx.lmbFlushInkStorage(); clearTimeout(concurrentCtx._lmbInkSaveTimer);
+  const afterEmptyFlush = JSON.parse(concurrentFiles.get(concurrentTarget[0]));
+  assert.equal(afterEmptyFlush.pages["1"].objects.length,3,'writing after an empty flush still reaches the durable sidecar');
+  assert.deepEqual(afterEmptyFlush.pages["1"].objects[2].inkGroupIds,["group-resume"]);
+
   const failedCtx = Object.create(proto);
   Object.assign(failedCtx, {
     manifest: { id: "lucias-marginbook" }, app: { vault: { adapter: { write: async () => { throw new Error("disk full"); }, read: async () => "", exists: async () => false } } },
