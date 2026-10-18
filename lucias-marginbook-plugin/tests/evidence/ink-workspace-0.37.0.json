@@ -1,0 +1,51 @@
+{
+  "version": "0.37.0",
+  "date": "2026-10-18",
+  "host": "Obsidian 1.14.4 / Windows",
+  "method": "Native desktop UI on an isolated PDF/Markdown/Canvas fixture; full application reload; disk hashes compared against pre-deployment backups",
+  "nativeChecks": [
+    "Create editable PDF ink and associate a standalone note",
+    "Same fixed H1 number in ink selection toolbar, sidebar, PDF location, Markdown overlay and Canvas",
+    "Sidebar Markdown edit autosaves before return-to-ink navigation",
+    "Canvas adds a reference card without changing two seed nodes or their edge",
+    "Natural reference-card height fits existing and newly added cards",
+    "Narrowing a reference card recomputes height without moving nodes",
+    "Inactive native Canvas card: first tap on explicit return button navigates to original PDF ink",
+    "Edit-original action reselects the same vector; moving it updates the persistent location",
+    "Full Obsidian reload restores association number, ink, saved Markdown and Canvas dimensions",
+    "PDF Markdown text edits autosave and appear in sidebar; clicking blank exits without loss",
+    "Starting Markdown placement from active ink mode turns ink capture off; placed text can immediately enter inline editing",
+    "Selecting another sidebar excerpt clears the previous persistent ink location"
+  ],
+  "preservation": {
+    "backedUpFiles": 55,
+    "existingCanvasFiles": 38,
+    "unrelatedCanvasFilesByteIdentical": 37,
+    "existingReferenceCardHeightOnlyChanges": 1,
+    "existingPdfAndMarkdownByteIdentical": true,
+    "existingInkFilesByteIdentical": true,
+    "existingQuickNotesAndMarkdownPlacementsUnchanged": true,
+    "fixtureSeedNodeGeometryAndEdgesUnchanged": true
+  },
+  "nodeTestSuites": 9,
+  "browserChecks": {
+    "inkLinks": 40,
+    "ink": 32,
+    "noteFlow": 105,
+    "sidebar": 74,
+    "layout": 54,
+    "total": 305
+  },
+  "browserErrors": {
+    "inklinks": [],
+    "flow": [],
+    "sidebar": [],
+    "layout": [],
+    "ink": []
+  },
+  "notVerified": [
+    "Physical tablet touch and stylus hardware",
+    "OS process exit and relaunch (full Obsidian reload was tested)"
+  ],
+  "installedBuildSha256": "5b9efe7a25f80a576c3fc954558a3ecbf912512de52c4de3f076c10f0c65d9d2"
+}

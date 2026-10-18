@@ -42,7 +42,8 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   inkEraserAutoReturn: true,
   inkToolbarCollapsed: false,
   inkAnnotations: {},
-  inkExcerptLinks: {}
+  inkExcerptLinks: {},
+  inkLinkCounters: {}
 });
 
 class LmbSettingsStore {
@@ -100,6 +101,7 @@ class LmbSettingsStore {
       excerptViews: settings.excerptViews && typeof settings.excerptViews === "object" ? settings.excerptViews : {},
       quickExcerpts: settings.quickExcerpts && typeof settings.quickExcerpts === "object" ? settings.quickExcerpts : {},
       inkExcerptLinks: settings.inkExcerptLinks && typeof settings.inkExcerptLinks === "object" ? settings.inkExcerptLinks : {},
+      inkLinkCounters: settings.inkLinkCounters && typeof settings.inkLinkCounters === "object" ? settings.inkLinkCounters : {},
       pdfTextBlocks: settings.pdfTextBlocks && typeof settings.pdfTextBlocks === "object" ? settings.pdfTextBlocks : {},
       excerptColors: settings.excerptColors && typeof settings.excerptColors === "object" ? settings.excerptColors : {},
       notePlaceholderOffMigrated: !!settings.notePlaceholderOffMigrated,

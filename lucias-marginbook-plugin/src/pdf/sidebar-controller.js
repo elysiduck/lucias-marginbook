@@ -329,7 +329,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     leaf.containerEl.querySelectorAll(".lmb-pdf-text-block").forEach(block => {
       const on = !!id && block.dataset.exId === id;
       block.classList.toggle("lmb-note-selected", on);
-      if (on) block.dataset.lmbBadge = `P.${selected.page || "?"} · ${selected.ordinal || "批注"}`;
+      if (on) block.dataset.lmbBadge = this.lmbInkLinkLabel(leaf.view.file.path, id) || `P.${selected.page || "?"} · ${selected.ordinal || "批注"}`;
     });
     this.lmbFocusLinkedInk(leaf, id);
   },
@@ -510,6 +510,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const body = row.createDiv({ cls: "lmb-pdf-sidebar-item-body" });
         const inkLink = this.lmbInkLinks(file.path)[e.exId];
         if (inkLink) {
+          const badge = header.createSpan({ cls: "lmb-ink-link-badge", text: this.lmbInkLinkLabel(file.path, e.exId) });
+          header.insertBefore(badge, headerActions);
           const preview = body.createDiv({ cls: "lmb-ink-reference lmb-ink-sidebar-reference" });
           renderJobs.push(() => this.lmbRenderInkReference(preview, inkLink.id));
         }

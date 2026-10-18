@@ -135,7 +135,12 @@ LuciasMarginBookPlugin.prototype.lmbHandleInkPdfRename = async function (file, o
     if (this.settings.inkExcerptLinks && this.settings.inkExcerptLinks[oldPath]) {
       const oldLinks = this.settings.inkExcerptLinks[oldPath];
       this.settings.inkExcerptLinks[file.path] = { ...oldLinks, ...(this.settings.inkExcerptLinks[file.path] || {}) };
-      delete this.settings.inkExcerptLinks[oldPath]; await this.saveSettings(); this.lmbScheduleInkReferenceRefresh();
+      delete this.settings.inkExcerptLinks[oldPath];
+      if (this.settings.inkLinkCounters && this.settings.inkLinkCounters[oldPath]) {
+        this.settings.inkLinkCounters[file.path] = Math.max(this.settings.inkLinkCounters[file.path] || 1, this.settings.inkLinkCounters[oldPath]);
+        delete this.settings.inkLinkCounters[oldPath];
+      }
+      await this.saveSettings(); this.lmbScheduleInkReferenceRefresh();
     }
     this.lmbScheduleInkRefresh(0); return true;
   } catch (error) { console.warn("[lmb] PDF ink rename migration failed", oldPath, file.path, error); return false; }
@@ -697,6 +702,7 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkLayer = function (canvas) {
 };
 
 LuciasMarginBookPlugin.prototype.lmbDrawInkLiveLayer = function (canvas, active) {
+  this.lmbUpdateInkLocation(canvas);
   const info = this.lmbCanvasContext(canvas); if (!info) return;
   const { ctx, width, height } = info; ctx.clearRect(0, 0, width, height);
   if (active && active.kind === "draw") this.lmbDrawInkObject(ctx, active.object, width, height);
@@ -710,8 +716,11 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkLiveLayer = function (canvas, active)
     ctx.save(); ctx.strokeStyle = "#2d8cff"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.beginPath();
     active.points.forEach((point, index) => index ? ctx.lineTo(point.x * width, point.y * height) : ctx.moveTo(point.x * width, point.y * height)); ctx.stroke(); ctx.restore();
   }
-  const selected = new Set(Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : []);
-  for (const id of this.lmbInkFocusIds(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) selected.add(id);
+  const selection = this._lmbInkSelectionContext;
+  const editing = this.inkMode && this.inkTool === "select" && selection && selection.path === canvas.dataset.lmbInkPath && Number(selection.page) === Number(canvas.dataset.lmbInkPage);
+  // Read-only location uses the persistent labelled outline. Resize handles
+  // belong only to an active edit selection on this particular PDF page.
+  const selected = new Set(editing && Array.isArray(this._lmbInkSelection) ? this._lmbInkSelection : []);
   const objects = this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage);
   for (const object of objects.filter((item) => selected.has(item.id))) {
     const bounds = lmbInkBounds(object);
@@ -999,6 +1008,12 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     if (this.inkTool === "select" && this._lmbInkSelection && this._lmbInkSelection.length) {
       const selectionTools = document.createElement("div"); selectionTools.className = "lmb-ink-selection-actions";
       const count = document.createElement("span"); count.textContent = `已选 ${this._lmbInkSelection.length} 笔`; selectionTools.appendChild(count);
+      const selection = this._lmbInkSelectionContext;
+      if (selection) {
+        const ids = new Set(this._lmbInkSelection);
+        const labels = Object.entries(this.lmbInkLinks(selection.path)).filter(([, link]) => (link.groups || []).some(group => Number(group.page) === Number(selection.page) && lmbInkGroupObjects(this.lmbInkStore()[selection.path], group).some(object => ids.has(object.id)))).map(([exId]) => this.lmbInkLinkLabel(selection.path, exId));
+        if (labels.length) { const badge = document.createElement("span"); badge.className = "lmb-ink-link-badge"; badge.textContent = labels.join(" / "); selectionTools.appendChild(badge); }
+      }
       action("link", "将所选笔迹关联已有摘录", () => this.lmbChooseInkExcerpt(), "关联");
       const associate = actions.lastElementChild; associate.className = "lmb-ink-link-action"; associate.appendChild(document.createTextNode("关联摘录")); selectionTools.appendChild(associate);
       action("sticky-note", "用所选笔迹新建手写备注", () => this.lmbCreateInkNoteFromSelection(), "新建");

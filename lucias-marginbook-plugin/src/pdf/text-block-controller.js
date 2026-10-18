@@ -170,6 +170,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   async lmbStartTextBlockPlacement(entry, leaf) {
     if (!entry.exId) return;
+    // Placement transitions from drawing to text. Otherwise the active ink
+    // capture layer remains above the new block and swallows its edit click.
+    if (this.inkMode) await this.lmbSetInkMode(false);
+    if (this.rectMode) this.setRectMode(false);
     if (!(await this.lmbTextBlockNote(entry)).trim()) {
       await this.lmbEditTextBlockNote(entry, (text) => text.trim() && this.lmbStartTextBlockPlacement(entry, leaf));
       return;

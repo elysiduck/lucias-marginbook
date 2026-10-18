@@ -38,11 +38,12 @@ class LuciasMarginBookPlugin extends Plugin {
     this.settings = loadedSettings.settings;
     const inkStorageMigrated = await this.lmbInitializeInkStorage();
     this.lmbSetupInk();
+    const inkLinkNumbersMigrated = this.lmbInitializeInkLinkNumbers();
     this.lmbSetupInkReferences();
     this.lmbSetupTextBlocks();
     // v0.12.0 一次性迁移：老配置里 noteAutoBoxOnNew 已被持久化成 true，
     //   只改默认值不生效。用标记保证只强制关这一次，之后用户在设置里改回 true 不再被覆盖。
-    let settingsMigrated = loadedSettings.migrated || inkStorageMigrated;
+    let settingsMigrated = loadedSettings.migrated || inkStorageMigrated || inkLinkNumbersMigrated;
     // v0.16.0 一次性迁移（与上面同一套机制）：老配置里 commentAutoBoxOnNew 已被持久化成 true，
     //   只改默认值对存量用户不生效。强制关这一次，之后用户在设置里改回 true 不再被覆盖。
     // 两项迁移合并成一次有序写入，避免并发 saveData 互相覆盖。
@@ -1089,7 +1090,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.36.0";
+    st.dataset.lmbVersion = "0.37.0";
   }
 
 }

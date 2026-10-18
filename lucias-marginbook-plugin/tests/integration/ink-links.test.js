@@ -119,6 +119,48 @@ async function main() {
     if (reason === "unload") pending.p._unloaded = true; else pending.p._lmbInkDocs[pending.pdf.path]["1"].objects = [];
     release(); assert((await caught) instanceof Error); assert.equal(pending.p.settings.quickExcerpts[pending.pdf.path], undefined, "interrupted pending linking creates no ghost note");
   }
+  // Fixed per-PDF numbers survive reorder, deletion, reload and rename.
+  const numbered = fixture();
+  numbered.p.settings.inkExcerptLinks[numbered.pdf.path] = {
+    old: { id: "inkref-old", groups: [], number: 7 },
+    legacy: { id: "inkref-legacy", groups: [] },
+    duplicate: { id: "inkref-duplicate", groups: [], number: 7 }
+  };
+  assert.equal(numbered.p.lmbInitializeInkLinkNumbers(), true);
+  const numbers = Object.values(numbered.p.lmbInkLinks(numbered.pdf.path)).map(link => link.number);
+  assert.deepEqual(numbers, [7, 8, 9]);
+  assert.equal(numbered.p.lmbInitializeInkLinkNumbers(), false);
+  delete numbered.p.settings.inkExcerptLinks[numbered.pdf.path].duplicate;
+  const nextNumber = await numbered.p.lmbLinkInkSelection(numbered.snapshot, null, "next number");
+  assert.equal(nextNumber.link.number, 10, "deleted numbers are never reused");
+  assert.equal(numbered.p.lmbInkLinkLabel(numbered.pdf.path, 'legacy'), "手写 H8");
+  const restarted = fixture(); restarted.p.settings = clone(numbered.p.disk);
+  assert.equal(restarted.p.lmbInkLinkLabel(numbered.pdf.path, 'legacy'), "手写 H8");
+
+  // Natural-height commits merge only height into the CURRENT live snapshot.
+  const fit = fixture(), fitLink = await fit.p.lmbLinkInkSelection(fit.snapshot, null, "fit reference");
+  const card = { id: 'ink-card', type: 'text', text: '```marginbook-ink\n' + JSON.stringify({ ref: fitLink.link.id }) + '\n```', x: 125, y: 245, width: 420, height: 900 };
+  const fitData = { nodes: [clone(existing.nodes[0]), card], edges: clone(existing.edges) };
+  const host = { isConnected: true, dataset: { lmbInkRef: fitLink.link.id } };
+  const wrapper = { contains: h => h === host, querySelector: () => null };
+  let currentFitData = fitData, writes = 0;
+  const fitCanvas = { nodes: new Map([['ink-card', { id: 'ink-card', nodeEl: wrapper }]]), getData: () => currentFitData };
+  fit.p.app.workspace.getLeavesOfType = () => [{ containerEl: { contains: h => h === host }, view: { file: new TFile('fit.canvas'), canvas: fitCanvas } }];
+  fit.p.lmbMeasureInkCardHeight = () => 240;
+  fit.p._lmbWriteCanvasData = async (file, data) => { writes++; currentFitData = data; return true; };
+  await fit.p.lmbFitInkReferenceCards(host);
+  assert.equal(currentFitData.nodes[1].height, 240, 'oversized cards shrink');
+  assert.deepEqual(currentFitData.nodes[0], existing.nodes[0]); assert.deepEqual(currentFitData.edges, existing.edges);
+  assert.deepEqual({ ...currentFitData.nodes[1], height: 900 }, card, 'all geometry except height and all text remain unchanged');
+  assert.equal(fitData.nodes[1].height, 900, 'live source object is never mutated in place');
+  await fit.p.lmbFitInkReferenceCards(host); assert.equal(writes, 1, 'equal heights produce no save loop');
+  currentFitData.nodes[1].x = 999; fit.p.lmbMeasureInkCardHeight = () => 500;
+  await fit.p.lmbFitInkReferenceCards(host); assert.equal(currentFitData.nodes[1].height, 500, 'cards can grow again');
+  assert.equal(currentFitData.nodes[1].x, 999, 'recent live positions are preserved');
+  wrapper.querySelector = () => ({}); fit.p.lmbMeasureInkCardHeight = () => 800;
+  await fit.p.lmbFitInkReferenceCards(host); assert.equal(writes, 2, 'never resize a card while Markdown is being edited');
+  wrapper.querySelector = () => null; host.isConnected = false;
+  await fit.p.lmbFitInkReferenceCards(host); assert.equal(writes, 2, 'detached cards cannot overwrite a current Canvas');
   console.log("Ink associations: durable references, notes, eraser lineage, current bounds, Canvas layout/idempotence/concurrency, rollback and rename passed");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
