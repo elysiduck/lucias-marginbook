@@ -314,13 +314,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== v0.11.0：独立评论（批注评论底栏） ==================== */
 
-  _lmbCanonicalEntryForExcerpt(exId) {
+  _lmbCanonicalEntryForExcerpt(exId, canvasPath) {
     if (!exId || !this.excerptIndex) return null;
-    for (const entries of this.excerptIndex.values()) {
-      const hit = (entries || []).find((entry) => entry && entry.exId === exId && entry.sourceMd);
-      if (hit) return hit;
+    let fallback = null;
+    for (const [pdfPath, entries] of this.excerptIndex) {
+      const hits = (entries || []).filter(entry => entry && entry.exId === exId && entry.sourceMd);
+      if (!hits.length) continue;
+      if (this.settings && this.settings.storageLayout === "central") {
+        const expected = this.lmbStoragePaths(pdfPath, canvasPath).md;
+        const hit = hits.find(entry => entry.sourceMd === expected);
+        if (hit) return hit;
+        const explicit = canvasPath && this.settings.storageBindings && this.settings.storageBindings[pdfPath]
+          && this.settings.storageBindings[pdfPath].canvasDocuments && this.settings.storageBindings[pdfPath].canvasDocuments[canvasPath];
+        // User-authored notes outside the managed directory remain valid sources
+        // when there is no conflicting Canvas binding or duplicate source.
+        if (!fallback && (!canvasPath || (!explicit && new Set(hits.map(entry => entry.sourceMd)).size === 1))) fallback = hits[0];
+      } else return hits[0];
     }
-    return null;
+    return fallback;
   },
 
   /** 把某个摘录 Markdown 中的备注镜像到已关联的 Canvas 卡片。Markdown 永远是准值。 */
@@ -332,6 +343,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!entry || !entry.exId || entry.sourceMd !== mdFile.path) continue;
       const loc = this.excerptCanvasIndex.get(entry.exId);
       if (!loc || !loc.canvasPath || !loc.nodeId) continue;
+      if (this.settings && this.settings.storageLayout === "central") {
+        const binding = this.settings.storageBindings && this.settings.storageBindings[entry.pdfPath];
+        const expected = this.lmbStoragePaths(entry.pdfPath, loc.canvasPath).md;
+        const explicit = binding && binding.canvasDocuments && binding.canvasDocuments[loc.canvasPath];
+        const competing = (this.excerptIndex && this.excerptIndex.get(entry.pdfPath) || [])
+          .some(other => other.exId === entry.exId && other.sourceMd === expected);
+        if (expected !== mdFile.path && (explicit || competing)) continue;
+      }
       if (!grouped.has(loc.canvasPath)) grouped.set(loc.canvasPath, []);
       grouped.get(loc.canvasPath).push({ nodeId: loc.nodeId, exId: entry.exId,
         note: noteMap.get(entry.exId) || "" });
@@ -388,7 +407,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // 只改 Canvas，以免三端产生两个不同版本。
     const exMatch = String(node.text || "").match(EX_ID_RE);
     if (exMatch) {
-      const exId = exMatch[0].slice(1), entry = this._lmbCanonicalEntryForExcerpt(exId);
+      const exId = exMatch[0].slice(1), entry = this._lmbCanonicalEntryForExcerpt(exId, file.path);
       const mdFile = entry && this.app.vault.getAbstractFileByPath(entry.sourceMd);
       if (!(mdFile instanceof TFile)) return { ok: false, msg: "找不到该摘录的 Markdown 文档，未保存备注" };
       const saved = await this.lmbSaveExcerptNote(mdFile, exId, commentText);

@@ -19,7 +19,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       const pdfBase = pdfPath.split("/").pop().replace(/\.pdf$/i, "");
       const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
-      const mdPath = normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      const mdPath = this.settings && this.settings.storageLayout === "central"
+        ? this.lmbStoragePaths(pdfPath, cf.path).md
+        : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      if (this.settings && this.settings.storageLayout === "central") await this.lmbEnsureStorageParent(mdPath);
       // Markdown 是备注真相源。重建受控摘录区之前先读取现有备注，稍后按 exId
       // 原样嵌回，避免 Canvas 同步正文时把用户在 MD/PDF 侧栏写的备注覆盖掉。
       const existing = this.app.vault.getAbstractFileByPath(mdPath);
@@ -108,7 +111,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }
 
-      const head = "---\nPDF: \"[[" + pdfPath + "]]\"\ncanvas: \"[[" + cf.basename + "]]\"\n";
+      const head = "---\nPDF: \"[[" + pdfPath + "]]\"\ncanvas: \"[[" + cf.path + "]]\"\n";
       const generated = "<!-- LMB:BEGIN -->\n" + body + "<!-- LMB:END -->";
 
       if (existing instanceof TFile) {
@@ -148,19 +151,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /* ==================== v0.12.0：PDF 工具栏「打开摘录 md / 打开专属 canvas」 ==================== */
 
   /**
-   * 打开（必要时创建）PDF 专属摘录文档：<PDF名>-摘录.md（与 PDF 同目录）。
+   * 打开（必要时创建）PDF 专属摘录文档：<PDF名>-摘录.md（由统一存储规则决定路径）。
    * 存在 → 直接打开；已打开的 md 视图复用（绝不重开第二个标签）。
    * 不存在 → 写入 frontmatter 模板（PDF/canvas 指回本 PDF），与 writeExcerptMd 的头格式一致。
    */
   /** Ensure the canonical excerpt document exists without stealing focus from a PDF. */
   async lmbEnsureExcerptMdFile(pdfFile) {
     if (!pdfFile) return null;
-    const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
     const name = pdfFile.basename + "-摘录.md";
-    const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+    const paths = this.lmbStoragePaths(pdfFile), path = paths.md;
     let f = this.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) {
-      const canvasName = pdfFile.basename + ".canvas";
+      await this.lmbEnsureStorageParent(path);
+      const canvasName = paths.canvas;
       const head = "---\nPDF: \"[[" + pdfFile.path + "]]\"\ncanvas: \"[[" + canvasName + "]]\"\n";
       const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n";
       f = await this.app.vault.create(path, content);
@@ -189,17 +192,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   /**
-   * 打开（必要时创建）PDF 专属画布：<PDF名>.canvas（与 PDF 同目录）。
+   * 打开（必要时创建）PDF 专属画布：<PDF名>.canvas（由统一存储规则决定路径）。
    * 复用约定与 lmbFocusCanvasNode 一致：已打开的画布直接激活，绝不重开第二视图
    * （同一文件两个视图会让 canvasPositions 等按视图对象为键的状态全部失效）。
    */
   async lmbOpenOrCreatePdfCanvas(pdfFile) {
     if (!pdfFile) return null;
-    const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
     const name = pdfFile.basename + ".canvas";
-    const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+    const path = this.lmbStoragePaths(pdfFile).canvas;
     let f = this.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) {
+      await this.lmbEnsureStorageParent(path);
       f = await this.app.vault.create(path, JSON.stringify({ nodes: [], edges: [] }));
       new Notice("MarginBook: 已创建专属画布 " + name);
       // 新画布顺手登记进 canvas 索引（空画布无摘录卡，索引一次成本极低，保持一致性）
@@ -710,7 +713,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const folder = cf && cf.parent && cf.parent.path ? cf.parent.path : "/";
       const mdPath = meta.sourceMd
         ? normalizePath(meta.sourceMd)
-        : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+        : this.settings && this.settings.storageLayout === "central"
+          ? this.lmbStoragePaths(meta.pdf, cf && cf.path).md
+          : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
       let raw = null;
       try { raw = await this.app.vault.adapter.read(mdPath); } catch (_) { return false; }
       if (!raw) return false;

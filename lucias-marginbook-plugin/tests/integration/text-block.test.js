@@ -35,6 +35,7 @@ class Element {
   getBoundingClientRect() { return { ...this.rect, bottom: this.rect.top + this.rect.height, right: this.rect.left + this.rect.width }; }
   contains(el) { return !!el && (el === this || this.children.some((child) => child.contains(el))); }
   setAttribute(name, value) { (this.attributes || (this.attributes = {}))[name] = value; }
+  getAttribute(name) { return this.attributes && this.attributes[name]; }
   focus() { this.ownerDocument.activeElement = this; }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   get textContent() { return (this._text || "") + this.children.map((child) => child.textContent).join(""); }
@@ -53,10 +54,17 @@ class Element {
 class Plugin {}
 const context = vm.createContext({ LuciasMarginBookPlugin: Plugin, Notice: class { hide() {} },
   MarkdownRenderer: { render: async (_app, text, el) => { el.textContent = text; } }, console, setTimeout, clearTimeout });
-for (const file of ["src/pdf/sidebar-controller.js", "src/pdf/text-block-controller.js", "src/pdf/mark-service.js", "src/core/settings-store.js"])
+for (const file of ["src/pdf/pure-live-markdown.js", "src/pdf/sidebar-controller.js", "src/pdf/text-block-controller.js", "src/pdf/live-editor-controller.js", "src/pdf/sidebar-note-editor.js", "src/pdf/mark-service.js", "src/core/settings-store.js"])
   vm.runInContext(fs.readFileSync(file, "utf8"), context);
 const proto = Plugin.prototype;
 async function main() {
+  const structured = "## 标题\n无空行的段落 **加粗**。\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n```js\nfirst\n\nsecond\n```\n\n$$\nx + y\n\n= z\n$$\n\n- one\n  continuation\n\n- two\n\n> quote\n>\n> next\n\n";
+  const split = context.lmbLiveMarkdownBlocks(structured);
+  assert.deepEqual(Array.from(split, part => part.kind), ["heading", "paragraph", "table", "code", "math", "list", "quote", "paragraph"]);
+  for (const part of split) assert.equal(structured.slice(part.start, part.end), part.source);
+  assert(split[3].source.includes("first\n\nsecond")); assert(split[4].source.includes("x + y\n\n= z"));
+  assert.equal(context.lmbLiveCaretOffset("## **标题** 后文", "标题", 1, 0), 6);
+  assert.equal(context.lmbLiveMarkdownBlocks("")[0].source, "");
   assert.equal(proto._lmbSidebarSummary("## **前景理论**\n长篇内容", "题干"), "前景理论");
   assert.equal(proto._lmbSidebarSummary("\n<!-- marker -->\n> [!note]\n> **我的理解**", "题干"), "我的理解");
   assert.equal(proto._lmbSidebarSummary("", "1. **Prospect Theory**"), "Prospect Theory");
@@ -249,6 +257,9 @@ async function main() {
   assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 1, "cancelling placement must not create a draft");
   pageNotes.lmbStartPageNote(pageLeaf);
   await newDoc.emit("pointerdown", { target: newPage, button: 0, clientX: 100, clientY: 280, preventDefault() {}, stopImmediatePropagation() {} });
+  assert.equal(newPage.querySelector(".lmb-pdf-text-block"), null, "pointerdown must not create an editor before the placement click finishes");
+  await newDoc.emit("pointerup", { target: newPage, button: 0 });
+  await newDoc.emit("click", { target: newPage, button: 0, clientX: 100, clientY: 280, preventDefault() {}, stopImmediatePropagation() {} });
   const draftBlock = newPage.querySelector(".lmb-pdf-text-block");
   assert(draftBlock._lmbInlineEditor); assert.equal(latestModal, undefined, "page-note creation must not open a modal");
   assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 1, "opening/cancelling the editor must not create a draft");
@@ -257,6 +268,21 @@ async function main() {
   await draftBlock._lmbInlineEditor.save();
   assert.equal(pageNotes.settings.quickExcerpts[pageFile.path].length, 2);
   assert.equal(newPage.querySelector(".lmb-pdf-text-block"), null, "successful creation closes the temporary draft");
+  const waitingBar = newRoot.createDiv({ cls: "lmb-pdf-excerpt-sidebar" });
+  let releasePlacement, flushes = 0;
+  waitingBar._lmbSidebarEditor = { save: () => { flushes++; return new Promise(resolve => { releasePlacement = resolve; }); } };
+  const placementClick = { target: newPage, button: 0, clientX: 100, clientY: 280, preventDefault() {}, stopImmediatePropagation() {} };
+  pageNotes.lmbStartPageNote(pageLeaf);
+  const cancelledPlacement = newDoc.emit("click", placementClick);
+  await newDoc.emit("keydown", { key: "Escape", preventDefault() {} });
+  releasePlacement(true); await cancelledPlacement;
+  assert.equal(newPage.querySelector(".lmb-pdf-text-block"), null, "Escape during pending save must cancel delayed creation");
+  pageNotes.lmbStartPageNote(pageLeaf); const firstPlacement = newDoc.emit("click", placementClick);
+  await newDoc.emit("click", placementClick);
+  assert.equal(flushes, 2, "a second click during the same pending placement must not queue another editor");
+  releasePlacement(true); await firstPlacement;
+  assert.equal(newPage.querySelectorAll(".lmb-pdf-text-block").length, 1);
+  newPage.querySelector(".lmb-pdf-text-block")._lmbInlineEditor.cancel(); waitingBar.remove();
 
   const editingPage = new Element(), editingView = { page: 1, x: 0, y: 0, w: .5, fontSize: 16 };
   editingPage.dataset.pageNumber = "1";
@@ -264,13 +290,17 @@ async function main() {
   const editingBlock = plugin.lmbCreateTextBlock(editingPage, entry, editingView);
   let inlineSaved = "", inlineClosed;
   const editor = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "原文", onSubmit: async (text) => { inlineSaved = text; }, onClose: (saved) => { inlineClosed = saved; } });
+  editingView.y = .94; plugin.lmbStyleTextBlock(editingBlock, editingPage, editingView);
+  assert.equal(editingBlock.style.top, "94%", "entering edit must keep the saved page anchor near the bottom");
+  assert(Math.abs(parseFloat(editingBlock.querySelector(".lmb-pdf-text-body").style.maxHeight) - (1400 * .06 - 8)) < .001);
+  editingView.y = 0;
   editor.input.value = "## 实时预览"; await editor.render();
-  assert.equal(editingBlock.querySelector(".lmb-pdf-text-body").textContent, "## 实时预览"); assert.equal(inlineSaved, "");
+  assert.equal(editor.getText(), "## 实时预览"); assert.equal(editingBlock.querySelectorAll("textarea").length, 1); assert.equal(inlineSaved, "");
   await editor.save(); assert.equal(inlineSaved, "## 实时预览"); assert.equal(inlineClosed, true); assert.equal(editingBlock._lmbInlineEditor, undefined);
   const failingEditor = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "草稿", onSubmit: async () => { throw new Error("disk full"); }, onClose: (saved) => { inlineClosed = saved; } });
   await failingEditor.save(); assert.equal(editingBlock._lmbInlineEditor, failingEditor); assert.equal(failingEditor.input.value, "草稿");
   await failingEditor.render(); await plugin.lmbRenderTextBlocksOnPage(editingPage, "a.pdf");
-  assert.equal(editingBlock.querySelector(".lmb-pdf-text-body").textContent, "草稿", "background refresh must not overwrite an unsaved preview");
+  assert.equal(editingBlock._lmbInlineEditor.input.value, "草稿", "background refresh must not overwrite an unsaved paragraph");
   editingBlock.remove();
   const recycledPage = new Element(); recycledPage.dataset.pageNumber = "1";
   await plugin.lmbRenderTextBlocksOnPage(recycledPage, "a.pdf");
@@ -278,13 +308,112 @@ async function main() {
   failingEditor.cancel(); assert.equal(inlineClosed, false); assert.equal(editingBlock._lmbInlineEditor, undefined);
   const rendererBeforeRace = context.MarkdownRenderer.render, pendingPreviews = [];
   context.MarkdownRenderer.render = async (_app, text, el) => { await new Promise(resolve => pendingPreviews.push({ text, el, resolve })); el.textContent = text; };
-  const raceEditor = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "initial", onSubmit: async () => {} });
-  raceEditor.input.value = "slow old preview"; const slowPreview = raceEditor.render();
-  raceEditor.input.value = "latest preview"; const latestPreview = raceEditor.render();
-  pendingPreviews[2].resolve(); await latestPreview;
-  pendingPreviews[1].resolve(); pendingPreviews[0].resolve(); await slowPreview;
-  assert.equal(editingBlock.querySelector(".lmb-pdf-text-body").textContent, "latest preview");
+  const raceEditor = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "active\n\nold inactive", onSubmit: async () => {} });
+  raceEditor.input.value = "new active"; await raceEditor.render();
+  const oldActivation = raceEditor.activate(1);
+  raceEditor.input.value = "latest paragraph"; await raceEditor.render();
+  const latestActivation = raceEditor.activate(0);
+  pendingPreviews[2].resolve(); await latestActivation;
+  pendingPreviews[1].resolve(); pendingPreviews[0].resolve(); await oldActivation;
+  assert.equal(editingBlock.querySelector(".lmb-pdf-text-body").textContent, "latest paragraph");
+  assert.equal(raceEditor.getText(), "new active\n\nlatest paragraph");
   raceEditor.cancel(); context.MarkdownRenderer.render = rendererBeforeRace;
+  const multiSource = "## 标题\n\n第一段 **加粗**。\n\n第二段。";
+  const live = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: multiSource, onSubmit: async () => {} });
+  await live.activate(1, 3);
+  assert.equal(live.input.value, "第一段 **加粗**。");
+  assert.equal(editingBlock.querySelectorAll("textarea").length, 1);
+  assert(editingBlock.querySelector(".lmb-pdf-text-body").textContent.includes("第二段。"));
+  assert(!editingBlock.querySelector(".lmb-pdf-text-body").textContent.includes("第一段"), "active text is never duplicated in a preview");
+  live.input.value = "第一段已修改。"; await live.render();
+  assert.equal(live.getText(), "## 标题\n\n第一段已修改。\n\n第二段。");
+  live.undo(); assert.equal(live.getText(), multiSource);
+  live.undo(true); assert(live.getText().includes("第一段已修改。"));
+  await live.activate(1);
+  await live.input.emit("compositionstart", {}); live.input.value = "中文输入中";
+  await live.input.emit("input", { isComposing: true }); await live.save(); assert.equal(live.closed, false);
+  await live.input.emit("compositionend", {}); assert(live.getText().includes("中文输入中"));
+  live.input.value = "粘贴首段\n\n## 粘贴标题\n\n粘贴末段"; live.input.setSelectionRange(live.input.value.length, live.input.value.length); await live.render();
+  assert.equal(live.input.value, "粘贴末段"); assert(live.getText().includes("## 粘贴标题"));
+  live.cancel();
+  const between = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "前段\n\n后段", onSubmit: async () => {} });
+  between.input.value = "前段\n\n"; between.input.setSelectionRange(4, 4); await between.render();
+  assert.equal(between.input.value, "", "Enter between paragraphs keeps an editable blank at the caret");
+  between.input.value = "新段"; between.input.setSelectionRange(2, 2); await between.render();
+  assert.equal(between.getText(), "前段\n\n新段\n\n后段");
+  between.cancel();
+  // Sidebar edits share the source and paragraph engine without opening a modal
+  // or letting asynchronous full-sidebar refreshes replace a live draft.
+  const side = new Plugin(), sideRoot = new Element(), sideBar = sideRoot.createDiv({ cls: "lmb-pdf-excerpt-sidebar" });
+  const sideFile = { path: "sidebar.pdf", extension: "pdf" }, sideLeaf = { view: { file: sideFile }, containerEl: sideRoot };
+  const sideItem = { exId: "quick-side", page: 2, text: "Excerpt", note: "## Heading\n\nOriginal paragraph." };
+  side.settings = { quickExcerpts: { "sidebar.pdf": [sideItem] }, pdfTextBlocks: {} };
+  side.app = { workspace: { getLeavesOfType: () => [sideLeaf] }, vault: {} };
+  side.lmbEnsurePdfSidebarEl = () => sideBar; side.lmbSetPdfSidebarVisible = () => {};
+  let sidebarRefreshes = 0; side.lmbRenderPdfSidebarForLeaf = async () => { sidebarRefreshes++; };
+  side.lmbRefreshTextBlocks = async () => {}; side.saveSettings = async () => {};
+  const sideRow = sideBar.createDiv({ cls: "lmb-pdf-sidebar-item" }); sideRow.dataset = { exId: sideItem.exId, page: "2", ordinal: "1" };
+  sideRow.createDiv({ cls: "lmb-pdf-sidebar-item-actions" });
+  const entrySide = { ...sideItem, pdfPath: sideFile.path, quick: true };
+  await side.lmbOpenSidebarNoteEditor(entrySide, sideLeaf, sideRow);
+  const sideEditor = sideBar._lmbSidebarEditor;
+  assert(sideEditor && sideRow.contains(sideEditor.input));
+  assert.equal((side._lmbActiveInlineBlocks || new Set()).size, 0, "sidebar hosts are not PDF page overlays");
+  await sideEditor.activate(1); sideEditor.input.value = "Draft **bold**."; await sideEditor.render();
+  assert.equal(await side.lmbTextBlockNote(entrySide), "## Heading\n\nDraft **bold**.");
+  assert.equal(sideItem.note, "## Heading\n\nOriginal paragraph.", "typing previews but does not persist");
+  await proto.lmbRenderPdfSidebarForLeaf.call(side, sideLeaf);
+  assert.equal(sideBar._lmbSidebarEditor, sideEditor); assert(sideRow.contains(sideEditor.input));
+  side.saveSettings = async () => { throw new Error("disk full"); };
+  await sideEditor.save(); assert.equal(sideEditor.closed, false); assert.equal(sideBar._lmbSidebarEditor, sideEditor);
+  assert.equal(sideItem.note, "## Heading\n\nOriginal paragraph.");
+  await side.lmbOpenSidebarNoteEditor({ ...entrySide, exId: "other" }, sideLeaf, sideRow);
+  assert.equal(sideBar._lmbSidebarEditor, sideEditor, "opening another note never discards a draft");
+  side.saveSettings = async () => {}; await sideEditor.save();
+  assert.equal(sideItem.note, "## Heading\n\nDraft **bold**."); assert.equal(side._lmbSidebarNoteDrafts.size, 0);
+  // Debounced persistence stays open; cancelling later retains that baseline.
+  await side.lmbOpenSidebarNoteEditor(entrySide, sideLeaf, sideRow);
+  const auto = sideBar._lmbSidebarEditor;
+  auto.input.value = "Autosaved heading"; await auto.render();
+  await new Promise(resolve => setTimeout(resolve, 850));
+  assert.equal(sideItem.note, "Autosaved heading\n\nDraft **bold**."); assert.equal(auto.closed, false);
+  auto.input.value = "Not committed"; await auto.render(); auto.cancel();
+  assert.equal(sideItem.note, "Autosaved heading\n\nDraft **bold**.");
+  const secondItem = { exId: "quick-second", page: 2, note: "Second" };
+  side.settings.quickExcerpts[sideFile.path].push(secondItem);
+  const secondEntry = { ...secondItem, pdfPath: sideFile.path, quick: true };
+  const secondRow = sideBar.createDiv({ cls: "lmb-pdf-sidebar-item" }); secondRow.dataset = { exId: secondItem.exId, page: "2" };
+  secondRow.createDiv({ cls: "lmb-pdf-sidebar-item-actions" });
+  await side.lmbOpenSidebarNoteEditor(entrySide, sideLeaf, sideRow);
+  const switchingEditor = sideBar._lmbSidebarEditor;
+  switchingEditor.input.value = "Saved on switch"; await switchingEditor.render();
+  assert.equal(await side.lmbOpenSidebarNoteEditor(secondEntry, sideLeaf, secondRow), true);
+  assert(switchingEditor.closed); assert.equal(sideItem.note, "Saved on switch\n\nDraft **bold**.");
+  const draining = sideBar._lmbSidebarEditor;
+  let releaseWrite, writeCount = 0;
+  side.saveSettings = async () => { if (++writeCount === 1) await new Promise(resolve => { releaseWrite = resolve; }); };
+  draining.input.value = "First snapshot"; await draining.render();
+  const writing = draining.persist();
+  draining.input.value = "Newest snapshot"; await draining.render();
+  const switching = side.lmbOpenSidebarNoteEditor(entrySide, sideLeaf, sideRow);
+  releaseWrite(); await writing; await switching;
+  assert.equal(secondItem.note, "Newest snapshot"); assert.equal(writeCount, 2, "new input during write drains in order");
+  assert.equal(sideBar._lmbSidebarEditingId, sideItem.exId);
+  sideBar._lmbSidebarEditor.cancel();
+  assert.equal(sideBar._lmbSidebarEditor, undefined); assert(sidebarRefreshes > 0);
+  await side.lmbOpenSidebarNoteEditor(entrySide, sideLeaf, sideRow);
+  const cancelSide = sideBar._lmbSidebarEditor; cancelSide.input.value = "Do not save"; await cancelSide.render(); cancelSide.cancel();
+  assert.equal(sideItem.note, "Saved on switch\n\nDraft **bold**."); assert.equal(side._lmbSidebarNoteDrafts.size, 0);
+  const selectedBlock = sideRoot.createDiv({ cls: "lmb-pdf-text-block" }); selectedBlock.dataset.exId = sideItem.exId;
+  const otherBlock = sideRoot.createDiv({ cls: "lmb-pdf-text-block" }); otherBlock.dataset.exId = "other";
+  side.lmbSelectPdfSidebarEntry(sideLeaf, entrySide);
+  assert(selectedBlock.classList.contains("lmb-note-selected")); assert(!otherBlock.classList.contains("lmb-note-selected"));
+  assert.equal(selectedBlock.dataset.lmbBadge, "P.2 · 1");
+  side._lmbHighlightPdfSidebarTarget(sideItem.exId, false, sideLeaf);
+  assert(selectedBlock.classList.contains("lmb-note-selected"), "pointer leave cannot clear persistent association");
+  const isolatedRoot = new Element(), isolatedBlock = isolatedRoot.createDiv({ cls: "lmb-pdf-text-block" }); isolatedBlock.dataset.exId = sideItem.exId;
+  const isolatedLeaf = { containerEl: isolatedRoot, view: { file: { path: "other.pdf" } } };
+  side.lmbSyncPdfNoteSelection(isolatedLeaf); assert(!isolatedBlock.classList.contains("lmb-note-selected"));
   const modal = vm.runInContext("new LMBExcerptNoteModal({}, {})", context);
   let closed = false;
   modal.ta = { value: "必须保留的草稿" }; modal.close = () => { closed = true; };

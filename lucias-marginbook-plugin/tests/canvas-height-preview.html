@@ -1,0 +1,37 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Canvas 自动高度回归</title>
+<style>
+:root{--background-primary:#292929;--background-secondary:#333;--background-modifier-border:#555;--text-normal:#ddd;--text-muted:#aaa;--interactive-accent:#70bd94;--font-interface:Arial}
+*{box-sizing:border-box}body{margin:24px;background:#222;color:#ddd;font:18px/1.5 Arial}.canvas{position:relative;padding:20px}.canvas-node{position:relative;border:2px solid #70bd94;border-radius:8px;width:560px;height:731px;padding:18px;overflow:hidden}.canvas-node-content{border:1px solid #aaa;padding:16px;width:100%;overflow:auto}.markdown-preview-view{overflow:auto}.markdown-preview-sizer{min-height:0}.callout{background:#303030;padding:12px}.callout-title{font-size:13px}.callout-content{padding-top:12px}blockquote{margin:0;border-left:4px solid #70bd94;background:#292929;padding:10px 14px}p{margin:0}img{display:block;width:100%;height:650px}button{font:inherit;margin:10px;padding:6px 16px}pre{white-space:pre-wrap}#card-host{transform-origin:top left}
+</style>
+<h3>短摘录应缩小；图片、长文应展开</h3><pre id="results">运行中…</pre><div class="canvas" id="card-host"><div class="canvas-node" id="card"><div class="canvas-node-content"><div class="markdown-preview-view"><div class="markdown-preview-sizer"><div class="callout" data-callout="lmb-excerpt"><div class="callout-title">P.2 · 摘录</div><div class="callout-content"><blockquote><p>📖<br>Understanding Oligopolies: Industries in which a few firms compete and strategically interact among themselves. Each firm knows that it can affect market price and hence its rival’s profits. Hence a firm must consider the rival firm’s behavior to determine its own best policy.</p></blockquote><img alt="截图" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='650'%3E%3Crect width='400' height='650' fill='%23547f68'/%3E%3C/svg%3E"></div></div></div></div></div></div></div>
+<script>
+Element.prototype.setText=function(t){this.textContent=t};Element.prototype.addClass=function(c){this.classList.add(c)};Element.prototype.toggleClass=function(c,on){this.classList.toggle(c,on)};
+window.module={exports:{}};window.require=()=>({Plugin:class{},TFile:class{},Notice:class{constructor(t){console.log(t)}},PluginSettingTab:class{},Setting:class{},Modal:class{},FuzzySuggestModal:class{},normalizePath:p=>p,setIcon:()=>{}});
+</script><script src="../main.js"></script><script>
+(async()=>{
+const P=module.exports,p=new P(),pure=P.__test,card=document.querySelector('#card'),content=card.querySelector('.canvas-node-content'),host=document.querySelector('#card-host'),out=document.querySelector('#results');
+const style=document.createElement('style');style.textContent=P.__lmbStyles.LMB_STYLES.join('');document.head.append(style);
+let checks=0;const check=(ok,msg)=>{if(!ok)throw Error(msg);checks++};const frame=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+try{
+const file={path:'height-test.canvas'},node={id:'card',type:'text',text:'> [[demo.pdf#page=2|PDF]]\n> Oligopolies\n![[demo.webp]]\n^ex-abcdefgh',width:560,height:731,x:25,y:35,nodeEl:card};
+let data={nodes:[{...node,nodeEl:undefined}],edges:[]};const heights=[];const canvas={scale:1,nodes:new Map([['card',node]]),view:{file},getData:()=>structuredClone(data),setData:next=>{data=next;node.height=next.nodes[0].height;node.width=next.nodes[0].width;card.style.height=node.height+'px';card.style.width=node.width+'px';heights.push(node.height)},requestFrame(){},requestSave(){}};
+p.settings={nodeViews:{},excerptViews:{},excerptCardWidth:560};p.autoSize=new Map([[file.path,new Map([['card',{hash:p.simpleHash(node.text),w:560,h:731,locked:true}]])]]);p.autoEdges=new Map();p.selfWritten=new Map();p.persistAutoSizeSoon=()=>{};p.app={workspace:{getLeavesOfType:()=>[{view:{file,canvas}}]},vault:{read:async()=>JSON.stringify(data)}};p.activeCanvasContext=()=>({file,leaf:{view:{canvas}}});p._lmbWaitForNodeEl=async()=>card;p._scheduleActualFitRetry=()=>{};
+await frame();p.lmbMarkDualCards(canvas);await frame();
+const natural=pure.lmbMeasureNaturalCard(card,content,1);check(natural<450,'old blank area cannot be measured as chrome: '+natural);check(natural>250,'short text must stay readable');
+for(const size of [150,731,1500]){card.style.height=size+'px';await frame();check(Math.abs(pure.lmbMeasureNaturalCard(card,content,1)-natural)<2,'height depends on old outer size '+size);}
+card.style.height='731px';p.estimateSizeFor=()=>({w:560,h:1200});await p.lmbFitNodeById(file,'card',node,{quiet:true});
+check(node.height<450,'manual fit must prefer rendered text over oversized estimate');check(pure.lmbVerticalOverflow(content)===0,'manual shrink cannot clip content');const first=node.height;
+await p.lmbFitNodeById(file,'card',node,{quiet:true});check(Math.abs(node.height-first)<2,'repeated height clicks must be stable');
+const store=p.autoSize.get(file.path);store.set('card',{hash:p.simpleHash(node.text),w:560,h:731,locked:true});node.height=731;data.nodes[0].height=731;card.style.height='731px';
+check(p.fitNode(data.nodes[0],store)===null&&store.get('card').pendingActual,'legacy locked card waits for actual DOM');await p._actualFitRetryForFile(file);check(node.height<450,'legacy locked height remeasured automatically');check(store.get('card').naturalHeightVersion===3,'successful measurement upgrades cache');
+const previousMeasures=heights.length;data.nodes[0].x=900;await p._actualFitRetryForFile(file);check(heights.length===previousMeasures,'ordinary movement does not remeasure stable content');check(data.nodes[0].x===900,'size repair preserves current position');
+p.settings.excerptViews['ex-abcdefgh']='image';content.classList.add('lmb-view-img');await frame();await p.lmbFitNodeById(file,'card',node,{quiet:true,allowViewShrink:true,view:'image'});check(node.height>650,'visible screenshot expands card');
+p.settings.excerptViews['ex-abcdefgh']='text';content.classList.remove('lmb-view-img');await frame();await p.lmbFitNodeById(file,'card',node,{quiet:true});check(node.height<450,'short text shrinks after image without a special view flag');
+const paragraph=card.querySelector('blockquote p'),shortText=paragraph.textContent;paragraph.textContent='Long text paragraph. '.repeat(110);await frame();await p.lmbFitNodeById(file,'card',node,{quiet:true});const longHeight=node.height;check(longHeight>first,'long text expands');check(pure.lmbVerticalOverflow(content)===0,'long text is not clipped');
+paragraph.textContent=shortText;await frame();await p.lmbFitNodeById(file,'card',node,{quiet:true});check(node.height<longHeight,'deleting text shrinks card');
+card.style.width='320px';node.width=data.nodes[0].width=320;await frame();await p.lmbFitNodeById(file,'card',node,{quiet:true});check(pure.lmbVerticalOverflow(content)===0,'narrow card stays readable');
+for(const zoom of [.6,1.5]){host.style.transform='scale('+zoom+')';canvas.scale=zoom;await frame();const measured=pure.lmbMeasureNaturalCard(card,content,zoom);check(Math.abs(measured-node.height)<3,'zoom must not multiply saved height');}
+host.style.transform='';canvas.scale=1;out.textContent='PASS '+checks+' native Canvas height checks';
+}catch(error){out.textContent='FAIL after '+checks+': '+error.stack;throw error}
+})();
+</script></html>

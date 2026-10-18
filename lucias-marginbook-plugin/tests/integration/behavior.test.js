@@ -42,6 +42,12 @@ async function main() {
   const acrossSpanMatch = proto._lmbFindPdfTextMatch(fakeTextLayer, "field Functional");
   assert.equal(acrossSpanMatch.start.node, textNodeA);
   assert.equal(acrossSpanMatch.end.node, textNodeB);
+  const letterNodes = Array.from("models", textContent => ({ textContent }));
+  const letterLayer = { ...fakeTextLayer, children: letterNodes.map(node => ({ nodes: [node] })) };
+  const splitWord = proto._lmbFindPdfTextMatch(letterLayer, "models");
+  assert.equal(splitWord.start.node, letterNodes[0]);
+  assert.equal(splitWord.end.node, letterNodes[5]);
+  assert.equal(splitWord.end.offset, 1);
   const repeatedTop = { textContent: "False", y: 10 }, repeatedBottom = { textContent: "False", y: 80 };
   const repeatedDoc = {
     createTreeWalker: (div) => { let index = 0; return { nextNode: () => div.nodes[index++] || null }; },
@@ -336,7 +342,7 @@ async function main() {
   // 相同文本的移动/手动调高不得再次触发 DOM 高度测量。
   const stableNode = { id: "stable", text: "不变内容 ^ex-efgh", height: 300 };
   const stableHash = proto.simpleHash.call({}, stableNode.text);
-  const stableStore = new Map([[stableNode.id, { hash: stableHash, w: 380, h: 180 }]]);
+  const stableStore = new Map([[stableNode.id, { hash: stableHash, w: 380, h: 180, naturalHeightVersion: 3 }]]);
   let automaticMeasures = 0;
   const stableCtx = {
     simpleHash: proto.simpleHash,
@@ -347,6 +353,18 @@ async function main() {
   for (let i = 0; i < 20; i++) assert.equal(proto.fitNode.call(stableCtx, stableNode, stableStore), null);
   assert.equal(automaticMeasures, 0);
   assert.equal(stableNode.height, 300);
+  // Previously measured oversized cards (even locked ones) must reach DOM
+  // measurement once. Until DOM exists, retain geometry instead of estimating.
+  const legacyStore = new Map([[stableNode.id, { hash: stableHash, w: 380, h: 731, locked: true }]]);
+  let legacyEstimates = 0;
+  assert.equal(proto.fitNode.call({ ...stableCtx, lmbFitNodeActual: () => null,
+    estimateSizeFor: () => { legacyEstimates++; return { w: 380, h: 900 }; }
+  }, stableNode, legacyStore), null);
+  assert.equal(legacyStore.get(stableNode.id).pendingActual, true);
+  assert.equal(legacyStore.get(stableNode.id).h, 731); assert.equal(legacyEstimates, 0);
+  assert.deepEqual(proto.fitNode.call(stableCtx, stableNode, legacyStore), { w: 380, h: 308 });
+  const editedLocked = new Map([[stableNode.id, { hash: 'old-source', w: 380, h: 731, locked: true, naturalHeightVersion: 3 }]]);
+  assert.deepEqual(proto.fitNode.call(stableCtx, stableNode, editedLocked), { w: 380, h: 308 }, 'content edits invalidate a previous fit lock');
 
   // 估算路径只产生一个待重测标记，实际高度稳定后标记会被清除。
   const pendingNode = { id: "pending", text: "待渲染 ^ex-ijkl", width: 380 };
@@ -431,6 +449,10 @@ async function main() {
   liveContent.parentElement = liveWrapper;
   assert.equal(pure.lmbMeasureNaturalCard(liveWrapper, liveContent, 1), 184);
   assert.equal(cloneWrapper.style.width, "250px");
+  liveWrapper.offsetHeight = 731; liveContent.clientHeight = 180;
+  assert.equal(pure.lmbMeasureNaturalCard(liveWrapper, liveContent, 1), 184, 'empty space below content is not chrome');
+  liveContent.scrollHeight = 220; liveContent.querySelectorAll = () => [];
+  assert.equal(pure.lmbMeasureNaturalCard(liveWrapper, liveContent, 1), 184, 'old scroll constraints are not a natural-height floor');
 
   // 最终验收不是“写回了某个高度”，而是实际滚动宿主不再溢出。
   const scrollHost = {

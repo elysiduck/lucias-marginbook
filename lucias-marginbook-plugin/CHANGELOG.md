@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.35.0
+
+- Correct stylus detection: ordinary browser touch/mouse events also have a default altitude angle and must not be mistaken for a pen. Quarantine palm contacts through pen lift, share finger navigation across PDF pages and use the host PDF scale for two-finger zoom.
+- Add geometric partial erasing with swept hit testing, interpolated pressure, editable fragments and one-gesture undo/redo. Keep whole-stroke erasing and make return to the previous pen configurable.
+- Compact the ink toolbar: move secondary tools, custom color, width and eraser options into More; keep consistent touch targets and visible save status.
+- Save active Markdown editors before entering ink mode; failed saves retain their drafts. Sidebar/page editing releases ink capture, text inputs retain their keyboard shortcuts, and trailing ink clicks cannot open or close Markdown editors.
+- Preserve sampled strokes during page recycling/tool changes, clear queued live previews and release old canvas handlers on unload.
+- Add geometry/event regressions and browser checks for handwriting, palm-first input, erase/undo/redo, pinch routing, narrow toolbars and Markdown autosave/failure recovery. Hardware tablet validation remains outstanding.
+
+## 0.34.2
+
+- Serialize plugin settings writes and snapshot at execution time, preventing overlapping autosaves/preferences writes from completing in reverse order and restoring old note data. Failed writes still reject to the original editor and do not block subsequent saves.
+- Add persistence regression cases for concurrent writes, failure rollback, queue recovery and exact retry content.
+- Add 105 chained browser workflow checks across mouse/touch/pen event sequences: creation, IME, paragraph/table editing, autosave, page/sidebar switching, cancelled gestures, page recycling, in-flight typing, rapid switches, failed blank exits and failed first-save recovery.
+- Reread the in-memory durable store in workflow tests, verifying saved source rather than only the live editor. Physical tablet/browser-engine testing remains a separate validation step.
+
+## 0.34.1
+
+- Create PDF Markdown page-note editors on the completed placement click and consume that gesture before installing outside-click save/exit. The trailing click from the original pointerdown can no longer immediately close an empty draft.
+- Guard pending placement against duplicate clicks and honor Escape while an existing note save is in progress.
+- Add full pointerdown/pointerup/click regression coverage, empty editor idle retention, touch/pen sequences and cancelled/double-click placement races. Preserve subsequent blank-click save/exit and autosave behavior.
+
+## 0.34.0
+
+- Measure Canvas natural height from the unconstrained clone alone. Old fixed card height and empty outer space no longer become a minimum height.
+- Keep valid rendered measurements instead of replacing short text with larger screenshot/Markdown estimates. Keep post-fit overflow correction for long content.
+- Version actual measurements so old oversized caches, including previous Height locks, are remeasured when Canvas opens. Preserve geometry until DOM exists; unchanged current measurements do not refit on movement.
+- Do not lock estimated heights. Retry them when rendered, restore saved text/image mode before measuring, and ignore hidden pending screenshots.
+- Add legacy-cache, lock invalidation and stale-height regressions plus native Canvas checks for repeated fitting, image/text switching, narrow cards and zoom.
+
+## 0.33.0
+
+- Autosave page Markdown notes after 800 ms idle. Save before leaving via a blank PDF click, switching page notes or entering sidebar editing. Failed writes retain the current editor and draft.
+- Give newly placed page notes a stable identity across autosaves, preserving a single note and placement. Cancel retains the latest successfully saved content.
+- Add a bordered corner toggle that stays available after collapsing the sidebar, reflects its current state and preserves ongoing drafts.
+- Default new centralized storage to `Lucia's Marginbook`, preserving explicit existing roots until a backed-up offline migration updates references and caches.
+- Extend native browser coverage for page saves, failures, page/sidebar switching, new note identity and collapse/reopen state.
+
+## 0.32.0
+
+- Autosave sidebar note changes after 800 ms idle, keeping the live editor and caret in place. Serialize writes and drain edits made during a pending write.
+- Clicking another card saves the current note before entering the target editor. Queue rapid switches and keep the current draft and selection when saving fails.
+- Show persistent save status and failure notices. Finish flushes and closes; Cancel discards only changes newer than the last successful autosave.
+- Remove the textarea default two-row height floor and remeasure from a collapsed height, so short paragraphs use a single line and shrink after deletions.
+- Cover autosave, failed writes, switching, overlapping edits and native single-line sizing in regression tests.
+
+## 0.31.0
+
+- Unify PDF note toolbar control heights and compact the numeric font field; remove the redundant Edit action while preserving direct text editing and touch targets.
+- Persist sidebar selection on the matching page Markdown block and excerpt marks, including a page/ordinal badge. Scope selection to its PDF view and restore it after rerendering.
+- Edit ordinary and quick notes directly in sidebar cards using the shared paragraph-level Markdown editor, without a modal or duplicate preview. Preview drafts on placed page blocks while retaining canonical save/cancel behavior.
+- Preserve editor DOM, caret and drafts across sidebar refreshes and PDF switches. Keep failed saves editable and prevent competing editors or destructive card actions during editing.
+- Add sidebar persistence, failure, selection-scope and cancel regressions, plus 32 native browser checks; rerun 54 page-layout checks.
+
+
+## 0.30.0
+
+- Add centralized MarginBook storage grouped by source hierarchy and PDF name, keeping original PDFs in place. Use one resolver for excerpt creation, Canvas creation/sync, screenshots and cleanup.
+- Persist explicit primary and per-Canvas source bindings so historical excerpt copies retain their notes and cannot overwrite another Canvas source. Scope comment lookup and mirroring to the correct Markdown source.
+- Open the canonical excerpt directly from the PDF command and display the central storage policy in settings and toolbar descriptions.
+- Keep preexisting installations on legacy paths until explicitly migrated; fresh installations use central storage. Add storage integration tests for creation/reuse, directory collisions, source ownership and settings persistence.
+
+
+## 0.29.3
+
+- Float the live-edit Save/Cancel bar above the note instead of inserting it into the text flow. Keep page anchors and available body height identical in reading and editing modes, including notes near the page bottom.
+- Match paragraph spacing and remove textarea padding; size before focusing and preserve ancestor scroll positions during paragraph activation.
+- Add 54 native browser layout checks across two font sizes and three page positions, plus a page-bottom anchor regression.
+
+
+## 0.29.2
+
+- Recover exact text anchors when PDF.js splits a word across individual spans. Keep source-node offsets and nearest-position matching for repeated phrases.
+- Add a character-per-span lookup regression to support reanchoring legacy excerpts after toolbar contamination is cleaned.
+
+
+## 0.29.1
+
+- Restrict excerpt origin to the PDF text layer and clip crossing selections before extracting text, coordinates, link offsets or screenshots. Ignore editor mouseup events and make overlay controls unselectable.
+- Preserve the sanitized range for desktop and mobile capture; map text-layer element boundaries to stable selection offsets.
+- Reject out-of-range span offsets and partial-text matches during highlight reconstruction; use the page owner document for ranges.
+- Add a native-browser regression fixture with 15 checks for forward/reverse selections, overlay crossings, toolbar exclusion, exact offsets, screenshot ranges and highlight geometry.
+
+
+## 0.29.0
+
+- Replace the duplicate input/preview with one document flow: click a rendered paragraph to edit its Markdown source, while other blocks stay rendered.
+- Keep tables, lists, code fences and display math intact as editable blocks. Map clicked text to source caret positions and preserve whitespace between blocks.
+- Support cross-block paste, paragraph insertion, document undo/redo and Chinese IME without duplicating active content. Retain save/cancel, shared-source synchronization and failed-save drafts.
+- Add structural parsing, switching, caret mapping, undo/redo, insertion, paste and IME regressions.
+
+
 ## 0.28.0
 
 - Edit placed notes directly inside the PDF text block, with a small auto-growing Markdown input (60–180px), live preview below, Save/Cancel and Ctrl/Cmd+Enter/Escape shortcuts.

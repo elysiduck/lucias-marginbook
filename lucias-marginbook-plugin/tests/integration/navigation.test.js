@@ -221,7 +221,7 @@ test("a subsequent wheel gesture cancels pending navigation and removes listener
 });
 
 test("unchanged sidebar visibility sends no repeated layout notifications", async()=>{
-  const f=fixture();let notifications=0;const host={toggleClass(){}};
+  const f=fixture();let notifications=0;const host={toggleClass(){},querySelector(){return null;}};
   f.pdf.containerEl.querySelector=s=>s===".lmb-pdf-sidebar-host"?host:null;
   f.plugin._lmbNotifyPdfSidebarLayout=()=>notifications++;
   f.plugin.lmbSetPdfSidebarVisible(f.pdf,true);f.plugin.lmbSetPdfSidebarVisible(f.pdf,true);

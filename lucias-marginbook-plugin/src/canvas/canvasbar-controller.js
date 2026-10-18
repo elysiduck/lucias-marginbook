@@ -629,6 +629,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         // v0.13.5：等 nodeEl 就绪（最多 500ms）。canvas reactive 渲染是异步的，
         //   点 fit 按钮时 markdown 可能还在 layout —— 直接测 scrollHeight 会得 0。
         await this._lmbWaitForNodeEl(node, 500);
+        if (this.lmbMarkDualCards) this.lmbMarkDualCards(canvas);
 
         // v0.16.12：测量离屏自然展开副本，避免当前卡片的固定高度、滚动条宽度和
         // overflow 状态污染结果。同一内容/同一外框宽度应得到稳定的同一高度。
@@ -650,7 +651,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
               ? Array.from(contentEl.querySelectorAll("img")) : [];
             const tImg = Date.now();
             while (Date.now() - tImg < 2000) {
-              if (!imgs.some((im) => !im.complete)) break;
+              if (!imgs.some((im) => !im.complete && (!im.getClientRects || im.getClientRects().length))) break;
               await new Promise((r) => setTimeout(r, 120));
             }
           } catch (_) {}
@@ -697,20 +698,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             if (!quiet) { try { new Notice("内容未就绪，使用估算高度", 1600); } catch (_) {} }
           } catch (_) {}
         }
-        // v0.14.6：合理性校验 —— 实测值若明显小于估算（< 60%）则采用估算值。
-        //   目的：防止测量异常时把卡片压得**比内容还矮**（内容会被裁剪，比"留白"
-        //   糟糕得多）。估算走 v0.13.3 修过 lmbRenderedText 的 estimateSizeFor。
-        try {
-          const est = this.estimateSizeFor(node.text, { width: node.width, view: opts && opts.view });
-          const estH = Math.round((est && est.h) || 0);
-          if (!(opts && opts.allowViewShrink) && estH > 0 && naturalH > 0 && naturalH < estH * 0.6) {
-            const measuredH = Math.round(naturalH);
-            naturalH = estH;
-            if (!quiet) try {
-              new Notice(`实测 ${measuredH}px 明显小于估算 ${estH}px，已采用估算值（防止内容被裁）`, 3000);
-            } catch (_) {}
-          }
-        } catch (_) {}
+        // A valid natural measurement takes precedence over estimates that may
+        // still include a hidden screenshot or raw Markdown. Verify overflow below.
         const origH = node.height;
         let beforeDomH = null;
         try {
@@ -923,7 +912,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (this.persistAutoSizeSoon) this.persistAutoSizeSoon();
         let store = this.autoSize ? this.autoSize.get(file.path) : null;
         if (!store) { store = new Map(); if (this.autoSize) this.autoSize.set(file.path, store); }
-        store.set(nodeId, { hash: this.simpleHash(node.text), w: node.width, h: finalH, locked: true });
+        store.set(nodeId, { hash: this.simpleHash(node.text), w: node.width, h: finalH,
+          locked: !usedEstimate, pendingActual: usedEstimate || undefined,
+          naturalHeightVersion: usedEstimate ? undefined : 3 });
+        if (usedEstimate && this._scheduleActualFitRetry) this._scheduleActualFitRetry(file);
         // 操作反馈：测量值 + 文件回读 + canvas 内存回读（双保险：哪条通道生效都显示）
         if (!quiet) try {
           const tag = usedEstimate ? "（估算：子元素未就绪）" : "";

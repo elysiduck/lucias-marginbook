@@ -25,8 +25,11 @@ function lmbInkIsStylusInput(input) {
   const pointerType = String(input.pointerType || "").toLowerCase();
   const touchType = String(input.touchType || "").toLowerCase();
   if (pointerType === "pen" || touchType === "stylus" || touchType === "pencil") return true;
+  if (pointerType === "mouse" || touchType === "direct") return false;
+  // PointerEvent.altitudeAngle defaults to PI/2 even for ordinary fingers and
+  // mice. Only legacy Touch without an explicit direct-touch type may use it.
   const altitude = Number(input.altitudeAngle);
-  if (Number.isFinite(altitude) && altitude > 0) return true;
+  if (!pointerType && Number.isFinite(altitude) && altitude > 0) return true;
   const tiltX = Number(input.tiltX), tiltY = Number(input.tiltY);
   return pointerType === "touch" && ((Number.isFinite(tiltX) && tiltX !== 0) || (Number.isFinite(tiltY) && tiltY !== 0));
 }
@@ -263,4 +266,67 @@ function lmbInkFileKey(path) {
   }
   const slug = value.split(/[\\/]/).pop().replace(/[^a-z0-9._-]+/gi, "-").slice(0, 48) || "document";
   return `${slug}-${(hash >>> 0).toString(36)}${(hash2 >>> 0).toString(36)}.json`;
+}
+
+// Clip each ink segment against a swept circular eraser in screen space. This
+// handles sparse/fast strokes, non-square PDF pages and interpolated pressure.
+function lmbInkEraseFragments(object, from, to, radius, width, height) {
+  let points = object.points;
+  if (object.type === "line") points = [{ x: object.x1, y: object.y1 }, { x: object.x2, y: object.y2 }];
+  if (object.type === "rect") points = [
+    { x: object.x1, y: object.y1 }, { x: object.x2, y: object.y1 },
+    { x: object.x2, y: object.y2 }, { x: object.x1, y: object.y2 }, { x: object.x1, y: object.y1 }
+  ];
+  if (!points || !points.length) return null;
+  const pixel = p => ({ x: p.x * width, y: p.y * height });
+  const a = pixel(from), b = pixel(to), vx = b.x - a.x, vy = b.y - a.y, length = Math.hypot(vx, vy);
+  const r = radius + (object.widthUnit === "page" ? (Number(object.width) || 0) * width : Number(object.width) || 0) * .75;
+  const mix = (p, q, t) => {
+    const result = { ...p, x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t };
+    for (const key of ["p", "t"]) if (Number.isFinite(p[key]) && Number.isFinite(q[key])) result[key] = p[key] + (q[key] - p[key]) * t;
+    return result;
+  };
+  if (points.length === 1) return lmbInkDistanceToSegment(pixel(points[0]), a, b) <= r ? [] : null;
+  const fragments = []; let run = [], changed = false;
+  const flush = () => { if (run.length) fragments.push(run); run = []; };
+  for (let i = 1; i < points.length; i++) {
+    const p = pixel(points[i - 1]), q = pixel(points[i]), dx = q.x - p.x, dy = q.y - p.y, intervals = [];
+    const circle = center => {
+      const ox = p.x - center.x, oy = p.y - center.y, aa = dx * dx + dy * dy;
+      if (aa < 1e-12) { if (ox * ox + oy * oy <= r * r) intervals.push([0, 1]); return; }
+      const bb = 2 * (ox * dx + oy * dy), cc = ox * ox + oy * oy - r * r, disc = bb * bb - 4 * aa * cc;
+      if (disc < 0) return;
+      const lo = Math.max(0, (-bb - Math.sqrt(disc)) / (2 * aa)), hi = Math.min(1, (-bb + Math.sqrt(disc)) / (2 * aa));
+      if (hi > lo + 1e-10) intervals.push([lo, hi]);
+    };
+    circle(a); circle(b);
+    if (length > 1e-8) {
+      let lo = 0, hi = 1;
+      const clip = (value, delta, min, max) => {
+        if (Math.abs(delta) < 1e-12) return value >= min && value <= max;
+        const u = (min - value) / delta, v = (max - value) / delta;
+        lo = Math.max(lo, Math.min(u, v)); hi = Math.min(hi, Math.max(u, v)); return hi > lo + 1e-10;
+      };
+      if (clip(((p.x - a.x) * vx + (p.y - a.y) * vy) / length, (dx * vx + dy * vy) / length, 0, length)
+        && clip((-(p.x - a.x) * vy + (p.y - a.y) * vx) / length, (-dx * vy + dy * vx) / length, -r, r)) intervals.push([lo, hi]);
+    }
+    if (!intervals.length) { if (!run.length) run.push(points[i - 1]); run.push(points[i]); continue; }
+    changed = true;
+    intervals.sort((x, y) => x[0] - y[0]);
+    let cursor = 0;
+    for (const [lo, hi] of intervals) {
+      if (lo > cursor + 1e-9) {
+        if (!run.length) run.push(mix(points[i - 1], points[i], cursor));
+        run.push(mix(points[i - 1], points[i], lo)); flush();
+      } else flush();
+      cursor = Math.max(cursor, hi);
+    }
+    if (cursor < 1 - 1e-9) run = [mix(points[i - 1], points[i], cursor), points[i]];
+  }
+  flush(); return changed ? fragments : null;
+}
+
+function lmbInkIsTextInput(target) {
+  return !!(target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "")
+    || target.closest && target.closest('[contenteditable="true"],.cm-editor,.lmb-inline-note-editor')));
 }

@@ -2,6 +2,15 @@
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
 
+  lmbScheduleVisibleCanvasFits() {
+    if (this._unloaded) return;
+    const leaves = this.app.workspace.getLeavesOfType("canvas") || [];
+    for (const leaf of leaves) {
+      const file = leaf && leaf.view && leaf.view.file;
+      if (file && file.extension === "canvas") this._scheduleActualFitRetry(file);
+    }
+  },
+
   async lmbApplyTreeLayout(direction) {
     const ctx = this.activeCanvasContext();
     if (!ctx) { new Notice("请先打开一个 Canvas"); return; }
@@ -499,6 +508,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!leaf) return;
       const canvas = leaf.view.canvas;
       if (!canvas || !canvas.nodes) return;
+      if (this.lmbMarkDualCards) this.lmbMarkDualCards(canvas);
       // v0.16.3【图片等待重试链】：卡内有 img 未加载完时，lmbFitNodeActual 会返回 null
       //   （v0.16.3 起）→ fitNode 回退估算 → 估算值被写进档案。若没有这轮补测，图片加载
       //   完成后就**没人再量一次**，偏小的估算值被固化 —— 「自动高度依旧偏小」的主根因。
@@ -514,7 +524,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           const imgs = el && el.querySelectorAll ? el.querySelectorAll("img") : null;
           if (!imgs) continue;
           for (let i = 0; i < imgs.length; i++) {
-            if (!imgs[i].complete) { pendingImg = true; break; }
+            if (!imgs[i].complete && (!imgs[i].getClientRects || imgs[i].getClientRects().length)) { pendingImg = true; break; }
           }
           if (pendingImg) break;
         }
@@ -555,9 +565,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (n.type !== "text" || !n.text || !EX_ID_RE.test(n.text)) continue;
         const cached = store.get(n.id);
         const textHash = this.simpleHash(n.text);
-        if (cached && cached.locked) continue;
         const outerWidth = Number(n.width) || 0;
-        if (cached && cached.hash === textHash && !cached.pendingActual
+        if (cached && cached.naturalHeightVersion === 3 && cached.hash === textHash && !cached.pendingActual
           && (outerWidth <= 0 || Math.abs((Number(cached.w) || 0) - outerWidth) < 2)) continue;
         const live = canvas.nodes.get ? canvas.nodes.get(n.id) : canvas.nodes[n.id];
         if (!live) { unresolvedActual = true; continue; }
@@ -766,14 +775,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // v0.14.8：手动 fit 过的卡片「锁定」，自动 fit 不再覆盖（避免子节点 fit 后被 processCanvas
     //   的 estimateSizeFor 误差覆盖回错的尺寸 —— 用户反馈「子节点调整高度失效」）。
     const prev0 = store.get(node.id);
-    if (prev0 && prev0.locked) return null;
     const hash = this.simpleHash(node.text);
     // 文本没变说明这次 modify 只是移动、连线或手动调尺寸；绝不能再次测量高度。
     const currentWidth = Number(node.width) || 0;
-    if (prev0 && prev0.hash === hash
+    const oldMeasurement = prev0 && prev0.naturalHeightVersion !== 3;
+    if (oldMeasurement && !prev0.pendingActual) {
+      store.set(node.id, Object.assign({}, prev0, { pendingActual: true }));
+      this.persistAutoSizeSoon();
+    }
+    if (!oldMeasurement && prev0 && prev0.hash === hash && !prev0.pendingActual
       && (currentWidth <= 0 || Math.abs((Number(prev0.w) || 0) - currentWidth) < 2)) return null;
     const actual = this.lmbFitNodeActual(node, store);
     if (actual) return actual.unchanged ? null : { w: actual.w, h: actual.h };
+    // Old (including locked) measurements are rechecked only once DOM is ready;
+    // keep the saved geometry until then instead of replacing it with an estimate.
+    if (oldMeasurement) return null;
     // 估算回退（节点未渲染或 DOM 拿不到）
     const prev = store.get(node.id);
     if (prev && prev.hash === hash) return null;
@@ -822,7 +838,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       try {
         const imgs = contentEl.querySelectorAll("img");
         for (let i = 0; i < imgs.length; i++) {
-          if (!imgs[i].complete) return null;
+          if (!imgs[i].complete && (!imgs[i].getClientRects || imgs[i].getClientRects().length)) return null;
         }
       } catch (_) { /* 查不了就照旧测（最坏情况回到旧行为） */ }
       // v0.16.3：节点 chrome 精确测量（上下 padding + border），不再用 +24 经验值。
@@ -866,14 +882,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (prev && prev.hash === hash
         && Math.abs(prev.w - w) < 2 && Math.abs(prev.h - h) < 2) {
         // pendingActual 是一次性任务；实际尺寸已稳定时必须清除，否则每次 modify 都会重试。
-        if (prev.pendingActual && store) {
-          store.set(node.id, { hash, w, h, locked: !!prev.locked });
+        if ((prev.pendingActual || prev.naturalHeightVersion !== 3) && store) {
+          store.set(node.id, { hash, w, h, locked: !!prev.locked, naturalHeightVersion: 3 });
           this.persistAutoSizeSoon();
         }
         return { w, h, unchanged: true };
       }
       if (store) {
-        store.set(node.id, { hash, w, h });
+        store.set(node.id, { hash, w, h, locked: !!(prev && prev.locked), naturalHeightVersion: 3 });
         this.persistAutoSizeSoon();
       }
       return { w, h };

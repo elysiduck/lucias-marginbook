@@ -215,21 +215,11 @@ function lmbMeasureNaturalCard(wrapperEl, contentEl, scale, opts) {
     // 整卡 clone 的 scrollHeight 同时包含 content 外部的真实 chrome，不再靠 20/40px 猜测。
     const contentHeight = Math.max(Number(cloneContent.scrollHeight) || 0,
       Number(cloneContent.offsetHeight) || 0);
-    const liveOuterHeight = Number(wrapperEl.offsetHeight) || 0;
-    const liveContentHeight = Number(contentEl.clientHeight) || 0;
-    const measuredChrome = Math.max(0, liveOuterHeight - liveContentHeight);
     const cloneHeight = Math.max(Number(clone.scrollHeight) || 0, Number(clone.offsetHeight) || 0);
-    // 活节点若已有滚动条，scrollHeight-clientHeight 是最直接的缺口。将它换算到外框高度
-    // 作为下限，可覆盖主题/flex 布局导致离屏 clone 与 Canvas 视口映射不完全一致的情况。
-    const liveOverflow = lmbVerticalOverflow(contentEl);
-    const liveOverflowFloor = liveOverflow > 0
-      ? lmbHeightAfterOverflow(liveOuterHeight, liveOverflow) : 0;
-    // 切换文字/图片视图时，liveOuterHeight 仍是切换前的固定卡片高度，不能把它
-    // 作为新视图的下限，否则从高图片切回短文字时永远缩不下来。
-    const ignoreLiveHeight = !!(opts && opts.ignoreLiveHeight);
-    const natural = ignoreLiveHeight
-      ? Math.max(cloneHeight, contentHeight)
-      : Math.max(cloneHeight, contentHeight + measuredChrome, liveOverflowFloor);
+    // The live outer/content difference can be hundreds of pixels of empty
+    // space, not chrome. Only the unconstrained clone describes natural height.
+    // Actual overflow is checked after applying the new size by the fit caller.
+    const natural = Math.max(cloneHeight, contentHeight);
     // 仅保留 4px 给小数像素取整/边框抗锯齿，不再按内容类型叠加大块经验余量。
     return natural > 0 ? Math.max(60, Math.min(4000, Math.ceil(natural + 4))) : 0;
   } catch (_) {
@@ -423,7 +413,7 @@ const LMB_STYLES = [
   'justify-content:flex-end;gap:1px;margin-left:auto!important;padding:0!important;flex:0 0 auto;}',
   '.lmb-toolbar-ink.is-active{color:var(--text-on-accent)!important;background:var(--interactive-accent)!important;}',
   '.lmb-ink-layer,.lmb-ink-live-layer{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;z-index:50!important;display:block;pointer-events:none!important;}',
-  '.lmb-ink-live-layer{z-index:51!important;}',
+  '.lmb-ink-live-layer{z-index:51!important;}body.lmb-ink-capture .lmb-ink-live-layer{z-index:80!important;}body.lmb-ink-capture .lmb-pdf-text-block.is-editing{z-index:85;}',
   'body.lmb-ink-mode.lmb-ink-capture .lmb-ink-live-layer{pointer-events:auto!important;touch-action:none!important;-webkit-touch-callout:none!important;}',
   'body.lmb-ink-mode .workspace-leaf-content[data-type="pdf"] .page{cursor:crosshair;}',
   'body.lmb-ink-mode.lmb-ink-capture .workspace-leaf-content[data-type="pdf"] .page{touch-action:none!important;overscroll-behavior:contain;-webkit-touch-callout:none!important;}',
@@ -436,6 +426,8 @@ const LMB_STYLES = [
   '.lmb-ink-width-control{display:flex;align-items:center;gap:3px;height:30px;min-width:94px;flex:0 1 112px;padding:0 4px;border-radius:7px;color:var(--text-muted);}.lmb-ink-width-icon svg{display:block;width:14px;height:14px;}.lmb-ink-tools input[type="range"]{-webkit-appearance:none;appearance:none;width:72px;min-width:48px;height:24px;margin:0;padding:0;background:transparent;cursor:pointer;}.lmb-ink-tools input[type="range"]::-webkit-slider-runnable-track{height:4px;border-radius:99px;background:var(--background-modifier-border);}.lmb-ink-tools input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;margin-top:-6px;border:2px solid var(--background-primary);border-radius:50%;background:var(--interactive-accent);box-shadow:0 0 0 1px var(--background-modifier-border);}.lmb-ink-width-value{min-width:16px;font-size:10px;text-align:right;color:var(--text-faint);}.lmb-ink-save-status{min-width:42px;color:var(--text-faint);font-size:10px;white-space:nowrap;}.lmb-ink-save-status[data-state="error"]{color:var(--text-error);}',
   'body.lmb-mobile .lmb-ink-tools{top:48px;left:6px;right:calc(var(--lmb-pdf-sidebar-width,0px) + 6px);padding:5px;gap:3px;border-radius:10px;}body.lmb-mobile .lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed>.lmb-ink-tools{right:6px;}body.lmb-mobile .lmb-ink-tools-content{justify-content:flex-start;flex-wrap:wrap;row-gap:4px;}body.lmb-mobile .lmb-ink-tools button{min-width:36px;width:36px;height:36px;flex-basis:36px;padding:7px;}body.lmb-mobile .lmb-ink-tools button svg{width:19px;height:19px;}body.lmb-mobile .lmb-ink-tools .lmb-ink-collapse{min-width:32px;width:32px;height:36px;flex-basis:32px;}body.lmb-mobile .lmb-ink-color-picker{width:36px;height:36px;flex-basis:36px;}body.lmb-mobile .lmb-ink-width-control{height:36px;flex-basis:106px;}body.lmb-mobile .lmb-ink-save-status{display:none;}',
   '@media(max-width:700px){body.lmb-mobile .lmb-ink-tools{right:6px;}body.lmb-mobile .lmb-pdf-sidebar-host:not(.lmb-pdf-sidebar-closed)>.lmb-ink-tools{right:calc(min(46vw,320px) + 6px);}}',
+  '.lmb-ink-tools{flex-wrap:wrap;padding:4px;gap:2px;align-items:center;}.lmb-ink-tools-content{flex:1;justify-content:flex-start;overflow-x:auto;flex-wrap:nowrap!important;scrollbar-width:thin;}.lmb-ink-tools button{border:1px solid var(--background-modifier-border);transition:background .12s,box-shadow .12s;}.lmb-ink-tools button:active{box-shadow:inset 0 1px 4px #0004;}.lmb-ink-tools button:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:-2px;}.lmb-ink-advanced{display:flex;align-items:center;flex-wrap:wrap;gap:4px;width:100%;padding:4px 2px 0;border-top:1px solid var(--background-modifier-border);}.lmb-ink-advanced[hidden],.lmb-ink-tools.is-collapsed .lmb-ink-advanced{display:none;}.lmb-ink-eraser-mode{height:30px;max-width:120px;}.lmb-ink-auto-return{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;min-height:30px;}.lmb-ink-auto-return input{margin:0;}.lmb-ink-save-status{margin-left:auto;}.lmb-ink-tools .lmb-ink-swatch{width:28px;height:30px;min-width:28px;flex-basis:28px;padding:5px;border:3px solid transparent;border-radius:7px;background-clip:content-box;box-shadow:none;}.lmb-ink-tools .lmb-ink-swatch.is-active{border-color:var(--interactive-accent);box-shadow:none;}',
+  '@media(pointer:coarse){.lmb-ink-tools button,body.lmb-mobile .lmb-ink-tools button{width:40px;height:40px;min-width:40px;flex-basis:40px;padding:8px;}.lmb-ink-advanced select,.lmb-ink-auto-return{min-height:40px;}.lmb-ink-tools .lmb-ink-collapse{min-height:40px;}.lmb-ink-tools .lmb-ink-swatch{padding:8px;}}',
   '.lmb-ink-text-editor{position:absolute;z-index:60;min-width:130px;min-height:44px;resize:both;padding:5px 7px;border:1px solid var(--interactive-accent);border-radius:4px;background:var(--background-primary);font:16px/1.35 var(--font-text);box-shadow:var(--shadow-s,0 2px 8px rgba(0,0,0,.18));}',
   '.workspace-leaf-content[data-type="pdf"] .lmb-toolbar-group .clickable-icon{margin:0!important;',
   'padding:3px!important;width:28px!important;height:28px!important;min-width:28px!important;max-width:28px!important;display:inline-flex;align-items:center;justify-content:center;flex:0 0 28px!important;}',
@@ -596,7 +588,8 @@ const LMB_STYLES = [
   '.lmb-pdf-sidebar-resizer:hover,.lmb-pdf-sidebar-resizer.is-dragging{background:var(--interactive-accent);opacity:.75;}',
   '.lmb-pdf-sidebar-title{position:sticky;top:0;padding:12px 3px 10px;margin-bottom:9px;',
   'background:var(--background-primary);border-bottom:1px solid var(--background-modifier-border);z-index:2;}',
-  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;}',
+  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;padding-right:38px;}',
+  '.lmb-sidebar-state-toggle{position:absolute;z-index:20;right:12px;top:calc(var(--lmb-pdf-sidebar-top,0px) + 8px);display:flex;align-items:center;justify-content:center;width:30px;height:30px;min-height:30px;padding:0;border:1px solid var(--background-modifier-border);border-radius:7px;background:var(--background-secondary);color:var(--text-muted);font:24px/1 var(--font-interface);cursor:pointer;transition:background .15s,box-shadow .15s,transform .1s;}.lmb-sidebar-state-toggle:hover{background:var(--background-modifier-hover);color:var(--text-normal);box-shadow:0 2px 7px #0003;}.lmb-sidebar-state-toggle:active{transform:scale(.94);}.lmb-sidebar-state-toggle:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px;}@media(any-pointer:coarse){.lmb-sidebar-state-toggle{width:40px;height:40px;min-height:40px;}.lmb-pdf-sidebar-title-row{padding-right:46px;}}',
   '.lmb-pdf-sidebar-title-main{font-size:14px;font-weight:700;line-height:1.4;}',
   '.lmb-pdf-sidebar-count{font-size:10px;color:var(--text-on-accent);background:var(--interactive-accent);padding:1px 6px;border-radius:99px;}',
   '.lmb-pdf-sidebar-file{font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}',
@@ -680,7 +673,16 @@ const LMB_STYLES = [
   '.lmb-inline-note-controls{display:flex;align-items:center;gap:5px;font:12px/1.3 var(--font-interface);margin-bottom:5px;}.lmb-inline-note-controls>span:first-child{white-space:nowrap;}.lmb-inline-note-status{flex:1;min-width:0;font-size:11px;color:var(--text-muted);}.lmb-inline-note-controls button{height:28px;min-width:40px;padding:2px 7px;font-size:12px;}.lmb-inline-note-input{display:block;width:100%;box-sizing:border-box;min-height:60px;max-height:180px;padding:6px 8px;resize:vertical;overflow:auto;font:15px/1.5 var(--font-text);color:var(--text-normal);background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:4px;}',
   '.lmb-pdf-text-block.is-editing>.lmb-pdf-text-body{background:color-mix(in srgb,white 97%,transparent);color:#222;}.lmb-pdf-text-block.is-draft>.lmb-pdf-text-tools{display:none;}.modal:has(.lmb-note-editor-compact){width:min(620px,calc(100vw - 32px));max-height:80vh;}.lmb-note-editor-compact .lmb-note-editor-grid{grid-template-columns:1fr;min-height:0;height:auto;gap:8px;}.lmb-note-editor-compact .lmb-note-editor-input{min-height:72px;max-height:180px;height:72px;padding:8px;}.lmb-note-editor-compact .lmb-note-editor-preview{height:auto;max-height:220px;min-height:40px;padding:8px;}',
   '.lmb-inline-note-controls>span:first-child{min-width:0;max-width:50%;overflow:hidden;text-overflow:ellipsis;}.lmb-inline-note-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.lmb-inline-note-controls button{flex-shrink:0;}',
-  '@media(any-pointer:coarse){.lmb-inline-note-controls button{min-height:40px;min-width:44px;}.lmb-inline-note-controls{flex-wrap:wrap;}.lmb-inline-note-input{font-size:16px;}}'
+  '@media(any-pointer:coarse){.lmb-inline-note-controls button{min-height:40px;min-width:44px;}.lmb-inline-note-controls{flex-wrap:wrap;}.lmb-inline-note-input{font-size:16px;}}',
+  '.is-live-editing>.lmb-inline-note-editor{position:absolute;bottom:100%;left:0;right:0;z-index:3;padding:4px 6px;border:1px solid var(--background-modifier-border);border-radius:4px;box-shadow:0 2px 6px #0002;}.is-live-editing .lmb-inline-note-controls{margin:0;}.lmb-live-markdown-block{display:flow-root;min-width:0;overflow-wrap:anywhere;border-radius:3px;}.lmb-live-markdown-block:not(.is-active){cursor:text;}.lmb-live-markdown-block:not(.is-active):hover{background:#70bd9410;}.lmb-live-markdown-block:focus-visible{outline:1px solid var(--interactive-accent);}.lmb-live-markdown-block.is-active{margin:.5em 0;background:#70bd9410;box-shadow:inset 2px 0 0 #70bd9480;}',
+  '.lmb-live-markdown-input{display:block;box-sizing:border-box;width:100%;min-height:1.5em;max-height:none;margin:0;padding:0;border:0!important;border-radius:0;box-shadow:none!important;resize:none!important;overflow:hidden;background:transparent!important;color:inherit!important;font:inherit;line-height:1.5;outline:none!important;}.lmb-live-markdown-block[data-kind="heading"]{margin:.6em 0 .35em;}.lmb-live-markdown-block[data-kind="heading"]>.lmb-live-markdown-input{font-size:var(--lmb-live-heading-size,1.4em);font-weight:600;}.lmb-live-markdown-block[data-kind="code"]>.lmb-live-markdown-input{font-family:var(--font-monospace,monospace);}',
+  '.lmb-live-markdown-block:not(.is-active)[data-kind="heading"]{margin:0;}',
+  '@media(any-pointer:coarse){.lmb-live-markdown-input{font-size:max(16px,var(--lmb-pdf-text-size,16px));}}',
+  '.lmb-pdf-text-tools,.lmb-inline-note-controls,.lmb-pdf-text-resize,.lmb-mark{user-select:none!important;-webkit-user-select:none!important;}',
+  '.lmb-pdf-text-tools{width:max-content;min-width:0;max-width:calc(100vw - 24px);align-items:center;gap:3px;padding:4px;}.lmb-pdf-text-tools button,.lmb-pdf-text-tools input{box-sizing:border-box;height:30px!important;min-height:30px!important;margin:0!important;line-height:1!important;font:12px/1 var(--font-interface);border:1px solid var(--background-modifier-border);border-radius:5px;box-shadow:none;padding:3px 6px;}.lmb-pdf-text-tools .lmb-text-size-step,.lmb-pdf-text-tools button:first-child{min-width:28px;padding:3px 5px;}.lmb-pdf-text-tools input{width:38px!important;min-width:38px;max-width:38px;padding:2px 3px;text-align:center;appearance:textfield;}.lmb-pdf-text-tools input::-webkit-inner-spin-button,.lmb-pdf-text-tools input::-webkit-outer-spin-button{appearance:none;margin:0;}',
+  '.lmb-pdf-text-block.lmb-note-hover{outline:1px solid var(--interactive-accent,#70bd94);outline-offset:2px;}.lmb-pdf-text-block.lmb-note-selected{border-color:var(--interactive-accent,#70bd94);outline:2px solid var(--interactive-accent,#70bd94);outline-offset:2px;box-shadow:0 0 0 5px #70bd941c;}.lmb-pdf-text-block.lmb-note-selected:before{content:attr(data-lmb-badge);position:absolute;right:0;bottom:calc(100% + 5px);z-index:1;padding:2px 6px;background:var(--interactive-accent,#70bd94);color:var(--text-on-accent,#132f22);font:11px/1.4 var(--font-interface);border-radius:4px;pointer-events:none;user-select:none;}.lmb-mark.lmb-note-selected{outline:2px solid var(--interactive-accent,#70bd94);outline-offset:1px;}.lmb-pdf-sidebar-item.is-active{border-color:var(--interactive-accent,#70bd94);box-shadow:inset 3px 0 var(--interactive-accent,#70bd94);}',
+  '.lmb-pdf-sidebar-item-note.is-sidebar-editing{position:relative;max-height:none;padding:0 0 4px;overflow:visible;}.is-sidebar-editing>.lmb-inline-note-editor{position:static;inset:auto;margin-bottom:4px;box-shadow:none;border:1px solid var(--background-modifier-border);}.is-sidebar-editing>.lmb-pdf-sidebar-item-note-body{max-height:none!important;overflow:visible;background:transparent;color:var(--text-normal);padding:0 4px;}.is-sidebar-editing>.lmb-pdf-sidebar-note-expand,.lmb-pdf-sidebar-item.is-note-editing>.lmb-pdf-sidebar-item-actions{display:none;}.lmb-pdf-sidebar-item.is-note-editing{display:block!important;}.lmb-pdf-sidebar-item.is-note-editing>.lmb-pdf-sidebar-item-note{display:block!important;}',
+  '@media(any-pointer:coarse){.lmb-pdf-text-tools button,.lmb-pdf-text-tools input{height:40px!important;min-height:40px!important;font-size:13px;}.lmb-pdf-text-tools button:first-child,.lmb-pdf-text-tools .lmb-text-size-step{min-width:36px;}.lmb-pdf-text-tools input{width:44px!important;min-width:44px;max-width:44px;}}'
 ];
 
 if (typeof module !== "undefined" && module.exports) {
@@ -707,6 +709,13 @@ const LmbCanvasAdapter = Object.freeze({
 });
 
 const LmbPdfAdapter = Object.freeze({
+  zoomViewer(view) {
+    try {
+      const child = view && view.viewer && view.viewer.child;
+      const viewer = child && child.pdfViewer;
+      return viewer && Number(viewer.currentScale) > 0 ? viewer : null;
+    } catch (_) { return null; }
+  },
   viewer(view) {
     try { return view && view.containerEl && (view.containerEl.querySelector(".pdfViewer") || view.containerEl); }
     catch (_) { return null; }
@@ -1644,8 +1653,11 @@ function lmbInkIsStylusInput(input) {
   const pointerType = String(input.pointerType || "").toLowerCase();
   const touchType = String(input.touchType || "").toLowerCase();
   if (pointerType === "pen" || touchType === "stylus" || touchType === "pencil") return true;
+  if (pointerType === "mouse" || touchType === "direct") return false;
+  // PointerEvent.altitudeAngle defaults to PI/2 even for ordinary fingers and
+  // mice. Only legacy Touch without an explicit direct-touch type may use it.
   const altitude = Number(input.altitudeAngle);
-  if (Number.isFinite(altitude) && altitude > 0) return true;
+  if (!pointerType && Number.isFinite(altitude) && altitude > 0) return true;
   const tiltX = Number(input.tiltX), tiltY = Number(input.tiltY);
   return pointerType === "touch" && ((Number.isFinite(tiltX) && tiltX !== 0) || (Number.isFinite(tiltY) && tiltY !== 0));
 }
@@ -1882,6 +1894,154 @@ function lmbInkFileKey(path) {
   }
   const slug = value.split(/[\\/]/).pop().replace(/[^a-z0-9._-]+/gi, "-").slice(0, 48) || "document";
   return `${slug}-${(hash >>> 0).toString(36)}${(hash2 >>> 0).toString(36)}.json`;
+}
+
+// Clip each ink segment against a swept circular eraser in screen space. This
+// handles sparse/fast strokes, non-square PDF pages and interpolated pressure.
+function lmbInkEraseFragments(object, from, to, radius, width, height) {
+  let points = object.points;
+  if (object.type === "line") points = [{ x: object.x1, y: object.y1 }, { x: object.x2, y: object.y2 }];
+  if (object.type === "rect") points = [
+    { x: object.x1, y: object.y1 }, { x: object.x2, y: object.y1 },
+    { x: object.x2, y: object.y2 }, { x: object.x1, y: object.y2 }, { x: object.x1, y: object.y1 }
+  ];
+  if (!points || !points.length) return null;
+  const pixel = p => ({ x: p.x * width, y: p.y * height });
+  const a = pixel(from), b = pixel(to), vx = b.x - a.x, vy = b.y - a.y, length = Math.hypot(vx, vy);
+  const r = radius + (object.widthUnit === "page" ? (Number(object.width) || 0) * width : Number(object.width) || 0) * .75;
+  const mix = (p, q, t) => {
+    const result = { ...p, x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t };
+    for (const key of ["p", "t"]) if (Number.isFinite(p[key]) && Number.isFinite(q[key])) result[key] = p[key] + (q[key] - p[key]) * t;
+    return result;
+  };
+  if (points.length === 1) return lmbInkDistanceToSegment(pixel(points[0]), a, b) <= r ? [] : null;
+  const fragments = []; let run = [], changed = false;
+  const flush = () => { if (run.length) fragments.push(run); run = []; };
+  for (let i = 1; i < points.length; i++) {
+    const p = pixel(points[i - 1]), q = pixel(points[i]), dx = q.x - p.x, dy = q.y - p.y, intervals = [];
+    const circle = center => {
+      const ox = p.x - center.x, oy = p.y - center.y, aa = dx * dx + dy * dy;
+      if (aa < 1e-12) { if (ox * ox + oy * oy <= r * r) intervals.push([0, 1]); return; }
+      const bb = 2 * (ox * dx + oy * dy), cc = ox * ox + oy * oy - r * r, disc = bb * bb - 4 * aa * cc;
+      if (disc < 0) return;
+      const lo = Math.max(0, (-bb - Math.sqrt(disc)) / (2 * aa)), hi = Math.min(1, (-bb + Math.sqrt(disc)) / (2 * aa));
+      if (hi > lo + 1e-10) intervals.push([lo, hi]);
+    };
+    circle(a); circle(b);
+    if (length > 1e-8) {
+      let lo = 0, hi = 1;
+      const clip = (value, delta, min, max) => {
+        if (Math.abs(delta) < 1e-12) return value >= min && value <= max;
+        const u = (min - value) / delta, v = (max - value) / delta;
+        lo = Math.max(lo, Math.min(u, v)); hi = Math.min(hi, Math.max(u, v)); return hi > lo + 1e-10;
+      };
+      if (clip(((p.x - a.x) * vx + (p.y - a.y) * vy) / length, (dx * vx + dy * vy) / length, 0, length)
+        && clip((-(p.x - a.x) * vy + (p.y - a.y) * vx) / length, (-dx * vy + dy * vx) / length, -r, r)) intervals.push([lo, hi]);
+    }
+    if (!intervals.length) { if (!run.length) run.push(points[i - 1]); run.push(points[i]); continue; }
+    changed = true;
+    intervals.sort((x, y) => x[0] - y[0]);
+    let cursor = 0;
+    for (const [lo, hi] of intervals) {
+      if (lo > cursor + 1e-9) {
+        if (!run.length) run.push(mix(points[i - 1], points[i], cursor));
+        run.push(mix(points[i - 1], points[i], lo)); flush();
+      } else flush();
+      cursor = Math.max(cursor, hi);
+    }
+    if (cursor < 1 - 1e-9) run = [mix(points[i - 1], points[i], cursor), points[i]];
+  }
+  flush(); return changed ? fragments : null;
+}
+
+function lmbInkIsTextInput(target) {
+  return !!(target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "")
+    || target.closest && target.closest('[contenteditable="true"],.cm-editor,.lmb-inline-note-editor')));
+}
+
+/* Source ranges for paragraph-level live editing. Gaps stay in the source, so
+ * switching blocks never rewrites whitespace, tables, fences or list markers. */
+function lmbLiveMarkdownBlocks(value) {
+  const text = String(value || ""), lines = [];
+  let offset = 0;
+  for (const raw of text.split("\n")) { lines.push({ text: raw, start: offset, end: offset + raw.length }); offset += raw.length + 1; }
+  const blank = (i) => i >= lines.length || !lines[i].text.trim();
+  const heading = (s) => /^ {0,3}#{1,6}(?:\s|$)/.test(s);
+  const list = (s) => /^\s*(?:[-+*]|\d+[.)])\s+/.test(s);
+  const quote = (s) => /^ {0,3}>/.test(s);
+  const fence = (s) => /^ {0,3}(`{3,}|~{3,})/.exec(s);
+  const rule = (s) => /^\s*([-*_])(?:\s*\1){2,}\s*$/.test(s);
+  const tableRule = (s) => /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/.test(s);
+  const table = (i) => i + 1 < lines.length && lines[i].text.includes("|") && tableRule(lines[i + 1].text);
+  const math = (s) => /^\s*\$\$/.test(s);
+  const special = (i) => heading(lines[i].text) || fence(lines[i].text) || list(lines[i].text) || quote(lines[i].text) || math(lines[i].text) || rule(lines[i].text) || table(i);
+  const result = [];
+  const add = (start, end, kind) => result.push({ start: lines[start].start, end: lines[end].end, kind, source: text.slice(lines[start].start, lines[end].end) });
+  for (let i = 0; i < lines.length;) {
+    if (blank(i)) { i++; continue; }
+    const first = i, s = lines[i].text, match = fence(s);
+    if (match) {
+      const marker = match[1][0], count = match[1].length;
+      for (i++; i < lines.length; i++) {
+        const close = /^ {0,3}(`+|~+)\s*$/.exec(lines[i].text);
+        if (close && close[1][0] === marker && close[1].length >= count) { i++; break; }
+      }
+      add(first, Math.min(i, lines.length) - 1, "code"); continue;
+    }
+    if (math(s)) {
+      if (!/^\s*\$\$.+\$\$\s*$/.test(s)) {
+        for (i++; i < lines.length && !/^\s*\$\$\s*$/.test(lines[i].text); i++) {}
+        if (i < lines.length) i++;
+      } else i++;
+      add(first, Math.min(i, lines.length) - 1, "math"); continue;
+    }
+    if (table(i)) { for (i += 2; i < lines.length && !blank(i) && lines[i].text.includes("|"); i++) {} add(first, i - 1, "table"); continue; }
+    if (heading(s) || rule(s)) { add(i, i, heading(s) ? "heading" : "rule"); i++; continue; }
+    if (i + 1 < lines.length && /^\s*(?:=+|-+)\s*$/.test(lines[i + 1].text)) { add(i, i + 1, "heading"); i += 2; continue; }
+    if (quote(s)) {
+      for (i++; i < lines.length; i++) {
+        if (quote(lines[i].text)) continue;
+        if (blank(i) && i + 1 < lines.length && quote(lines[i + 1].text)) continue;
+        break;
+      }
+      add(first, i - 1, "quote"); continue;
+    }
+    if (list(s) || /^(?: {4}|\t)/.test(s)) {
+      const kind = list(s) ? "list" : "code";
+      for (i++; i < lines.length; i++) {
+        if (blank(i)) {
+          let next = i + 1; while (next < lines.length && blank(next)) next++;
+          if (next < lines.length && (list(lines[next].text) || /^(?: {2,}|\t)/.test(lines[next].text))) { i = next - 1; continue; }
+          break;
+        }
+        if (heading(lines[i].text) || fence(lines[i].text) || quote(lines[i].text)) break;
+      }
+      add(first, i - 1, kind); continue;
+    }
+    for (i++; i < lines.length && !blank(i) && !special(i); i++) {}
+    add(first, i - 1, "paragraph");
+  }
+  if (!result.length || /\n\s*$/.test(text)) result.push({ start: text.length, end: text.length, kind: "paragraph", source: "" });
+  return result;
+}
+
+function lmbLiveBlockAt(parts, offset) {
+  const containing = parts.findIndex((part) => part.start <= offset && offset <= part.end);
+  if (containing >= 0) return containing;
+  const next = parts.findIndex((part) => part.start > offset);
+  return next >= 0 ? next : parts.length - 1;
+}
+
+function lmbLiveCaretOffset(source, nodeText, nodeOffset, precedingLength) {
+  // A clicked text node normally occurs verbatim in the Markdown source. Pick
+  // its closest occurrence, accounting for hidden heading/emphasis prefixes.
+  const visible = (s) => s.replace(/^ {0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s*/gm, "").replace(/[*_`~]/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  let best = -1, distance = Infinity;
+  if (nodeText) for (let at = source.indexOf(nodeText); at >= 0; at = source.indexOf(nodeText, at + 1)) {
+    const delta = Math.abs(visible(source.slice(0, at)).length - precedingLength);
+    if (delta < distance) { best = at; distance = delta; }
+  }
+  return Math.max(0, Math.min(source.length, best < 0 ? precedingLength + nodeOffset : best + nodeOffset));
 }
 
 /* ============================================================
@@ -2521,6 +2681,10 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   excerptCardWidth: 560,
   autoAttachScreenshot: true,
   excerptImageFolder: "附件/{pdf}",
+  storageLayout: "central",
+  storageRoot: "Lucia's Marginbook",
+  pdfSourceRoot: "Books/pdf书籍",
+  storageBindings: {},
   imageExcerptMarkStyle: "dashed",
   autoCleanOnDelete: true,
   moveDescendantsWithParent: false,
@@ -2543,6 +2707,8 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   inkHighlighterColor: "#ffd84d",
   inkHighlighterWidth: 12,
   inkEraserSize: 18,
+  inkEraserMode: "partial",
+  inkEraserAutoReturn: true,
   inkToolbarCollapsed: false,
   inkAnnotations: {}
 });
@@ -2553,7 +2719,10 @@ class LmbSettingsStore {
   }
 
   async load() {
-    const settings = Object.assign({}, LMB_DEFAULT_SETTINGS, await this.plugin.loadData());
+    const saved = await this.plugin.loadData();
+    const settings = Object.assign({}, LMB_DEFAULT_SETTINGS, saved);
+    // Existing vaults retain their paths until an explicit, backed-up migration.
+    if (saved && Object.keys(saved).length && !saved.storageLayout) settings.storageLayout = "legacy";
     let migrated = false;
     if (!settings.notePlaceholderOffMigrated) {
       settings.noteAutoBoxOnNew = false;
@@ -2588,6 +2757,10 @@ class LmbSettingsStore {
       excerptCardWidth: Math.max(320, Math.min(800, Number(settings.excerptCardWidth) || 560)),
       autoAttachScreenshot: settings.autoAttachScreenshot !== false,
       excerptImageFolder: String(settings.excerptImageFolder || "附件/{pdf}"),
+      storageLayout: settings.storageLayout === "central" ? "central" : "legacy",
+      storageRoot: String(settings.storageRoot || "Lucia's Marginbook"),
+      pdfSourceRoot: String(settings.pdfSourceRoot || "Books/pdf书籍"),
+      storageBindings: settings.storageBindings || {},
       imageExcerptMarkStyle: settings.imageExcerptMarkStyle === "highlight" ? "highlight" : "dashed",
       autoCleanOnDelete: settings.autoCleanOnDelete === true,
       moveDescendantsWithParent: settings.moveDescendantsWithParent === true,
@@ -2610,6 +2783,8 @@ class LmbSettingsStore {
       inkHighlighterColor: String(settings.inkHighlighterColor || "#ffd84d"),
       inkHighlighterWidth: Math.max(4, Math.min(30, Number(settings.inkHighlighterWidth) || 12)),
       inkEraserSize: Math.max(8, Math.min(48, Number(settings.inkEraserSize) || 18)),
+      inkEraserMode: settings.inkEraserMode === "stroke" ? "stroke" : "partial",
+      inkEraserAutoReturn: settings.inkEraserAutoReturn !== false,
       inkToolbarCollapsed: !!settings.inkToolbarCollapsed,
       inkAnnotations: this.plugin._lmbInkSidecarReady ? {} :
         (this.plugin._lmbInkDocs && typeof this.plugin._lmbInkDocs === "object" ? this.plugin._lmbInkDocs :
@@ -2840,8 +3015,10 @@ class LuciasMarginBookPlugin extends Plugin {
       this.lmbSchedulePdfSidebarRefresh(120);
       this.lmbScheduleInkRefresh(120);
       this.lmbRenderActivePdfSidebar().catch(() => {});
+      this.lmbScheduleVisibleCanvasFits();
     }));
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
+      if (f && f.extension === "canvas") this._scheduleActualFitRetry(f);
       if (f && f.extension === "pdf") {
         this.lmbScheduleToolbarButtons();
         this.lmbSchedulePdfSidebarRefresh(180);
@@ -2945,6 +3122,7 @@ class LuciasMarginBookPlugin extends Plugin {
       this.lmbSchedulePdfSidebarRefresh(250);
       // v0.13.0：启动 canvas 卡片悬浮栏轮询（每 120ms 比对选中集合与视口状态）
       if (typeof this.lmbStartCanvasBarWatch === "function") this.lmbStartCanvasBarWatch();
+      this.lmbScheduleVisibleCanvasFits();
     });
 
     /* ---- P2：回绘标记的触发时机 ----
@@ -3022,6 +3200,10 @@ class LuciasMarginBookPlugin extends Plugin {
           const file = this.app.workspace.getActiveFile();
           if (!file || file.extension !== "pdf") return false; // 非活动 PDF 时置灰
           if (checking) return true;
+          if (this.settings.storageLayout === "central") {
+            this.lmbOpenOrCreateExcerptMd(file).catch(err => new Notice("无法打开摘录文档：" + err.message));
+            return true;
+          }
           // v0.9.1：同名摘录 md 可能撞名（命名按 basename，跨目录会重）。
           //   优先取与 PDF 同目录的；仍有多个 → 弹选择器让用户挑，不再静默取第一个。
           const all = this.app.vault.getMarkdownFiles()
@@ -3468,7 +3650,7 @@ class LuciasMarginBookPlugin extends Plugin {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-md";
         btn.setAttribute("aria-label",
-          "MarginBook: 打开 / 创建该 PDF 的摘录文档（<PDF名>-摘录.md，与 PDF 同目录）");
+          "MarginBook: 打开 / 创建该 PDF 的摘录文档（使用 MarginBook 存储规则）");
         try { setIcon(btn, "file-text"); }
         catch (_) { btn.setText("📄"); }
         btn.addEventListener("click", (e) => {
@@ -3496,7 +3678,7 @@ class LuciasMarginBookPlugin extends Plugin {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-canvas";
         btn.setAttribute("aria-label",
-          "MarginBook: 打开 / 创建该 PDF 的专属画布（<PDF名>.canvas，与 PDF 同目录）");
+          "MarginBook: 打开 / 创建该 PDF 的专属画布（使用 MarginBook 存储规则）");
         try { setIcon(btn, "layout-dashboard"); }
         catch (_) { btn.setText("▦"); }
         btn.addEventListener("click", (e) => {
@@ -3672,10 +3854,18 @@ class LuciasMarginBookPlugin extends Plugin {
 
   /* ==================== 设置 ==================== */
 
-  async saveSettings() {
-    this._lmbPrunePersistedCaches();
-    const obj = this.settingsStore.serialize(this.settings, this.runtimeState);
-    await this.saveData(obj);
+  saveSettings() {
+    // One writer for data.json: overlapping editor/preferences saves must not
+    // finish out of order. Snapshot when this job starts, after prior failures
+    // have reached their callers and rolled back the affected note.
+    const previous = this._lmbSettingsWriteQueue || Promise.resolve();
+    const pending = previous.catch(() => {}).then(() => {
+      this._lmbPrunePersistedCaches();
+      const obj = this.settingsStore.serialize(this.settings, this.runtimeState);
+      return this.saveData(obj);
+    });
+    this._lmbSettingsWriteQueue = pending.catch(() => {});
+    return pending;
   }
 
   /** 清除已删除画布和附件留下的持久化缓存，避免 data.json 无限制增长。 */
@@ -3717,7 +3907,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.28.0";
+    st.dataset.lmbVersion = "0.35.0";
   }
 
 }
@@ -3968,7 +4158,17 @@ LuciasMarginBookPlugin.prototype.lmbSaveInkSoon = function (path) {
   this.lmbMarkInkDirty(path || canvas && canvas.dataset.lmbInkPath);
 };
 
-LuciasMarginBookPlugin.prototype.lmbSetInkMode = function (on) {
+LuciasMarginBookPlugin.prototype.lmbSetInkMode = async function (on) {
+  const request = this._lmbInkModeRequest = (this._lmbInkModeRequest || 0) + 1;
+  if (on) {
+    // Finish notes through their existing save queue, including IME/failure
+    // guards. Never cover an unsaved Markdown editor with the ink surface.
+    const editors = new Set(Array.from(this._lmbActiveInlineBlocks || [], block => block._lmbInlineEditor).filter(Boolean));
+    for (const bar of document.querySelectorAll(".lmb-pdf-excerpt-sidebar")) if (bar._lmbSidebarEditor) editors.add(bar._lmbSidebarEditor);
+    for (const editor of editors) if (!await editor.save()) return false;
+    if (request !== this._lmbInkModeRequest) return false;
+  }
+  document.querySelectorAll(".page[data-lmb-ink-bound]").forEach(page => { if (page._lmbFinishInk) page._lmbFinishInk(); });
   this.inkMode = !!on;
   if (!this.inkTool || !LMB_INK_TOOLS.includes(this.inkTool)) this.inkTool = this.settings.inkLastTool || "pen";
   this.inkColor = this.inkColor || this.settings.inkPenColor || "#e05252";
@@ -4044,6 +4244,7 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   if (!canvas) { canvas = document.createElement("canvas"); canvas.className = "lmb-ink-layer"; pageEl.appendChild(canvas); }
   if (!live) { live = document.createElement("canvas"); live.className = "lmb-ink-live-layer"; pageEl.appendChild(live); }
   const identity = `${pdfPath}\n${pageNumber}`, identityChanged = canvas.dataset.lmbInkIdentity !== identity;
+  if (identityChanged && pageEl._lmbFinishInk) pageEl._lmbFinishInk();
   for (const layer of [canvas, live]) {
     layer.dataset.lmbInkPath = pdfPath; layer.dataset.lmbInkPage = String(pageNumber);
     layer.dataset.lmbInkIdentity = identity;
@@ -4059,8 +4260,10 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
       layer.style.width = width + "px"; layer.style.height = height + "px"; resized = true;
     }
   }
-  if (!pageEl.dataset.lmbInkBound) {
+  if (!pageEl.dataset.lmbInkBound || pageEl._lmbInkInputSurface && pageEl._lmbInkInputSurface !== live) {
+    if (pageEl._lmbFinishInk) pageEl._lmbFinishInk();
     pageEl.dataset.lmbInkBound = "1";
+    pageEl._lmbInkInputSurface = live;
     this.lmbBindInkPage(pageEl, canvas, live);
   }
     if (!pageEl._lmbInkResizeObserver && typeof ResizeObserver !== "undefined") {
@@ -4145,30 +4348,40 @@ LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
 LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live) {
   let active = null;
   const inputSurface = live || pageEl;
-  const touchPoints = new Map();
+  // Share navigation contacts across pages in the same PDF (two fingers may
+  // land on different pages). A pen takes ownership until its contacts lift.
+  const host = pageEl.closest && (pageEl.closest(".pdf-viewer-container") || pageEl.closest(".view-content"));
+  const navigation = host ? (host._lmbInkNavigation || (host._lmbInkNavigation = { points: new Map() })) : { points: new Map() };
+  const touchPoints = navigation.points;
   const stylusTouchIds = new Set();
-  let touchPan = null;
   const path = () => canvas.dataset.lmbInkPath, page = () => canvas.dataset.lmbInkPage;
   const scrollHost = () => pageEl.closest && (pageEl.closest(".pdf-viewer-container") || pageEl.closest(".view-content"));
   const resetTouchPan = () => {
-    if (touchPoints.size !== 1) { touchPan = null; return; }
+    navigation.pan = null; navigation.pinch = null;
+    if (Array.from(touchPoints.values()).some(p => p.blocked)) return;
     const entry = touchPoints.values().next().value, host = scrollHost();
-    touchPan = entry && host ? { id: entry.id, x: entry.x, y: entry.y, left: host.scrollLeft, top: host.scrollTop, host } : null;
+    if (touchPoints.size === 1) navigation.pan = entry && host ? { id: entry.id, x: entry.x, y: entry.y, left: host.scrollLeft, top: host.scrollTop, host } : null;
+    else if (touchPoints.size === 2 && host) {
+      const pair = Array.from(touchPoints.values()), viewer = this.lmbInkZoomViewer && this.lmbInkZoomViewer(pageEl);
+      navigation.pinch = { distance: Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y), viewer };
+    }
   };
   const redrawLive = () => this.lmbRequestInkLiveDraw(live, active);
   const down = (event) => {
+    if (!this.inkMode || this.inkTool === "hand" || this._lmbInkSpacePan || lmbInkIsTextInput(event.target)) return;
     const stylus = lmbInkIsStylusInput(event);
     if (stylus && stylusTouchIds.size && !String(event.pointerId || "").startsWith("stylus-touch-")) {
       event.preventDefault(); event.stopPropagation(); return;
     }
     if (event.pointerType === "touch" && !stylus) {
-      if (active) { event.preventDefault(); event.stopPropagation(); return; }
-      touchPoints.set(event.pointerId, { id: event.pointerId, x: event.clientX, y: event.clientY });
+      const blocked = !!navigation.pen || Date.now() < (navigation.penUntil || 0) || Number(event.width) > 45 || Number(event.height) > 45;
+      touchPoints.set(event.pointerId, { id: event.pointerId, x: event.clientX, y: event.clientY, blocked });
       try { inputSurface.setPointerCapture(event.pointerId); } catch (_) {}
       resetTouchPan();
+      event.preventDefault(); event.stopPropagation();
       return;
     }
-    if (active) return;
+    if (active || navigation.pen || this._lmbInkPenActive) return;
     if (!this.lmbInkShouldDraw(event)) return;
     if (!this.lmbInkDocumentReady(path())) {
       this.lmbEnsureInkDocument(path()).catch(() => {});
@@ -4178,9 +4391,13 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     let tool = this.inkTool;
     if (stylus && (event.button === 5 || event.button === 2 || (event.buttons & 32))) tool = "eraser";
     event.preventDefault(); event.stopPropagation();
+    navigation.pen = event.pointerId; navigation.penUntil = Date.now() + 300;
+    this._lmbInkPenActive = true;
+    for (const p of touchPoints.values()) p.blocked = true;
+    navigation.pan = null; navigation.pinch = null;
     try { inputSurface.setPointerCapture(event.pointerId); } catch (_) {}
     const before = lmbInkClone(objects);
-    if (tool === "text") { this.lmbStartInkText(canvas, point); return; }
+    if (tool === "text") { navigation.pen = null; this._lmbInkPenActive = false; this.lmbStartInkText(canvas, point); return; }
     if (tool === "select") {
       if (this._lmbInkSelectionContext && this._lmbInkSelectionContext.canvas !== canvas) {
         const oldLive = this._lmbInkSelectionContext.canvas && this._lmbInkSelectionContext.canvas.parentElement && this._lmbInkSelectionContext.canvas.parentElement.querySelector(":scope > .lmb-ink-live-layer");
@@ -4193,7 +4410,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
       this._lmbInkHiddenIds = new Set(active.kind === "moveMulti" ? active.entries.map((entry) => entry.object.id) : active.object ? [active.object.id] : []);
       this.lmbDrawInkLayer(canvas); redrawLive(); return;
     }
-    if (tool === "eraser") { active = { kind: "erase", before, removed: new Set(), point, pointerId: event.pointerId }; this.lmbEraseAt(canvas, point, active); redrawLive(); return; }
+    if (tool === "eraser") { active = { kind: "erase", before, removed: new Set(), point, pointerId: event.pointerId, eraserMode: this.settings.inkEraserMode || "partial", returnTool: this.inkTool === "eraser" && this.settings.inkEraserAutoReturn !== false ? this._lmbInkLastDrawTool || "pen" : null }; this.lmbEraseAt(canvas, point, active); redrawLive(); return; }
     const preset = tool === "highlighter"
       ? { color: this.settings.inkHighlighterColor || "#ffd84d", width: Number(this.settings.inkHighlighterWidth) || 12, opacity: .3 }
       : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
@@ -4202,14 +4419,27 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
   };
   const move = (event) => {
     if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
-      if (active) { event.preventDefault(); event.stopPropagation(); return; }
       const point = touchPoints.get(event.pointerId);
       if (!point) return;
+      event.preventDefault(); event.stopPropagation();
+      if (navigation.pen || point.blocked) return;
       point.x = event.clientX; point.y = event.clientY;
-      if (touchPoints.size === 1 && touchPan && touchPan.id === event.pointerId) {
-        event.preventDefault(); event.stopPropagation();
+      const touchPan = navigation.pan, pinch = navigation.pinch;
+      if (touchPoints.size === 1 && touchPan && touchPan.id === event.pointerId && Math.hypot(event.clientX - touchPan.x, event.clientY - touchPan.y) >= 6) {
         touchPan.host.scrollLeft = touchPan.left - (event.clientX - touchPan.x);
         touchPan.host.scrollTop = touchPan.top - (event.clientY - touchPan.y);
+      } else if (touchPoints.size === 2 && pinch && pinch.viewer) {
+        const pair = Array.from(touchPoints.values()), distance = Math.hypot(pair[0].x - pair[1].x, pair[0].y - pair[1].y);
+        if (pinch.distance > 10 && distance > 10) {
+          const host = scrollHost(), rect = host.getBoundingClientRect(), cx = (pair[0].x + pair[1].x) / 2 - rect.left, cy = (pair[0].y + pair[1].y) / 2 - rect.top;
+          const before = Number(pinch.viewer.currentScale), next = lmbInkClamp(before * distance / pinch.distance, .25, 5);
+          if (before > 0 && Math.abs(next - before) > .001) {
+            const left = host.scrollLeft, top = host.scrollTop;
+            pinch.viewer.currentScale = next;
+            host.scrollLeft = (left + cx) * next / before - cx; host.scrollTop = (top + cy) * next / before - cy;
+          }
+        }
+        pinch.distance = distance;
       }
       return;
     }
@@ -4228,7 +4458,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
   const finish = (event, cancelled) => {
     if (event && event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
       touchPoints.delete(event.pointerId);
-      if (active) { event.preventDefault(); event.stopPropagation(); }
+      event.preventDefault(); event.stopPropagation();
       resetTouchPan();
       return;
     }
@@ -4244,6 +4474,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
       else if (!["selectionOnly"].includes(active.kind)) this.lmbMoveInkSelection(active, finalPoint);
     }
     const current = active; active = null;
+    live._lmbInkPendingActive = null;
+    navigation.pen = null; navigation.penUntil = Date.now() + 300;
+    this._lmbInkPenActive = false; this._lmbInkPalmUntil = Date.now() + 300;
     const objects = this.lmbInkObjects(path(), page(), true);
     const salvageCancelledStroke = cancelled && current.kind === "draw"
       && (current.object.type === "pen" || current.object.type === "highlighter")
@@ -4265,6 +4498,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     else this.lmbCommitInkChange(path(), page(), current.beforePage, current.kind);
     this._lmbInkHiddenIds = null;
     this.lmbDrawInkLayer(canvas); this.lmbDrawInkLiveLayer(live, null);
+    if (current.kind === "erase" && current.returnTool && !cancelled && this.inkTool === "eraser") this.lmbSetInkTool(current.returnTool);
   };
   const captureActive = { capture: true, passive: false };
   inputSurface.addEventListener("pointerdown", down, captureActive);
@@ -4272,6 +4506,12 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
   inputSurface.addEventListener("pointerup", (event) => finish(event, false), captureActive);
   inputSurface.addEventListener("pointercancel", (event) => finish(event, true), captureActive);
   inputSurface.addEventListener("lostpointercapture", (event) => finish(event, true), captureActive);
+  // Flush an in-flight stroke before page recycling/tool switching. Clear a
+  // queued animation as well, otherwise it can repaint a finished ghost stroke.
+  pageEl._lmbFinishInk = () => {
+    finish(null, true); touchPoints.clear(); navigation.pan = null; navigation.pinch = null; navigation.pen = null;
+    live._lmbInkPendingActive = null;
+  };
   const stylusTouches = (event) => Array.from(event.changedTouches || []).filter((touch) => lmbInkIsStylusInput(touch));
   inputSurface.addEventListener("touchstart", (event) => {
     const touches = stylusTouches(event); if (!touches.length) return;
@@ -4292,6 +4532,11 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
   inputSurface.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
   inputSurface.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
   inputSurface.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
+};
+
+LuciasMarginBookPlugin.prototype.lmbInkZoomViewer = function (pageEl) {
+  const leaf = (this.app.workspace.getLeavesOfType("pdf") || []).find(leaf => leaf.containerEl && leaf.containerEl.contains(pageEl));
+  return LmbPdfAdapter.zoomViewer(leaf && leaf.view);
 };
 
 LuciasMarginBookPlugin.prototype.lmbRequestInkLiveDraw = function (live, active) {
@@ -4362,6 +4607,10 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkLiveLayer = function (canvas, active)
   const info = this.lmbCanvasContext(canvas); if (!info) return;
   const { ctx, width, height } = info; ctx.clearRect(0, 0, width, height);
   if (active && active.kind === "draw") this.lmbDrawInkObject(ctx, active.object, width, height);
+  if (active && active.kind === "erase" && active.point) {
+    ctx.save(); ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.arc(active.point.x * width, active.point.y * height, Number(this.settings.inkEraserSize) || 18, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
   if (active && ["move", "resize"].includes(active.kind)) this.lmbDrawInkObject(ctx, active.object, width, height);
   if (active && active.kind === "moveMulti") for (const entry of active.entries) this.lmbDrawInkObject(ctx, entry.object, width, height);
   if (active && active.kind === "lasso") {
@@ -4451,15 +4700,28 @@ LuciasMarginBookPlugin.prototype.lmbMoveInkSelection = function (selection, poin
 
 LuciasMarginBookPlugin.prototype.lmbEraseAt = function (canvas, point, active) {
   const objects = this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage, true);
-  const tolerance = Math.max(.008, (Number(this.settings.inkEraserSize) || 18) / Math.max(1, canvas.clientWidth));
-  if (!active.spatial) active.spatial = this.lmbBuildInkSpatial(active.before || objects);
-  const hits = new Set();
-  for (const object of this.lmbInkSpatialCandidates(active.spatial, point, tolerance)) {
-    if (!active.removed.has(object.id) && lmbInkObjectHit(object, point, tolerance)) hits.add(object.id);
+  const width = Math.max(1, canvas.clientWidth), height = Math.max(1, canvas.clientHeight);
+  const radius = Number(this.settings.inkEraserSize) || 18, from = active.erasePrevious || point;
+  active.erasePrevious = point; active.point = point;
+  let changed = false;
+  for (let index = objects.length - 1; index >= 0; index--) {
+    const object = objects[index], bounds = lmbInkBounds(object), pad = radius / width + (Number(object.width) || 0);
+    if (bounds.x > Math.max(from.x, point.x) + pad || bounds.x + bounds.w < Math.min(from.x, point.x) - pad
+      || bounds.y > Math.max(from.y, point.y) + radius / height + pad || bounds.y + bounds.h < Math.min(from.y, point.y) - radius / height - pad) continue;
+    const fragments = lmbInkEraseFragments(object, from, point, radius, width, height);
+    if (fragments === null && !(object.type === "text" && lmbInkObjectHit(object, point, radius / width))) continue;
+    changed = true;
+    if (active.eraserMode === "stroke" || fragments === null || !fragments.length) objects.splice(index, 1);
+    else {
+      const pieces = fragments.map((points, part) => ({ ...object,
+        id: part === 0 ? object.id : this.lmbInkId(), type: object.type === "highlighter" ? "highlighter" : "pen", points,
+        x1: points[0].x, y1: points[0].y, x2: points[points.length - 1].x, y2: points[points.length - 1].y,
+        pressureMode: object.type === "line" || object.type === "rect" ? "fixed" : object.pressureMode || "natural"
+      }));
+      objects.splice(index, 1, ...pieces);
+    }
   }
-  let changed = hits.size > 0;
-  if (changed) for (let index = objects.length - 1; index >= 0; index--) if (hits.has(objects[index].id)) { active.removed.add(objects[index].id); objects.splice(index, 1); }
-  if (changed) this.lmbRequestInkStaticDraw(canvas);
+  if (changed) { this.lmbInvalidateInkSpatial(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage); this.lmbRequestInkStaticDraw(canvas); }
 };
 
 LuciasMarginBookPlugin.prototype.lmbRequestInkStaticDraw = function (canvas) {
@@ -4569,6 +4831,8 @@ LuciasMarginBookPlugin.prototype.lmbApplyInkStyleToSelection = function (propert
 
 LuciasMarginBookPlugin.prototype.lmbSetInkTool = function (tool) {
   if (!LMB_INK_TOOLS.includes(tool)) return;
+  if (["pen", "highlighter", "line", "rect"].includes(this.inkTool)) this._lmbInkLastDrawTool = this.inkTool;
+  if (typeof document !== "undefined") document.querySelectorAll(".page[data-lmb-ink-bound]").forEach(page => { if (page._lmbFinishInk) page._lmbFinishInk(); });
   this.inkTool = tool; this.settings.inkLastTool = tool;
   try { document.body.toggleClass("lmb-ink-capture", this.inkMode && tool !== "hand"); } catch (_) {}
   if (tool === "highlighter") { this.inkColor = this.settings.inkHighlighterColor || "#ffd84d"; this.inkWidth = Number(this.settings.inkHighlighterWidth) || 12; }
@@ -4589,7 +4853,7 @@ LuciasMarginBookPlugin.prototype.lmbUpdateInkSaveStatus = function () {
 LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
   document.querySelectorAll(".lmb-ink-tools").forEach((bar) => bar.remove());
   if (!this.inkMode) return;
-  const specs = [["hand", "hand", "抓手（空格临时启用）", "手"], ["select", "mouse-pointer-2", "选择 / 套索", "选"], ["pen", "pencil", "钢笔", "笔"], ["highlighter", "highlighter", "荧光笔", "荧"], ["eraser", "eraser", "整笔橡皮", "擦"], ["text", "type", "文字", "字"], ["line", "minus", "直线", "线"], ["rect", "square", "矩形", "框"]];
+  const specs = [["hand", "hand", "抓手（空格临时启用）", "手"], ["select", "mouse-pointer-2", "选择 / 套索", "选"], ["pen", "pencil", "画笔", "笔"], ["highlighter", "highlighter", "荧光笔", "荧"], ["eraser", "eraser", this.settings.inkEraserMode === "stroke" ? "整笔橡皮" : "局部橡皮", "擦"], ["text", "type", "文字", "字"], ["line", "minus", "直线", "线"], ["rect", "square", "矩形", "框"]];
   const applyIcon = (element, icon, fallback) => { try { setIcon(element, icon); } catch (_) { element.textContent = fallback || "•"; } };
   for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
     const leafRoot = leaf && leaf.containerEl; if (!leafRoot) continue;
@@ -4599,9 +4863,11 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     toggle.addEventListener("click", () => { this.settings.inkToolbarCollapsed = !this.settings.inkToolbarCollapsed; this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); bar.appendChild(toggle);
     const content = document.createElement("div"); content.className = "lmb-ink-tools-content"; bar.appendChild(content);
     const toolButtons = document.createElement("div"); toolButtons.className = "lmb-ink-tool-buttons"; content.appendChild(toolButtons);
+    const advanced = document.createElement("div"); advanced.className = "lmb-ink-advanced"; advanced.hidden = !this._lmbInkToolsExpanded;
     for (const [tool, icon, title, fallback] of specs) {
       const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); button.dataset.tool = tool; button.classList.toggle("is-active", this.inkTool === tool); applyIcon(button, icon, fallback);
-      button.addEventListener("click", () => this.lmbSetInkTool(tool)); toolButtons.appendChild(button);
+      button.setAttribute("aria-pressed", String(this.inkTool === tool));
+      button.addEventListener("click", () => this.lmbSetInkTool(tool)); (["text", "line", "rect"].includes(tool) ? advanced : toolButtons).appendChild(button);
     }
     const colors = this.inkTool === "highlighter" ? ["#ffd84d", "#7ee787", "#70b7ff"] : ["#e05252", "#222222", "#2d8cff"];
     const swatches = document.createElement("div"); swatches.className = "lmb-ink-swatches";
@@ -4614,19 +4880,31 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     const colorIcon = document.createElement("span"); colorIcon.className = "lmb-ink-color-icon"; applyIcon(colorIcon, "palette", "色"); colorPicker.appendChild(colorIcon);
     const colorPreview = document.createElement("span"); colorPreview.className = "lmb-ink-color-preview"; colorPreview.style.backgroundColor = this.inkColor || "#e05252"; colorPicker.appendChild(colorPreview);
     const color = document.createElement("input"); color.type = "color"; color.className = "lmb-ink-color-input"; color.value = this.inkColor || "#e05252"; color.setAttribute("aria-label", "自定义颜色");
-    color.addEventListener("change", () => { this.inkColor = color.value; colorPreview.style.backgroundColor = color.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = color.value; else this.settings.inkPenColor = color.value; this.lmbApplyInkStyleToSelection("color", color.value, host); this.lmbPersistInkPreferences(); }); colorPicker.appendChild(color); content.appendChild(colorPicker);
+    color.addEventListener("change", () => { this.inkColor = color.value; colorPreview.style.backgroundColor = color.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterColor = color.value; else this.settings.inkPenColor = color.value; this.lmbApplyInkStyleToSelection("color", color.value, host); this.lmbPersistInkPreferences(); }); colorPicker.appendChild(color); advanced.appendChild(colorPicker);
     const widthControl = document.createElement("div"); widthControl.className = "lmb-ink-width-control";
     const widthIcon = document.createElement("span"); widthIcon.className = "lmb-ink-width-icon"; applyIcon(widthIcon, "minus", "—"); widthControl.appendChild(widthIcon);
-    const width = document.createElement("input"); width.type = "range"; width.min = "1"; width.max = this.inkTool === "highlighter" ? "30" : "14"; width.step = "1"; width.value = String(this.inkWidth || 3); width.title = `粗细 ${width.value}`; width.setAttribute("aria-label", width.title);
+    const isEraser = this.inkTool === "eraser", widthLabel = isEraser ? "橡皮半径" : "粗细";
+    const width = document.createElement("input"); width.type = "range"; width.min = isEraser ? "8" : "1"; width.max = isEraser ? "48" : this.inkTool === "highlighter" ? "30" : "14"; width.step = isEraser ? "2" : "1"; width.value = String(isEraser ? Number(this.settings.inkEraserSize) || 18 : this.inkWidth || 3); width.title = `${widthLabel} ${width.value}`; width.setAttribute("aria-label", width.title);
     const widthValue = document.createElement("span"); widthValue.className = "lmb-ink-width-value"; widthValue.textContent = width.value;
-    width.addEventListener("input", () => { this.inkWidth = Number(width.value); width.title = `粗细 ${width.value}`; width.setAttribute("aria-label", width.title); widthValue.textContent = width.value; if (this.inkTool === "highlighter") this.settings.inkHighlighterWidth = this.inkWidth; else this.settings.inkPenWidth = this.inkWidth; });
-    width.addEventListener("change", () => { this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); widthControl.appendChild(width); widthControl.appendChild(widthValue); content.appendChild(widthControl);
+    width.addEventListener("input", () => { width.title = `${widthLabel} ${width.value}`; width.setAttribute("aria-label", width.title); widthValue.textContent = width.value; if (isEraser) this.settings.inkEraserSize = Number(width.value); else { this.inkWidth = Number(width.value); if (this.inkTool === "highlighter") this.settings.inkHighlighterWidth = this.inkWidth; else this.settings.inkPenWidth = this.inkWidth; } });
+    width.addEventListener("change", () => { if (!isEraser) this.lmbApplyInkStyleToSelection("width", this.inkWidth, host); this.lmbPersistInkPreferences(); }); widthControl.appendChild(width); widthControl.appendChild(widthValue); advanced.appendChild(widthControl);
+    const eraseMode = document.createElement("select"); eraseMode.className = "lmb-ink-eraser-mode"; eraseMode.setAttribute("aria-label", "橡皮模式");
+    for (const [value, label] of [["partial", "局部橡皮"], ["stroke", "整笔橡皮"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; eraseMode.appendChild(option); }
+    eraseMode.value = this.settings.inkEraserMode || "partial";
+    eraseMode.addEventListener("change", () => { this.settings.inkEraserMode = eraseMode.value; this.lmbPersistInkPreferences(); this.lmbRenderInkTools(); }); advanced.appendChild(eraseMode);
+    const autoReturn = document.createElement("label"); autoReturn.className = "lmb-ink-auto-return";
+    const check = document.createElement("input"); check.type = "checkbox"; check.checked = this.settings.inkEraserAutoReturn !== false;
+    check.addEventListener("change", () => { this.settings.inkEraserAutoReturn = check.checked; this.lmbPersistInkPreferences(); }); autoReturn.appendChild(check); autoReturn.appendChild(document.createTextNode("擦完回笔")); advanced.appendChild(autoReturn);
     const leafCanvas = () => this.lmbActiveInkCanvas(host, leaf.view && leaf.view.file && leaf.view.file.path);
     const actions = document.createElement("div"); actions.className = "lmb-ink-actions"; content.appendChild(actions);
     const action = (icon, title, handler, fallback) => { const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); applyIcon(button, icon, fallback); button.addEventListener("click", handler); actions.appendChild(button); };
     action("undo-2", "撤销", () => this.lmbUndoInk(leafCanvas()), "↶");
     action("redo-2", "重做", () => this.lmbRedoInk(leafCanvas()), "↷");
+    const more = document.createElement("button"); more.type = "button"; more.title = "更多工具与笔迹设置"; more.setAttribute("aria-label", more.title); more.setAttribute("aria-expanded", String(!!this._lmbInkToolsExpanded)); applyIcon(more, "ellipsis", "…");
+    more.addEventListener("click", () => { this._lmbInkToolsExpanded = !this._lmbInkToolsExpanded; this.lmbRenderInkTools(); }); actions.appendChild(more);
     action("trash-2", "删除所选", () => this.lmbDeleteInkSelection(leafCanvas()), "删");
+    advanced.appendChild(actions.lastElementChild);
+    bar.appendChild(advanced);
     const status = document.createElement("span"); status.className = "lmb-ink-save-status"; content.appendChild(status); host.appendChild(bar);
   }
   this.lmbUpdateInkSaveStatus();
@@ -4644,8 +4922,28 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
     }, { rootMargin: "300px" });
   }
   this.inkTool = this.settings.inkLastTool || "pen"; this.inkColor = this.settings.inkPenColor || "#e05252"; this.inkWidth = Number(this.settings.inkPenWidth) || 3; this._lmbInkSelection = [];
+  this._lmbInkLastDrawTool = ["pen", "highlighter", "line", "rect"].includes(this.inkTool) ? this.inkTool : "pen";
+  const palms = new Set();
+  for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel", "click"]) this.registerDomEvent(document, type, event => {
+    if (!this.inkMode || event.pointerType !== "touch" || lmbInkIsStylusInput(event)) return;
+    if (type === "pointerdown") {
+      palms.delete(event.pointerId);
+      if (this._lmbInkPenActive || Date.now() < (this._lmbInkPalmUntil || 0) || Number(event.width) > 45 || Number(event.height) > 45) palms.add(event.pointerId);
+    }
+    if (!palms.has(event.pointerId)) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (type === "click" || type === "pointercancel") palms.delete(event.pointerId);
+  }, { capture: true, passive: false });
+  // Synthetic clicks after a stroke must not open a Markdown editor or trigger
+  // its outside-click exit. Existing text editors keep their own event path.
+  this.registerDomEvent(document, "click", event => {
+    const target = event.target;
+    if (!this.inkMode || this.inkTool === "hand" || this._lmbInkSpacePan || !target || !target.closest) return;
+    if (target.closest(".page") && !target.closest(".is-editing,.lmb-pdf-text-tools,.lmb-ink-text-editor")) { event.preventDefault(); event.stopImmediatePropagation(); }
+  }, true);
   try { document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand"); } catch (_) {}
   this.registerDomEvent(document, "keydown", (event) => {
+    if (lmbInkIsTextInput(event.target) || event.isComposing) return;
     if (event.code === "Space" && this.inkMode && !/INPUT|TEXTAREA/.test(event.target && event.target.tagName || "")) {
       this._lmbInkSpacePan = true;
       try { document.body.removeClass("lmb-ink-capture"); } catch (_) {}
@@ -4659,7 +4957,9 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
     else if ((event.key === "Delete" || event.key === "Backspace") && this.lmbDeleteInkSelection(this.lmbActiveInkCanvas())) event.preventDefault();
   }, true);
   this.registerDomEvent(document, "keyup", (event) => { if (event.code === "Space") { this._lmbInkSpacePan = false; try { document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand"); } catch (_) {} this.lmbRefreshInkLayers(); } }, true);
-  this.registerDomEvent(window, "blur", () => { this._lmbInkSpacePan = false; try { document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand"); } catch (_) {} this.lmbRefreshInkLayers(); }, true);
+  const finishInterruptedInk = () => document.querySelectorAll(".page[data-lmb-ink-bound]").forEach(page => { if (page._lmbFinishInk) page._lmbFinishInk(); });
+  this.registerDomEvent(window, "blur", () => { finishInterruptedInk(); this._lmbInkSpacePan = false; try { document.body.toggleClass("lmb-ink-capture", this.inkMode && this.inkTool !== "hand"); } catch (_) {} this.lmbRefreshInkLayers(); }, true);
+  this.registerDomEvent(document, "visibilitychange", () => { if (document.hidden) finishInterruptedInk(); });
   const observer = new MutationObserver((records) => {
     for (const record of records) for (const node of Array.from(record.removedNodes || [])) {
       if (!node || node.nodeType !== 1) continue;
@@ -4668,6 +4968,7 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
       if (node.querySelectorAll) pages.push(...node.querySelectorAll(".page"));
       for (const pageEl of pages) {
         if (pageEl.isConnected) continue;
+        if (pageEl._lmbFinishInk) pageEl._lmbFinishInk();
         this.lmbReleaseTextBlockPage(pageEl);
         clearTimeout(pageEl._lmbInkResizeTimer);
         if (this._lmbInkVisibilityObserver) this._lmbInkVisibilityObserver.unobserve(pageEl);
@@ -4682,12 +4983,19 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
   });
   observer.observe(document.body, { childList: true, subtree: true });
   this.register(() => {
+    document.querySelectorAll(".page[data-lmb-ink-bound]").forEach(page => { if (page._lmbFinishInk) page._lmbFinishInk(); });
     if (this._lmbInkVisibilityObserver) this._lmbInkVisibilityObserver.disconnect();
     for (const pageEl of this._lmbInkObservedPages) clearTimeout(pageEl._lmbInkResizeTimer);
     this._lmbInkObservedPages.clear();
     observer.disconnect(); clearTimeout(this._lmbInkSaveTimer); clearTimeout(this._lmbInkPrefsTimer); this.lmbFlushInkStorage().catch(() => {});
     document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
-    document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => { this.lmbUpdateInkPageCapture(pageEl, true); if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect(); });
+    document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => {
+      this.lmbUpdateInkPageCapture(pageEl, true);
+      if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect();
+      pageEl._lmbInkResizeObserver = null;
+      pageEl.querySelectorAll(":scope > .lmb-ink-layer,:scope > .lmb-ink-live-layer").forEach(layer => { if (layer._lmbInkFrame) cancelAnimationFrame(layer._lmbInkFrame); if (layer._lmbInkStaticFrame) cancelAnimationFrame(layer._lmbInkStaticFrame); layer.remove(); });
+      delete pageEl.dataset.lmbInkBound; delete pageEl._lmbInkInputSurface; delete pageEl._lmbFinishInk;
+    });
   });
 };
 
@@ -4949,6 +5257,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /* ==================== mouseup：出示手柄 ==================== */
 
   onDocMouseUp(e) {
+    const eventEl = e.target && (e.target.nodeType === 1 ? e.target : e.target.parentElement);
+    if (eventEl && eventEl.closest && eventEl.closest(".lmb-pdf-text-block")) return;
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
 
     // ① 文字选区（v0.3.1：经 lmbShouldReshowSelection 把关，杜绝拖放后旧选区反复重建 chip）
@@ -4981,7 +5291,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
            *        dragstart 通常晚于 mousedown 几十~几百毫秒，截图基本已就绪；
            *        万一没赶上 → info.img 为 undefined，自动降级为纯文字摘录（成熟降级路径）。
            *   降级是安全的：与「关掉自动附截图」走同一条分支，不会报错也不会写坏卡。 */
-          try { info._range = sel.getRangeAt(0).cloneRange(); } catch (_) { info._range = null; }
+          // extractSelection owns the sanitized PDF-only range.
           this.showChip(e.clientX, e.clientY, "📑 " + info.text.length + " 字 · 按住拖到 md 或画布", info);
           return;
         }
@@ -5029,8 +5339,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!info) return false;
       const sig = info.text + "@" + info.pageNum;
       if (this.chipEl && this._chipSig === sig) return true;
-      const range = sel.getRangeAt(0);
-      try { info._range = range.cloneRange(); } catch (_) { info._range = null; }
+      const range = info._range;
       const rect = range.getBoundingClientRect();
       const px = Number.isFinite(x) && x > 0 ? x : rect.left + Math.min(rect.width, 48);
       const py = Number.isFinite(y) && y > 0 ? y : rect.bottom;
@@ -5136,6 +5445,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /* ==================== 图片：裁剪页面画布 → webp 附件 ==================== */
 
   _lmbExcerptImageFolder(pdfFile) {
+    if (this.settings && this.settings.storageLayout === "central") return this.lmbStoragePaths(pdfFile).attachments;
     const safe = (value) => String(value || "").replace(/[\\:*?"<>|]/g, "-").replace(/[. ]+$/g, "").trim();
     const pdfName = safe(pdfFile && pdfFile.basename) || "未命名PDF";
     const template = String((this.settings && this.settings.excerptImageFolder) || "附件/{pdf}")
@@ -5228,6 +5538,23 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 文字选区 ==================== */
 
+  lmbPdfSelectionRange(sel, pageEl) {
+    const layer = pageEl.querySelector(".textLayer");
+    if (!layer || !sel || sel.rangeCount !== 1) return null;
+    const anchor = sel.anchorNode;
+    const el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+    // A page is also home to our editor, toolbar and marks. Only PDF text may
+    // originate an excerpt; never trust the page ancestor alone.
+    if (!el || !layer.contains(el) || el.closest(".lmb-pdf-text-block")) return null;
+    const bounds = pageEl.ownerDocument.createRange(); bounds.selectNodeContents(layer);
+    const range = sel.getRangeAt(0).cloneRange();
+    if (bounds.comparePoint(range.startContainer, range.startOffset) > 0
+      || bounds.comparePoint(range.endContainer, range.endOffset) < 0) return null;
+    if (bounds.comparePoint(range.startContainer, range.startOffset) < 0) range.setStart(bounds.startContainer, bounds.startOffset);
+    if (bounds.comparePoint(range.endContainer, range.endOffset) > 0) range.setEnd(bounds.endContainer, bounds.endOffset);
+    return range.collapsed ? null : range;
+  },
+
   resolvePdfContext(el) {
     const pageEl = el && el.closest && el.closest(".page[data-page-number]");
     if (!pageEl) return null;
@@ -5257,7 +5584,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!ctx || ctx.pageEl !== pageEl) return null;
       const file = ctx.view.file;
       const pageNum = ctx.pageNum;
-      const text = sel.toString().replace(/\s+/g, " ").trim();
+      const pdfRange = this.lmbPdfSelectionRange(sel, pageEl);
+      if (!pdfRange) return null;
+      const text = pdfRange.toString().replace(/\s+/g, " ").trim();
       if (!text) return null;
       const display = "【" + file.basename + "-P." + pageNum + "】";
 
@@ -5265,7 +5594,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // 自动附图也复用它，避免延迟截图把整页裁进去。
       let selectionRect = null;
       try {
-        const range = sel.getRangeAt(0), pr = pageEl.getBoundingClientRect();
+        const range = pdfRange, pr = pageEl.getBoundingClientRect();
         const rects = Array.from(range.getClientRects()).filter((r) => {
           if (!r || r.width < .5 || r.height < .5) return false;
           if (r.right <= pr.left || r.left >= pr.right || r.bottom <= pr.top || r.top >= pr.bottom) return false;
@@ -5293,7 +5622,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       let selectionParams = null; // Bugfix: 必须随 info 返回，contentExId 才能区分「同页同文本不同位置」的选区
       const targetText = text;
       try {
-        const params = this.buildSelectionParams(sel, pageEl);
+        const params = this.buildSelectionParams({ anchorNode: pdfRange.startContainer, anchorOffset: pdfRange.startOffset,
+          focusNode: pdfRange.endContainer, focusOffset: pdfRange.endOffset }, pageEl);
         if (!params) throw new Error("no selection params");
         selectionParams = params;
         link = "[[" + file.path + "#page=" + pageNum + "&selection=" + params
@@ -5316,7 +5646,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         colorTag,
         selectionParams,
         selectionRect,
-        targetText
+        targetText,
+        _range: pdfRange
       };
     } catch (err) {
       console.warn("[lmb] extractSelection error:", err);
@@ -5333,6 +5664,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!divs.length) return null;
 
     const toIdxOff = (node, offset) => {
+      if (node === layer) {
+        const atEnd = offset >= divs.length;
+        const idx = atEnd ? divs.length - 1 : Math.max(0, offset);
+        return { idx, off: atEnd ? (divs[idx].textContent || "").length : 0 };
+      }
       const el = node.nodeType === 1 ? node : node.parentElement;
       if (!el || !layer.contains(el)) return null;
       let div = el;
@@ -5852,6 +6188,15 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
 
+  lmbScheduleVisibleCanvasFits() {
+    if (this._unloaded) return;
+    const leaves = this.app.workspace.getLeavesOfType("canvas") || [];
+    for (const leaf of leaves) {
+      const file = leaf && leaf.view && leaf.view.file;
+      if (file && file.extension === "canvas") this._scheduleActualFitRetry(file);
+    }
+  },
+
   async lmbApplyTreeLayout(direction) {
     const ctx = this.activeCanvasContext();
     if (!ctx) { new Notice("请先打开一个 Canvas"); return; }
@@ -6349,6 +6694,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!leaf) return;
       const canvas = leaf.view.canvas;
       if (!canvas || !canvas.nodes) return;
+      if (this.lmbMarkDualCards) this.lmbMarkDualCards(canvas);
       // v0.16.3【图片等待重试链】：卡内有 img 未加载完时，lmbFitNodeActual 会返回 null
       //   （v0.16.3 起）→ fitNode 回退估算 → 估算值被写进档案。若没有这轮补测，图片加载
       //   完成后就**没人再量一次**，偏小的估算值被固化 —— 「自动高度依旧偏小」的主根因。
@@ -6364,7 +6710,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           const imgs = el && el.querySelectorAll ? el.querySelectorAll("img") : null;
           if (!imgs) continue;
           for (let i = 0; i < imgs.length; i++) {
-            if (!imgs[i].complete) { pendingImg = true; break; }
+            if (!imgs[i].complete && (!imgs[i].getClientRects || imgs[i].getClientRects().length)) { pendingImg = true; break; }
           }
           if (pendingImg) break;
         }
@@ -6405,9 +6751,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (n.type !== "text" || !n.text || !EX_ID_RE.test(n.text)) continue;
         const cached = store.get(n.id);
         const textHash = this.simpleHash(n.text);
-        if (cached && cached.locked) continue;
         const outerWidth = Number(n.width) || 0;
-        if (cached && cached.hash === textHash && !cached.pendingActual
+        if (cached && cached.naturalHeightVersion === 3 && cached.hash === textHash && !cached.pendingActual
           && (outerWidth <= 0 || Math.abs((Number(cached.w) || 0) - outerWidth) < 2)) continue;
         const live = canvas.nodes.get ? canvas.nodes.get(n.id) : canvas.nodes[n.id];
         if (!live) { unresolvedActual = true; continue; }
@@ -6616,14 +6961,21 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // v0.14.8：手动 fit 过的卡片「锁定」，自动 fit 不再覆盖（避免子节点 fit 后被 processCanvas
     //   的 estimateSizeFor 误差覆盖回错的尺寸 —— 用户反馈「子节点调整高度失效」）。
     const prev0 = store.get(node.id);
-    if (prev0 && prev0.locked) return null;
     const hash = this.simpleHash(node.text);
     // 文本没变说明这次 modify 只是移动、连线或手动调尺寸；绝不能再次测量高度。
     const currentWidth = Number(node.width) || 0;
-    if (prev0 && prev0.hash === hash
+    const oldMeasurement = prev0 && prev0.naturalHeightVersion !== 3;
+    if (oldMeasurement && !prev0.pendingActual) {
+      store.set(node.id, Object.assign({}, prev0, { pendingActual: true }));
+      this.persistAutoSizeSoon();
+    }
+    if (!oldMeasurement && prev0 && prev0.hash === hash && !prev0.pendingActual
       && (currentWidth <= 0 || Math.abs((Number(prev0.w) || 0) - currentWidth) < 2)) return null;
     const actual = this.lmbFitNodeActual(node, store);
     if (actual) return actual.unchanged ? null : { w: actual.w, h: actual.h };
+    // Old (including locked) measurements are rechecked only once DOM is ready;
+    // keep the saved geometry until then instead of replacing it with an estimate.
+    if (oldMeasurement) return null;
     // 估算回退（节点未渲染或 DOM 拿不到）
     const prev = store.get(node.id);
     if (prev && prev.hash === hash) return null;
@@ -6672,7 +7024,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       try {
         const imgs = contentEl.querySelectorAll("img");
         for (let i = 0; i < imgs.length; i++) {
-          if (!imgs[i].complete) return null;
+          if (!imgs[i].complete && (!imgs[i].getClientRects || imgs[i].getClientRects().length)) return null;
         }
       } catch (_) { /* 查不了就照旧测（最坏情况回到旧行为） */ }
       // v0.16.3：节点 chrome 精确测量（上下 padding + border），不再用 +24 经验值。
@@ -6716,14 +7068,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (prev && prev.hash === hash
         && Math.abs(prev.w - w) < 2 && Math.abs(prev.h - h) < 2) {
         // pendingActual 是一次性任务；实际尺寸已稳定时必须清除，否则每次 modify 都会重试。
-        if (prev.pendingActual && store) {
-          store.set(node.id, { hash, w, h, locked: !!prev.locked });
+        if ((prev.pendingActual || prev.naturalHeightVersion !== 3) && store) {
+          store.set(node.id, { hash, w, h, locked: !!prev.locked, naturalHeightVersion: 3 });
           this.persistAutoSizeSoon();
         }
         return { w, h, unchanged: true };
       }
       if (store) {
-        store.set(node.id, { hash, w, h });
+        store.set(node.id, { hash, w, h, locked: !!(prev && prev.locked), naturalHeightVersion: 3 });
         this.persistAutoSizeSoon();
       }
       return { w, h };
@@ -7167,13 +7519,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== v0.11.0：独立评论（批注评论底栏） ==================== */
 
-  _lmbCanonicalEntryForExcerpt(exId) {
+  _lmbCanonicalEntryForExcerpt(exId, canvasPath) {
     if (!exId || !this.excerptIndex) return null;
-    for (const entries of this.excerptIndex.values()) {
-      const hit = (entries || []).find((entry) => entry && entry.exId === exId && entry.sourceMd);
-      if (hit) return hit;
+    let fallback = null;
+    for (const [pdfPath, entries] of this.excerptIndex) {
+      const hits = (entries || []).filter(entry => entry && entry.exId === exId && entry.sourceMd);
+      if (!hits.length) continue;
+      if (this.settings && this.settings.storageLayout === "central") {
+        const expected = this.lmbStoragePaths(pdfPath, canvasPath).md;
+        const hit = hits.find(entry => entry.sourceMd === expected);
+        if (hit) return hit;
+        const explicit = canvasPath && this.settings.storageBindings && this.settings.storageBindings[pdfPath]
+          && this.settings.storageBindings[pdfPath].canvasDocuments && this.settings.storageBindings[pdfPath].canvasDocuments[canvasPath];
+        // User-authored notes outside the managed directory remain valid sources
+        // when there is no conflicting Canvas binding or duplicate source.
+        if (!fallback && (!canvasPath || (!explicit && new Set(hits.map(entry => entry.sourceMd)).size === 1))) fallback = hits[0];
+      } else return hits[0];
     }
-    return null;
+    return fallback;
   },
 
   /** 把某个摘录 Markdown 中的备注镜像到已关联的 Canvas 卡片。Markdown 永远是准值。 */
@@ -7185,6 +7548,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!entry || !entry.exId || entry.sourceMd !== mdFile.path) continue;
       const loc = this.excerptCanvasIndex.get(entry.exId);
       if (!loc || !loc.canvasPath || !loc.nodeId) continue;
+      if (this.settings && this.settings.storageLayout === "central") {
+        const binding = this.settings.storageBindings && this.settings.storageBindings[entry.pdfPath];
+        const expected = this.lmbStoragePaths(entry.pdfPath, loc.canvasPath).md;
+        const explicit = binding && binding.canvasDocuments && binding.canvasDocuments[loc.canvasPath];
+        const competing = (this.excerptIndex && this.excerptIndex.get(entry.pdfPath) || [])
+          .some(other => other.exId === entry.exId && other.sourceMd === expected);
+        if (expected !== mdFile.path && (explicit || competing)) continue;
+      }
       if (!grouped.has(loc.canvasPath)) grouped.set(loc.canvasPath, []);
       grouped.get(loc.canvasPath).push({ nodeId: loc.nodeId, exId: entry.exId,
         note: noteMap.get(entry.exId) || "" });
@@ -7241,7 +7612,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // 只改 Canvas，以免三端产生两个不同版本。
     const exMatch = String(node.text || "").match(EX_ID_RE);
     if (exMatch) {
-      const exId = exMatch[0].slice(1), entry = this._lmbCanonicalEntryForExcerpt(exId);
+      const exId = exMatch[0].slice(1), entry = this._lmbCanonicalEntryForExcerpt(exId, file.path);
       const mdFile = entry && this.app.vault.getAbstractFileByPath(entry.sourceMd);
       if (!(mdFile instanceof TFile)) return { ok: false, msg: "找不到该摘录的 Markdown 文档，未保存备注" };
       const saved = await this.lmbSaveExcerptNote(mdFile, exId, commentText);
@@ -7560,7 +7931,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       const pdfBase = pdfPath.split("/").pop().replace(/\.pdf$/i, "");
       const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
-      const mdPath = normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      const mdPath = this.settings && this.settings.storageLayout === "central"
+        ? this.lmbStoragePaths(pdfPath, cf.path).md
+        : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+      if (this.settings && this.settings.storageLayout === "central") await this.lmbEnsureStorageParent(mdPath);
       // Markdown 是备注真相源。重建受控摘录区之前先读取现有备注，稍后按 exId
       // 原样嵌回，避免 Canvas 同步正文时把用户在 MD/PDF 侧栏写的备注覆盖掉。
       const existing = this.app.vault.getAbstractFileByPath(mdPath);
@@ -7649,7 +8023,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }
 
-      const head = "---\nPDF: \"[[" + pdfPath + "]]\"\ncanvas: \"[[" + cf.basename + "]]\"\n";
+      const head = "---\nPDF: \"[[" + pdfPath + "]]\"\ncanvas: \"[[" + cf.path + "]]\"\n";
       const generated = "<!-- LMB:BEGIN -->\n" + body + "<!-- LMB:END -->";
 
       if (existing instanceof TFile) {
@@ -7689,19 +8063,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /* ==================== v0.12.0：PDF 工具栏「打开摘录 md / 打开专属 canvas」 ==================== */
 
   /**
-   * 打开（必要时创建）PDF 专属摘录文档：<PDF名>-摘录.md（与 PDF 同目录）。
+   * 打开（必要时创建）PDF 专属摘录文档：<PDF名>-摘录.md（由统一存储规则决定路径）。
    * 存在 → 直接打开；已打开的 md 视图复用（绝不重开第二个标签）。
    * 不存在 → 写入 frontmatter 模板（PDF/canvas 指回本 PDF），与 writeExcerptMd 的头格式一致。
    */
   /** Ensure the canonical excerpt document exists without stealing focus from a PDF. */
   async lmbEnsureExcerptMdFile(pdfFile) {
     if (!pdfFile) return null;
-    const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
     const name = pdfFile.basename + "-摘录.md";
-    const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+    const paths = this.lmbStoragePaths(pdfFile), path = paths.md;
     let f = this.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) {
-      const canvasName = pdfFile.basename + ".canvas";
+      await this.lmbEnsureStorageParent(path);
+      const canvasName = paths.canvas;
       const head = "---\nPDF: \"[[" + pdfFile.path + "]]\"\ncanvas: \"[[" + canvasName + "]]\"\n";
       const content = head + "updated: \"" + new Date().toISOString() + "\"\n---\n\n";
       f = await this.app.vault.create(path, content);
@@ -7730,17 +8104,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   /**
-   * 打开（必要时创建）PDF 专属画布：<PDF名>.canvas（与 PDF 同目录）。
+   * 打开（必要时创建）PDF 专属画布：<PDF名>.canvas（由统一存储规则决定路径）。
    * 复用约定与 lmbFocusCanvasNode 一致：已打开的画布直接激活，绝不重开第二视图
    * （同一文件两个视图会让 canvasPositions 等按视图对象为键的状态全部失效）。
    */
   async lmbOpenOrCreatePdfCanvas(pdfFile) {
     if (!pdfFile) return null;
-    const folder = pdfFile.parent && pdfFile.parent.path ? pdfFile.parent.path : "/";
     const name = pdfFile.basename + ".canvas";
-    const path = normalizePath(folder === "/" ? name : folder + "/" + name);
+    const path = this.lmbStoragePaths(pdfFile).canvas;
     let f = this.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) {
+      await this.lmbEnsureStorageParent(path);
       f = await this.app.vault.create(path, JSON.stringify({ nodes: [], edges: [] }));
       new Notice("MarginBook: 已创建专属画布 " + name);
       // 新画布顺手登记进 canvas 索引（空画布无摘录卡，索引一次成本极低，保持一致性）
@@ -8251,7 +8625,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const folder = cf && cf.parent && cf.parent.path ? cf.parent.path : "/";
       const mdPath = meta.sourceMd
         ? normalizePath(meta.sourceMd)
-        : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
+        : this.settings && this.settings.storageLayout === "central"
+          ? this.lmbStoragePaths(meta.pdf, cf && cf.path).md
+          : normalizePath(folder === "/" ? pdfBase + "-摘录.md" : folder + "/" + pdfBase + "-摘录.md");
       let raw = null;
       try { raw = await this.app.vault.adapter.read(mdPath); } catch (_) { return false; }
       if (!raw) return false;
@@ -8315,6 +8691,50 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
 });
 
+/* One resolver for toolbar creation, Canvas synchronization and screenshots. */
+Object.assign(LuciasMarginBookPlugin.prototype, {
+  lmbStoragePaths(pdfFile, canvasPath) {
+    const settings = this.settings || {};
+    const path = String(typeof pdfFile === "string" ? pdfFile : pdfFile && pdfFile.path || "").replace(/\\/g, "/");
+    const base = path.split("/").pop().replace(/\.pdf$/i, "") || pdfFile && pdfFile.basename;
+    if (!base) throw new Error("缺少 PDF 文件路径");
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    const central = settings.storageLayout === "central";
+    if (!central) return { folder: dir, md: normalizePath((dir ? dir + "/" : "") + base + "-摘录.md"),
+      canvas: normalizePath((dir ? dir + "/" : "") + base + ".canvas"), central: false };
+    const clean = value => {
+      const parts = String(value || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+      if (parts.some(part => part === "." || part === ".." || part.startsWith(".") || /[:*?"<>|]/.test(part))) throw new Error("MarginBook 目录无效");
+      return parts.join("/");
+    };
+    const root = clean(settings.storageRoot || "Lucia's Marginbook");
+    const source = clean(settings.pdfSourceRoot || "Books/pdf书籍");
+    const relative = dir === source ? "" : dir.startsWith(source + "/") ? dir.slice(source.length + 1) : dir;
+    const folder = normalizePath([root, relative, base].filter(Boolean).join("/"));
+    const binding = settings.storageBindings && settings.storageBindings[path] || {};
+    const bound = (candidate, fallback) => {
+      if (!candidate) return fallback;
+      const value = clean(candidate);
+      if (!value.startsWith(root + "/")) throw new Error("MarginBook 文件关联超出工作区");
+      return value;
+    };
+    const canvasMd = canvasPath && binding.canvasDocuments && binding.canvasDocuments[canvasPath];
+    return { folder, md: bound(canvasMd || binding.md, folder + "/" + base + "-摘录.md"),
+      canvas: bound(binding.canvas, folder + "/" + base + ".canvas"), attachments: folder + "/附件", central: true };
+  },
+
+  async lmbEnsureStorageParent(path) {
+    const parts = String(path || "").split("/"); parts.pop();
+    let current = "";
+    for (const part of parts.filter(Boolean)) {
+      current = current ? current + "/" + part : part;
+      if (this.app.vault.getAbstractFileByPath(current)) continue;
+      try { await this.app.vault.createFolder(current); }
+      catch (err) { if (!this.app.vault.getAbstractFileByPath(current)) throw err; }
+    }
+  }
+});
+
 /* 35-plugin-marks —— PDF 回绘标记/颜色语义（原型混入，运行时与类内声明等价；由 build.js 拼回 main.js） */
 
 Object.assign(LuciasMarginBookPlugin.prototype, {
@@ -8363,22 +8783,20 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const locate = (idx, off) => {
         const div = divs[idx];
         if (!div) return null;
-        const w = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+        const w = pageEl.ownerDocument.createTreeWalker(div, 4);
         let acc = 0, n;
         while ((n = w.nextNode())) {
           const len = n.textContent ? n.textContent.length : 0;
           if (acc + len >= off) return { node: n, offset: off - acc };
           acc += len;
         }
-        // 偏移超出该 span 长度 → 退到 span 末尾（不返回 null，尽量画出来）
-        const last = div.lastChild && div.lastChild.nodeType === 3 ? div.lastChild : div;
-        return { node: last, offset: (last.textContent || "").length };
+        return null; // Invalid offsets must use text lookup, never clamp to another location.
       };
 
       const s = locate(selection[0], selection[1]);
       const e = locate(selection[2], selection[3]);
       if (!s || !e) return null;
-      const r = document.createRange();
+      const r = pageEl.ownerDocument.createRange();
       r.setStart(s.node, s.offset);
       r.setEnd(e.node, e.offset);
       // textLayer 的子元素序号会随 PDF.js 版本、字体解析或文档重载发生漂移。
@@ -8386,8 +8804,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // 有 target 时必须核对内容，错误坐标交给文字搜索兜底，不能将错就错。
       const expected = this._lmbNormalizePdfMatchText(expectedText);
       const actual = this._lmbNormalizePdfMatchText(r.toString());
-      if (expected && actual && actual !== expected
-        && !actual.includes(expected) && !expected.includes(actual)) return null;
+      if (expected && actual !== expected
+        && !(expected.length >= 160 && actual.startsWith(expected))) return null;
       const rects = Array.from(r.getClientRects()).filter((x) => x.width > 0.5 && x.height > 0.5);
       if (rects.length && expectedRect && expectedRect.length === 4) {
         const pr = pageEl.getBoundingClientRect();
@@ -8414,11 +8832,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /** 在 textLayer 中查找文字，并保留归一化字符到真实文本节点偏移的映射。 */
   _lmbFindPdfTextMatch(layer, text, hintRect, pageEl) {
     try {
-      const needle = this._lmbNormalizePdfMatchText(text);
+      let needle = this._lmbNormalizePdfMatchText(text);
       if (!layer || !needle) return null;
       const doc = layer.ownerDocument;
       let haystack = "";
-      const positions = [];
+      let positions = [];
       const appendSpace = (node, offset) => {
         if (haystack && haystack.charAt(haystack.length - 1) !== " ") {
           haystack += " "; positions.push({ node, offset });
@@ -8439,7 +8857,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }
       let index = haystack.indexOf(needle);
-      if (index < 0) return null;
+      if (index < 0) {
+        // Some PDF.js versions split words into individual text-layer spans.
+        // The separator above must not turn “models” into “m o d e l s”.
+        let compact = ""; const mapped = [];
+        for (let i = 0; i < haystack.length; i++) {
+          if (!/\s/.test(haystack[i])) { compact += haystack[i]; mapped.push(positions[i]); }
+        }
+        haystack = compact; positions = mapped; needle = needle.replace(/\s/g, "");
+        index = haystack.indexOf(needle);
+        if (index < 0) return null;
+      }
       let best = null, bestDistance = Infinity;
       while (index >= 0) {
         const start = positions[index], last = positions[index + needle.length - 1];
@@ -8667,6 +9095,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         pageEl._lmbMarkSignature = signature;
       }
       // v0.12.0：Observer 已在函数开头挂过（幂等），这里不再重复
+      for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
+        if (leaf._lmbSelectedExcerpt && leaf.view === view) this.lmbSyncPdfNoteSelection(leaf);
+      }
     } catch (err) {
       console.warn("[lmb] lmbDrawMarksForView error:", err);
     }
@@ -8983,6 +9414,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   _lmbClearPdfSidebars() {
     try {
       document.querySelectorAll(".lmb-pdf-excerpt-sidebar").forEach((bar) => bar.remove());
+      document.querySelectorAll(".lmb-sidebar-state-toggle").forEach((button) => button.remove());
       document.querySelectorAll(".lmb-pdf-sidebar-host").forEach((host) => {
         if (host._lmbSidebarToolbarObserver) host._lmbSidebarToolbarObserver.disconnect();
         const win = host.ownerDocument && host.ownerDocument.defaultView;
@@ -9004,6 +9436,12 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!leaf || !leaf.containerEl) return null;
       const host = leaf.containerEl.querySelector(":scope > .view-content") || leaf.containerEl.querySelector(".view-content") || leaf.containerEl;
       host.addClass("lmb-pdf-sidebar-host");
+      let stateToggle = host.querySelector(":scope > .lmb-sidebar-state-toggle");
+      if (!stateToggle) {
+        stateToggle = host.createEl("button", { cls: "lmb-sidebar-state-toggle", attr: { type: "button" } });
+        stateToggle.onclick = event => { event.preventDefault(); event.stopPropagation(); this.lmbSetPdfSidebarVisible(leaf, leaf._lmbPdfSidebarOpen === false); };
+      }
+      this.lmbSyncSidebarToggle(leaf, stateToggle);
       const initialWidth = Math.max(260, Math.min(560, Number(this._lmbPdfSidebarWidth) || 340));
       host.style.setProperty("--lmb-pdf-sidebar-width", initialWidth + "px");
       const toolbar = leaf.containerEl.querySelector(".pdf-toolbar");
@@ -9050,6 +9488,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       leaf._lmbPdfSidebarOpen = visible !== false;
       const host = leaf.containerEl.querySelector(".lmb-pdf-sidebar-host");
       if (host) host.toggleClass("lmb-pdf-sidebar-closed", !leaf._lmbPdfSidebarOpen);
+      if (host) this.lmbSyncSidebarToggle(leaf, host.querySelector(".lmb-sidebar-state-toggle"));
       const toggle = leaf.containerEl.querySelector(".lmb-toolbar-sidebar");
       if (toggle) toggle.toggleClass("is-active", leaf._lmbPdfSidebarOpen);
       if (leaf._lmbPdfSidebarOpen && !host) this.lmbRenderPdfSidebarForLeaf(leaf).catch(() => {});
@@ -9059,6 +9498,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       return leaf._lmbPdfSidebarOpen;
     } catch (_) { return false; }
+  },
+
+  lmbSyncSidebarToggle(leaf, button) {
+    if (!button) return;
+    const open = leaf._lmbPdfSidebarOpen !== false, label = open ? "收起批注侧栏" : "打开批注侧栏";
+    button.setText(open ? "›" : "‹");
+    button.setAttribute("aria-label", label); button.setAttribute("title", label);
+    button.setAttribute("aria-expanded", String(open));
   },
 
   _lmbSidebarEntryKey(e) {
@@ -9114,6 +9561,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     try {
       const bar = preparedBar || (leaf && leaf.containerEl && leaf.containerEl.querySelector(".lmb-pdf-excerpt-sidebar"));
       if (!bar) return;
+      if (!preparedBar && (bar._lmbSidebarEditor || bar._lmbSidebarOpening)) return;
       const page = forcedPage || (this._lmbPdfSidebarFollow === false ? null : this._lmbCurrentPdfPage(leaf)) || Number(bar.dataset.page) || this._lmbCurrentPdfPage(leaf) || 1;
       bar.dataset.page = String(page);
       const current = this._lmbPdfSidebarView !== "all"; let shown = 0;
@@ -9194,14 +9642,39 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (page) this._lmbApplySidebarPageFilter(leaf, page);
       const row = Array.from(bar.querySelectorAll(".lmb-pdf-sidebar-item")).find((el) => el.dataset.exId === exId);
       if (!row) return false;
-      bar.querySelectorAll(".lmb-pdf-sidebar-item.is-active").forEach((el) => el.removeClass("is-active"));
-      row.addClass("is-active"); row.scrollIntoView({ behavior: "smooth", block: "center" });
-      setTimeout(() => row.removeClass("is-active"), 1800); return true;
+      this.lmbSelectPdfSidebarEntry(leaf, { exId, page: page || Number(row.dataset.page), _lmbSidebarOrdinal: Number(row.dataset.ordinal) });
+      row.scrollIntoView({ behavior: "smooth", block: "center" }); return true;
     } catch (_) { return false; }
   },
 
-  _lmbHighlightPdfSidebarTarget(exId, on) {
-    try { document.querySelectorAll(".lmb-mark[data-ex]").forEach((m) => m.toggleClass("lmb-mark-sidebar-active", !!on && m.getAttribute("data-ex") === exId)); } catch (_) {}
+  lmbSelectPdfSidebarEntry(leaf, entry) {
+    if (!leaf || !entry) return;
+    leaf._lmbSelectedExcerpt = { exId: entry.exId, pdfPath: leaf.view.file.path, page: entry.page, ordinal: entry._lmbSidebarOrdinal };
+    this.lmbSyncPdfNoteSelection(leaf);
+  },
+
+  lmbSyncPdfNoteSelection(leaf) {
+    if (!leaf || !leaf.containerEl) return;
+    const selected = leaf._lmbSelectedExcerpt;
+    const id = selected && leaf.view && leaf.view.file && selected.pdfPath === leaf.view.file.path ? selected.exId : null;
+    leaf.containerEl.querySelectorAll(".lmb-pdf-sidebar-item").forEach(row => {
+      row.classList.toggle("is-active", !!id && row.dataset.exId === id);
+      if (id && row.dataset.exId === id) selected.ordinal = Number(row.dataset.ordinal) || selected.ordinal;
+    });
+    leaf.containerEl.querySelectorAll(".lmb-mark").forEach(mark => mark.classList.toggle("lmb-note-selected", !!id && mark.getAttribute("data-ex") === id));
+    leaf.containerEl.querySelectorAll(".lmb-pdf-text-block").forEach(block => {
+      const on = !!id && block.dataset.exId === id;
+      block.classList.toggle("lmb-note-selected", on);
+      if (on) block.dataset.lmbBadge = `P.${selected.page || "?"} · ${selected.ordinal || "批注"}`;
+    });
+  },
+
+  _lmbHighlightPdfSidebarTarget(exId, on, leaf) {
+    try {
+      const root = leaf ? leaf.containerEl : document;
+      root.querySelectorAll(".lmb-mark").forEach(m => m.classList.toggle("lmb-mark-sidebar-active", !!on && m.getAttribute("data-ex") === exId));
+      root.querySelectorAll(".lmb-pdf-text-block").forEach(b => b.classList.toggle("lmb-note-hover", !!on && b.dataset.exId === exId));
+    } catch (_) {}
   },
 
   async lmbOpenExcerptInCanvas(exId) {
@@ -9296,6 +9769,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const file = leaf && leaf.view && leaf.view.file; if (!file || file.extension !== "pdf") return;
       const bar = this.lmbEnsurePdfSidebarEl(leaf); if (!bar) return;
       this.lmbSetPdfSidebarVisible(leaf, leaf._lmbPdfSidebarOpen !== false);
+      if (bar._lmbSidebarEditor && bar._lmbSidebarEditor._pdfPath !== file.path) {
+        delete bar._lmbSidebarEditor; delete bar._lmbSidebarEditingId;
+      }
+      if (bar._lmbSidebarEditor || bar._lmbSidebarOpening) return;
       const entries = this._lmbGetPdfSidebarEntries(file);
       this.lmbRefreshTextBlocks().catch((err) => console.warn("[lmb] text block refresh failed", err));
       const sourceVersions = new Map();
@@ -9316,6 +9793,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       bar._lmbRenderToken = renderToken;
       if (bar._lmbRenderSig === renderSig && bar.querySelector(".lmb-pdf-sidebar-list")) {
         this._lmbApplySidebarPageFilter(leaf);
+        this.lmbSyncPdfNoteSelection(leaf);
         return;
       }
       // Build offscreen: never expose unfiltered rows or a blank page counter
@@ -9352,7 +9830,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const search = head.createEl("input", { cls: "lmb-pdf-sidebar-search", attr: { type: "search", placeholder: "搜索摘录或备注…" } });
       const list = prepared.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
       for (const e of entries) {
-        const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || "";
+        const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || ""; row.dataset.ordinal = String(e._lmbSidebarOrdinal);
         const textView = this.lmbTextBlockViews(file.path)[e.exId] || {};
         const compact = this.lmbIsTextBlockCollapsed(textView);
         row.toggleClass("is-compact", compact);
@@ -9451,14 +9929,14 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         openMd.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInMd(e.exId, e.sourceMd, leaf); };
         openCanvas.onclick = (ev) => { ev.stopPropagation(); this.lmbOpenExcerptInCanvas(e.exId); };
         edit.onclick = (ev) => {
-          ev.stopPropagation(); this.lmbEditTextBlockNote(Object.assign({}, e, { pdfPath: file.path }));
+          ev.stopPropagation(); this.lmbOpenSidebarNoteEditor(Object.assign({}, e, { pdfPath: file.path }), leaf, row);
         };
         }
         if (e.quick) {
           const editQuick = iconButton(note ? "pencil" : "message-square-plus", note ? "编辑备注" : "添加备注");
           editQuick.onclick = (ev) => {
             ev.stopPropagation();
-            this.lmbEditTextBlockNote(Object.assign({}, e, { pdfPath: file.path }));
+            this.lmbOpenSidebarNoteEditor(Object.assign({}, e, { pdfPath: file.path }), leaf, row);
           };
         }
         const remove = iconButton("trash-2", "删除摘录", headerActions);
@@ -9477,9 +9955,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             })
           }).open();
         };
-        row.onmouseenter = () => this._lmbHighlightPdfSidebarTarget(e.exId, true);
-        row.onmouseleave = () => this._lmbHighlightPdfSidebarTarget(e.exId, false);
-        row.onclick = () => this.lmbJumpToSelection(e.pdfPath || file.path, e.page, e.selection, e.rect, leaf, e.text);
+        row.onmouseenter = () => this._lmbHighlightPdfSidebarTarget(e.exId, true, leaf);
+        row.onmouseleave = () => this._lmbHighlightPdfSidebarTarget(e.exId, false, leaf);
+        const pageEditing = () => Array.from(this._lmbActiveInlineBlocks || []).some(block => leaf.containerEl.contains(block) && block._lmbInlineEditor);
+        row.onpointerdown = () => { if (!bar._lmbSidebarEditor && !bar._lmbSidebarSwitch && !pageEditing()) this.lmbSelectPdfSidebarEntry(leaf, e); };
+        row.onclick = async () => {
+          if (bar._lmbSidebarEditor || bar._lmbSidebarSwitch || pageEditing()) {
+            if (!await this.lmbOpenSidebarNoteEditor({ ...e, pdfPath: file.path }, leaf, row)) return;
+          }
+          this.lmbSelectPdfSidebarEntry(leaf, e);
+          this.lmbJumpToSelection(e.pdfPath || file.path, e.page, e.selection, e.rect, leaf, e.text);
+        };
       }
       for (let i = 0; i < renderJobs.length; i += 8) {
         await Promise.all(renderJobs.slice(i, i + 8).map((job) => job()));
@@ -9491,7 +9977,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => row.toggleClass("is-search-hidden", !!query && !row.textContent.toLowerCase().includes(query)));
       };
       if (!entries.length) list.createDiv({ cls: "lmb-pdf-sidebar-empty", text: "当前 PDF 暂无可用批注" });
-      if (bar._lmbRenderToken !== renderToken || this._unloaded || leaf.view.file !== file) return;
+      if (bar._lmbRenderToken !== renderToken || this._unloaded || leaf.view.file !== file || bar._lmbSidebarEditor || bar._lmbSidebarOpening) return;
       // A collapse click/search/PDF scroll may have happened during preparation.
       list.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
         row.toggleClass("is-compact", this.lmbIsTextBlockCollapsed(this.lmbTextBlockViews(file.path)[row.dataset.exId]));
@@ -9510,6 +9996,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const selection = searchFocused ? [oldSearch.selectionStart, oldSearch.selectionEnd] : null;
       bar.dataset.total = prepared.dataset.total; bar.dataset.page = prepared.dataset.page;
       bar.replaceChildren(...(grip ? [grip] : []), ...Array.from(prepared.children));
+      for (const draft of (this._lmbSidebarNoteDrafts || new Map()).values()) {
+        if (draft.closed || draft._sidebarBar !== bar || draft._pdfPath !== file.path) continue;
+        const freshRow = Array.from(list.querySelectorAll(".lmb-pdf-sidebar-item")).find(row => row.dataset.exId === draft._entry.exId);
+        if (freshRow) { freshRow.parentElement.insertBefore(draft._row, freshRow); freshRow.remove(); }
+        else list.appendChild(draft._row);
+        bar._lmbSidebarEditor = draft; bar._lmbSidebarEditingId = draft._entry.exId;
+      }
       bar.scrollTop = oldScroll;
       if (anchor) {
         const replacement = Array.from(list.querySelectorAll(".lmb-pdf-sidebar-item")).find((row) => row.dataset.exId === anchor.dataset.exId);
@@ -9517,6 +10010,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       if (searchFocused) { search.focus({ preventScroll: true }); search.setSelectionRange(...selection); }
       bar._lmbRenderSig = renderSig;
+      this.lmbSyncPdfNoteSelection(leaf);
     } catch (err) { console.warn("[lmb] render pdf sidebar failed:", err); }
   }
 });
@@ -9524,20 +10018,20 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 /* Editable Markdown overlays. Content stays in the existing excerpt note store;
  * this store contains presentation only, keyed by PDF path and stable excerpt ID. */
 Object.assign(LuciasMarginBookPlugin.prototype, {
-  async lmbCreatePageNote(leaf, file, page, point, markdown) {
+  async lmbCreatePageNote(leaf, file, page, point, markdown, placement = {}) {
     if (this._unloaded || !leaf.view || leaf.view.file !== file) throw new Error("PDF 已切换，请在目标页面重新创建");
     if (!String(markdown || "").trim()) return null;
-    const path = file.path, exId = "page-note-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+    const path = file.path, exId = placement.exId || "page-note-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
     const item = { exId, pageNote: true, page, text: "", note: String(markdown) };
     const store = this.settings.quickExcerpts || (this.settings.quickExcerpts = {});
     const list = store[path] || (store[path] = []);
     const views = this.lmbTextBlockViews(path);
     const x = Math.max(0, Math.min(.8, Number(point.x) || 0)), y = Math.max(0, Math.min(.95, Number(point.y) || 0));
-    list.push(item); views[exId] = { page, x, y, w: Math.min(.6, 1 - x), fontSize: 16 };
+    list.push(item); views[exId] = placement.view || { page, x, y, w: Math.min(.6, 1 - x), fontSize: 16 };
     try { await this.saveSettings(); }
     catch (err) { list.splice(list.indexOf(item), 1); delete views[exId]; throw err; }
-    await this.lmbRefreshTextBlocks();
-    await this.lmbRenderPdfSidebarForLeaf(leaf);
+    try { await this.lmbRefreshTextBlocks(); await this.lmbRenderPdfSidebarForLeaf(leaf); }
+    catch (err) { new Notice("备注已保存，预览刷新失败：" + err.message); }
     return item;
   },
 
@@ -9550,29 +10044,56 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const root = leaf.containerEl, doc = root.ownerDocument;
     const notice = new Notice("点击 PDF 空白处新建 Markdown 页注；Esc 取消", 0);
     root.classList.add("lmb-text-placing");
+    let active = true, placing = false;
     const cancel = () => {
+      active = false;
       root.classList.remove("lmb-text-placing"); notice.hide();
-      doc.removeEventListener("pointerdown", place, true); doc.removeEventListener("keydown", key, true);
+      doc.removeEventListener("click", place, true); doc.removeEventListener("keydown", key, true);
       this._lmbCancelTextPlacement = null;
     };
     const key = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); cancel(); } };
-    const place = (ev) => {
+    const place = async (ev) => {
       const page = ev.target.closest && ev.target.closest(".page[data-page-number]");
       if (!page || !root.contains(page) || ev.button !== 0 || ev.target.closest(".lmb-pdf-text-block")) return;
       ev.preventDefault(); ev.stopImmediatePropagation();
-      const rect = page.getBoundingClientRect();
-      const point = { x: (ev.clientX - rect.left) / rect.width, y: (ev.clientY - rect.top) / rect.height };
-      const pageNumber = Number(page.dataset.pageNumber);
-      cancel();
-      const view = { page: pageNumber, x: Math.max(0, Math.min(.8, point.x)), y: Math.max(0, Math.min(.95, point.y)), w: Math.min(.6, 1 - Math.max(0, Math.min(.8, point.x))), fontSize: 16 };
-      const draft = this.lmbCreateTextBlock(page, { exId: "draft-" + Date.now().toString(36), pdfPath: file.path, quick: true }, view);
-      draft.addClass("is-draft");
-      this.lmbOpenInlineNoteEditor(draft, { title: `新建页注 · P.${pageNumber}`, value: "", sourcePath: file.path,
-        onSubmit: (text) => this.lmbCreatePageNote(leaf, file, pageNumber, point, text), onClose: () => draft.remove() });
-      this.lmbStyleTextBlock(draft, page, view);
+      if (!active || placing) return;
+      placing = true;
+      try {
+        const sidebar = root.querySelector(".lmb-pdf-excerpt-sidebar");
+        if (sidebar && sidebar._lmbSidebarEditor && !await sidebar._lmbSidebarEditor.save()) return;
+        for (const block of Array.from(this._lmbActiveInlineBlocks || [])) {
+          if (root.contains(block) && block._lmbInlineEditor && !await block._lmbInlineEditor.save()) return;
+        }
+        if (!active) return;
+        if (leaf.view.file !== file) { cancel(); return; }
+        const rect = page.getBoundingClientRect();
+        const point = { x: (ev.clientX - rect.left) / rect.width, y: (ev.clientY - rect.top) / rect.height };
+        const pageNumber = Number(page.dataset.pageNumber);
+        cancel();
+        const view = { page: pageNumber, x: Math.max(0, Math.min(.8, point.x)), y: Math.max(0, Math.min(.95, point.y)), w: Math.min(.6, 1 - Math.max(0, Math.min(.8, point.x))), fontSize: 16 };
+        const entry = { exId: "page-note-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10), pdfPath: file.path, quick: true, pageNote: true };
+        const draft = this.lmbCreateTextBlock(page, entry, view);
+        draft.addClass("is-draft");
+        let created = false;
+        this.lmbOpenInlineNoteEditor(draft, { title: `新建页注 · P.${pageNumber}`, autosave: true, pageRoot: root, value: "", sourcePath: file.path,
+          onSubmit: async (text) => {
+            if (created) await this.lmbSaveTextBlockNote(entry, text);
+            else {
+              const item = await this.lmbCreatePageNote(leaf, file, pageNumber, point, text, { exId: entry.exId, view });
+              created = !!item;
+            }
+            this.lmbSchedulePdfSidebarRefresh(0);
+          },
+          onClose: () => { draft.remove(); if (!this._unloaded) this.lmbRefreshTextBlocks().catch(err => new Notice(err.message)); }
+        });
+        this.lmbStyleTextBlock(draft, page, view);
+      } finally { placing = false; }
     };
     this._lmbCancelTextPlacement = cancel;
-    doc.addEventListener("pointerdown", place, true); doc.addEventListener("keydown", key, true);
+    // Consume the completed placement click before installing the editor's
+    // outside-click listener. Opening on pointerdown lets its trailing click
+    // immediately close the empty draft again (including mouse/touch retargeting).
+    doc.addEventListener("click", place, true); doc.addEventListener("keydown", key, true);
   },
 
   lmbTextBlockViews(path) {
@@ -9581,6 +10102,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   async lmbTextBlockNote(entry) {
+    const draft = this._lmbSidebarNoteDrafts && this._lmbSidebarNoteDrafts.get(this.lmbNoteEditorKey(entry));
+    if (draft && !draft.closed) return draft.getText();
     if (entry.quick) {
       const list = this.settings.quickExcerpts && this.settings.quickExcerpts[entry.pdfPath];
       const item = Array.isArray(list) && list.find((x) => x.exId === entry.exId);
@@ -9604,17 +10127,29 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
   },
 
-  async lmbEditTextBlockNote(entry, afterSave, preferredBlock) {
+  async lmbEditTextBlockNote(entry, afterSave, preferredBlock, editEvent) {
+    if (this.inkMode) await this.lmbSetInkMode(false);
     try {
       const block = preferredBlock || (this.app.workspace.getLeavesOfType("pdf") || [])
         .filter((leaf) => leaf.view && leaf.view.file && leaf.view.file.path === entry.pdfPath)
         .flatMap((leaf) => Array.from(leaf.containerEl.querySelectorAll(".lmb-pdf-text-block")))
         .find((el) => el.dataset.exId === entry.exId);
       if (block && block._lmbInlineEditor) { block._lmbInlineEditor.input.focus({ preventScroll: true }); return; }
+      const sidebarDraft = this._lmbSidebarNoteDrafts && this._lmbSidebarNoteDrafts.get(this.lmbNoteEditorKey(entry));
+      if ((!block || !block.isConnected) && sidebarDraft && !sidebarDraft.closed) { sidebarDraft.input.focus({ preventScroll: true }); return; }
       const value = await this.lmbTextBlockNote(entry);
       if (block && block.isConnected) {
-        this.lmbOpenInlineNoteEditor(block, { title: "编辑 Markdown", value, sourcePath: entry.sourceMd || entry.pdfPath || "",
-          onSubmit: (text) => this.lmbSaveTextBlockNote(entry, text),
+        const owner = (this.app.workspace.getLeavesOfType("pdf") || []).find(l => l.containerEl.contains(block));
+        if (owner) {
+          const bar = owner.containerEl.querySelector(".lmb-pdf-excerpt-sidebar");
+          if (bar && bar._lmbSidebarEditor && !await bar._lmbSidebarEditor.save()) { bar._lmbSidebarEditor.input.focus({ preventScroll: true }); return; }
+          const editors = Array.from(this._lmbActiveInlineBlocks || []).filter(el => el !== block && owner.containerEl.contains(el) && el._lmbInlineEditor);
+          for (const other of editors) if (!await other._lmbInlineEditor.save()) { other._lmbInlineEditor.input.focus({ preventScroll: true }); return; }
+          if (!owner.view.file || owner.view.file.path !== entry.pdfPath) return;
+        }
+        const cursorOffset = editEvent ? this.lmbLivePointerOffset(block.querySelector(".lmb-pdf-text-body"), value, editEvent) : 0;
+        this.lmbOpenInlineNoteEditor(block, { title: "实时编辑", autosave: true, pageRoot: owner && owner.containerEl, value, cursorOffset, sourcePath: entry.sourceMd || entry.pdfPath || "",
+          onSubmit: async (text) => { await this.lmbSaveTextBlockNote(entry, text); this.lmbSchedulePdfSidebarRefresh(0); },
           onClose: (saved, text) => {
             if (this._unloaded) return;
             this.lmbRefreshTextBlocks().catch((err) => new Notice("预览刷新失败：" + err.message));
@@ -9623,6 +10158,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         });
         return;
       }
+      const leaf = (this.app.workspace.getLeavesOfType("pdf") || []).find(l => l.view && l.view.file && l.view.file.path === entry.pdfPath);
+      if (leaf) { await this.lmbOpenSidebarNoteEditor(entry, leaf, null, afterSave); return; }
       new LMBExcerptNoteModal(this.app, {
         title: "Markdown 批注", value, sourcePath: entry.sourceMd || "", compact: true,
         onSubmit: async (text) => {
@@ -9633,68 +10170,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }).open();
     } catch (err) { new Notice("无法打开批注：" + err.message); }
-  },
-
-  lmbOpenInlineNoteEditor(block, opts) {
-    if (block._lmbInlineEditor) { block._lmbInlineEditor.input.focus(); return block._lmbInlineEditor; }
-    const body = block.querySelector(".lmb-pdf-text-body"), panel = block.createDiv({ cls: "lmb-inline-note-editor" });
-    block.insertBefore(panel, body);
-    const controls = panel.createDiv({ cls: "lmb-inline-note-controls" });
-    controls.createSpan({ text: opts.title || "编辑 Markdown" });
-    const status = controls.createSpan({ cls: "lmb-inline-note-status", text: "实时预览" });
-    const save = controls.createEl("button", { text: "保存", attr: { type: "button" } });
-    const cancel = controls.createEl("button", { text: "取消", attr: { type: "button" } });
-    const input = panel.createEl("textarea", { cls: "lmb-inline-note-input", attr: { "aria-label": "页内 Markdown 编辑", placeholder: "直接输入 Markdown…" } });
-    input.value = opts.value || "";
-    const state = { input, closed: false, busy: false, sequence: 0, timer: null };
-    block._lmbInlineEditor = state; block.addClass("is-editing");
-    const active = this._lmbActiveInlineBlocks || (this._lmbActiveInlineBlocks = new Set()); active.add(block);
-    const resize = () => {
-      input.style.height = "auto"; input.style.height = Math.max(60, Math.min(180, input.scrollHeight || 60)) + "px";
-      if (block.parentElement && block._lmbTextView) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView);
-    };
-    state.render = async () => {
-      const sequence = ++state.sequence, text = input.value;
-      const content = block.ownerDocument.createElement("div");
-      try { await MarkdownRenderer.render(this.app, text || "*在上方输入，预览会在这里更新*", content, opts.sourcePath || "", this); }
-      catch (_) { content.textContent = text; }
-      if (state.closed || sequence !== state.sequence) return;
-      body.replaceChildren(content);
-    };
-    state.close = (saved) => {
-      if (state.closed) return;
-      state.closed = true; state.sequence++; clearTimeout(state.timer);
-      if (state.observer) state.observer.disconnect();
-      panel.remove(); block.classList.remove("is-editing"); delete block._lmbInlineEditor;
-      active.delete(block);
-      body._lmbMarkdown = undefined;
-      if (block.parentElement && block._lmbTextView) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView);
-      if (opts.onClose) opts.onClose(saved, input.value);
-    };
-    state.save = async () => {
-      if (state.busy || state.closed) return;
-      state.busy = true; input.readOnly = true; save.disabled = cancel.disabled = true; status.setText("保存中…");
-      try { await opts.onSubmit(input.value); state.close(true); }
-      catch (err) { status.setText("保存失败，草稿已保留"); new Notice("保存失败：" + err.message); }
-      finally { state.busy = false; input.readOnly = false; save.disabled = cancel.disabled = false; }
-    };
-    state.cancel = () => { if (!state.busy) state.close(false); };
-    save.onclick = (ev) => { ev.stopPropagation(); state.save(); };
-    cancel.onclick = (ev) => { ev.stopPropagation(); state.cancel(); };
-    const schedule = () => { resize(); clearTimeout(state.timer); state.timer = setTimeout(state.render, 100); };
-    input.addEventListener("input", (ev) => { resize(); if (!ev.isComposing) schedule(); });
-    input.addEventListener("compositionend", schedule);
-    input.addEventListener("keydown", (ev) => {
-      if (ev.isComposing) return;
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); state.save(); }
-      else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); state.cancel(); }
-    });
-    resize(); state.render(); input.focus({ preventScroll: true });
-    if (typeof ResizeObserver !== "undefined" && block.parentElement && block._lmbTextView) {
-      state.observer = new ResizeObserver(() => { if (!state.closed && block.isConnected) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView); });
-      state.observer.observe(block.parentElement);
-    }
-    return state;
   },
 
   lmbIsTextBlockCollapsed(view) {
@@ -9758,6 +10233,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!file) continue;
       await Promise.all(Array.from(leaf.containerEl.querySelectorAll(".page[data-page-number]"),
         (page) => this.lmbRenderTextBlocksOnPage(page, file.path)));
+      this.lmbSyncPdfNoteSelection(leaf);
     }
   },
 
@@ -9814,27 +10290,30 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     }
     if (page._lmbTextBlockToken !== token) return;
     page.querySelectorAll(":scope > .lmb-pdf-text-block").forEach((el) => { if (!wanted.has(el.dataset.exId) && !el._lmbInlineEditor) el.remove(); });
+    for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
+      if (leaf._lmbSelectedExcerpt && leaf.view && leaf.view.file && leaf.view.file.path === path) this.lmbSyncPdfNoteSelection(leaf);
+    }
   },
 
   lmbStyleTextBlock(block, page, view) {
     block.style.left = (view.x || 0) * 100 + "%";
     const pageHeight = page.getBoundingClientRect().height;
-    const y = block._lmbInlineEditor ? Math.min(view.y || 0, Math.max(0, 1 - 260 / pageHeight)) : view.y || 0;
+    // Editing must keep the same page anchor, including notes near the bottom.
+    const y = view.y || 0;
     block.style.top = y * 100 + "%";
     block.style.width = (view.w || .55) * 100 + "%";
     // 1000 reference units keep type proportional when PDF.js zooms or resizes.
     block.style.fontSize = (view.fontSize || 16) * page.getBoundingClientRect().width / 1000 + "px";
     block.style.setProperty("--lmb-pdf-text-size", block.style.fontSize);
     const body = block.querySelector(".lmb-pdf-text-body");
-    const editor = block.querySelector(".lmb-inline-note-editor");
-    body.style.maxHeight = Math.max(24, pageHeight * (1 - y) - (editor ? editor.offsetHeight || 100 : 0) - 8) + "px";
-    body.title = "双击编辑 Markdown；长文超出页面时可在块内滚动";
+    body.style.maxHeight = Math.max(24, pageHeight * (1 - y) - 8) + "px";
+    body.title = block._lmbInlineEditor ? "点击段落切换源码；Ctrl/Cmd+Enter 保存，Esc 取消" : "点击文字原位编辑 Markdown；长文可在块内滚动";
     block.querySelector("input").value = String(view.fontSize || 16);
     const tools = block.querySelector(".lmb-pdf-text-tools");
     const nearTop = (view.y || 0) * page.getBoundingClientRect().height < Math.max(76, tools.offsetHeight || 0);
     tools.style.bottom = nearTop ? "auto" : "100%";
     tools.style.top = nearTop ? "0" : "auto";
-    tools.style.left = Math.min(0, page.getBoundingClientRect().width * (1 - (view.x || 0)) - Math.max(360, tools.offsetWidth || 0)) + "px";
+    tools.style.left = Math.min(0, page.getBoundingClientRect().width * (1 - (view.x || 0)) - Math.max(260, tools.offsetWidth || 0)) + "px";
     block.querySelector(".lmb-text-sidebar-toggle").textContent = this.lmbIsTextBlockCollapsed(view) ? "侧栏展开" : "侧栏收起";
     block.classList.toggle("is-note-style", view.style === "note");
   },
@@ -9852,7 +10331,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       b.onclick = (ev) => { ev.stopPropagation(); Promise.resolve(action()).catch((err) => new Notice("操作失败：" + err.message)); }; return b;
     };
     const persist = async () => { await this.saveSettings(); this.lmbSchedulePdfSidebarRefresh(0); };
-    button("编辑", () => this.lmbEditTextBlockNote(entry, null, block));
     const size = bar.createEl("input", { attr: { type: "number", min: "8", max: "72", step: "1", "aria-label": "文本块字号（随 PDF 缩放）", title: "字号（随 PDF 缩放）" } });
     size.onchange = async () => {
       view.fontSize = Math.max(8, Math.min(72, Number(size.value) || 16));
@@ -9874,10 +10352,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     button("样式", () => { view.style = view.style === "note" ? "transparent" : "note"; this.lmbStyleTextBlock(block, page, view); return persist(); });
     button("侧栏收起", () => this.lmbSetTextBlockCollapsed(entry, entry.pdfPath, !this.lmbIsTextBlockCollapsed(view)), "lmb-text-sidebar-toggle");
     button("移除", async () => {
+      if (block._lmbInlineEditor && !await block._lmbInlineEditor.save()) return;
       delete view.page; block.remove(); await persist(); await this.lmbRefreshTextBlocks();
     });
     const body = block.createDiv({ cls: "lmb-pdf-text-body markdown-rendered" });
-    body.ondblclick = (ev) => { ev.stopPropagation(); this.lmbEditTextBlockNote(entry, null, block); };
+    body.addEventListener("click", (ev) => {
+      if (block._lmbInlineEditor || ev.ctrlKey || ev.metaKey) return;
+      const selection = body.ownerDocument.defaultView && body.ownerDocument.defaultView.getSelection();
+      if (selection && !selection.isCollapsed) return;
+      const leaf = (this.app.workspace.getLeavesOfType("pdf") || []).find(l => l.view && l.view.file && l.view.file.path === entry.pdfPath);
+      if (leaf) this.lmbSelectPdfSidebarEntry(leaf, entry);
+      ev.preventDefault(); ev.stopPropagation(); this.lmbEditTextBlockNote(entry, null, block, ev);
+    }, true);
+    body.ondblclick = (ev) => { ev.stopPropagation(); this.lmbEditTextBlockNote(entry, null, block, ev); };
     // Keep overlay interaction out of PDF selection/ink gestures while preserving text selection.
     ["pointerdown", "click", "dblclick"].forEach((type) => block.addEventListener(type, (ev) => ev.stopPropagation()));
     const resize = block.createDiv({ cls: "lmb-pdf-text-resize", attr: { title: "拖动调整宽度" } });
@@ -9922,6 +10409,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     this.register(() => {
       if (this._lmbCancelTextPlacement) this._lmbCancelTextPlacement();
       for (const block of Array.from(this._lmbActiveInlineBlocks || [])) if (block._lmbInlineEditor) block._lmbInlineEditor.close(false);
+      for (const block of Array.from(this._lmbActiveSidebarNoteBlocks || [])) if (block._lmbInlineEditor) block._lmbInlineEditor.close(false);
+      if (this._lmbSidebarNoteDrafts) this._lmbSidebarNoteDrafts.clear();
       for (const observer of (this._lmbTextResizeObservers || new Map()).values()) observer.disconnect();
       if (this._lmbTextResizeObservers) this._lmbTextResizeObservers.clear();
       document.querySelectorAll(".lmb-pdf-text-block").forEach((el) => { if (el._lmbInlineEditor) el._lmbInlineEditor.close(false); el.remove(); });
@@ -9931,6 +10420,362 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   lmbReleaseTextBlockPage(page) {
     const observers = this._lmbTextResizeObservers;
     if (observers && observers.has(page)) { observers.get(page).disconnect(); observers.delete(page); }
+  }
+});
+
+/* One document flow: only the active Markdown block is an editor. */
+Object.assign(LuciasMarginBookPlugin.prototype, {
+  lmbLivePointerOffset(container, source, event) {
+    try {
+      const doc = container.ownerDocument;
+      const caret = doc.caretPositionFromPoint ? doc.caretPositionFromPoint(event.clientX, event.clientY) : null;
+      const range = !caret && doc.caretRangeFromPoint ? doc.caretRangeFromPoint(event.clientX, event.clientY) : null;
+      const node = caret ? caret.offsetNode : range && range.startContainer;
+      const offset = caret ? caret.offset : range && range.startOffset;
+      if (!node || node.nodeType !== 3 || !container.contains(node)) return 0;
+      const before = doc.createRange(); before.selectNodeContents(container); before.setEnd(node, 0);
+      return lmbLiveCaretOffset(source, node.textContent || "", offset || 0, before.toString().length);
+    } catch (_) { return 0; }
+  },
+
+  lmbOpenInlineNoteEditor(block, opts) {
+    if (block._lmbInlineEditor) { block._lmbInlineEditor.input.focus(); return block._lmbInlineEditor; }
+    const doc = block.ownerDocument, body = opts.body || block.querySelector(".lmb-pdf-text-body");
+    const panel = block.createDiv({ cls: "lmb-inline-note-editor" }); block.insertBefore(panel, body);
+    const controls = panel.createDiv({ cls: "lmb-inline-note-controls" });
+    controls.createSpan({ text: "实时编辑" });
+    const status = controls.createSpan({ cls: "lmb-inline-note-status", text: "点击段落编辑" });
+    const save = controls.createEl("button", { text: opts.autosave ? "完成" : "保存", attr: { type: "button" } });
+    const cancel = controls.createEl("button", { text: "取消", attr: { type: "button" } });
+    const input = body.createEl("textarea", { cls: "lmb-live-markdown-input", attr: { "aria-label": "当前段落 Markdown", placeholder: "输入 Markdown…", spellcheck: "false", rows: "1" } });
+    const text = String(opts.value || "").replace(/\r\n/g, "\n");
+    const state = { input, text, parts: lmbLiveMarkdownBlocks(text), active: 0, closed: false, busy: false, sequence: 0, cache: new Map(), history: [], redo: [], composing: false };
+    state.lastSavedText = text;
+    let autosaveTimer = null, pendingSave = null, finishing = null;
+    const changed = (value) => {
+      if (opts.onChange) opts.onChange(value);
+      if (!opts.autosave) return;
+      clearTimeout(autosaveTimer); status.setText("等待自动保存…");
+      autosaveTimer = setTimeout(() => { state.persist(); }, opts.autosaveDelay || 800);
+    };
+    const partsAtCaret = (source, caret) => {
+      const parts = lmbLiveMarkdownBlocks(source);
+      // A newly typed blank paragraph can sit between existing blocks. Keep an
+      // empty source range there instead of moving the caret into the next one.
+      if (!parts.some(part => part.start <= caret && caret <= part.end)) {
+        const index = parts.findIndex(part => part.start > caret);
+        parts.splice(index < 0 ? parts.length : index, 0, { start: caret, end: caret, kind: "paragraph", source: "" });
+      }
+      return parts;
+    };
+    block._lmbInlineEditor = state; block.addClass("is-editing"); block.addClass("is-live-editing");
+    const active = opts.sidebar ? (this._lmbActiveSidebarNoteBlocks || (this._lmbActiveSidebarNoteBlocks = new Set()))
+      : (this._lmbActiveInlineBlocks || (this._lmbActiveInlineBlocks = new Set())); active.add(block);
+    state.getText = () => {
+      const part = state.parts[state.active];
+      return state.text.slice(0, part.start) + input.value + state.text.slice(part.end);
+    };
+    const resize = () => {
+      // Collapse the intrinsic height before measuring, including when deleting
+      // wrapped text. Otherwise the default textarea rows become a height floor.
+      input.style.height = "0px";
+      const win = doc.defaultView;
+      const line = win && win.getComputedStyle ? parseFloat(win.getComputedStyle(input).lineHeight) : 24;
+      input.style.height = Math.max(line || 24, input.scrollHeight || 0) + "px";
+      if (block.parentElement && block._lmbTextView) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView);
+    };
+    state.rebuild = (index, caret = 0, focus = true) => {
+      const sequence = ++state.sequence, scroll = body.scrollTop, previous = state.cache, cache = new Map(), jobs = [];
+      const scrolls = [];
+      for (let el = body; el; el = el.parentElement) scrolls.push([el, el.scrollTop, el.scrollLeft]);
+      state.active = Math.max(0, Math.min(state.parts.length - 1, index));
+      const wrappers = state.parts.map((part, i) => {
+        const wrapper = doc.createElement("div"); wrapper.classList.add("lmb-live-markdown-block"); wrapper.dataset.kind = part.kind;
+        const heading = /^(#{1,6})\s/.exec(part.source);
+        if (heading) wrapper.style.setProperty("--lmb-live-heading-size", heading[1].length === 1 ? "1.7em" : heading[1].length === 2 ? "1.4em" : heading[1].length === 3 ? "1.2em" : "1em");
+        if (i === state.active) {
+          wrapper.classList.add("is-active"); wrapper.appendChild(input); input.value = part.source;
+        } else {
+          wrapper.tabIndex = 0; wrapper.setAttribute("aria-label", `编辑第 ${i + 1} 段`);
+          const record = previous.get(i);
+          if (record && record.source === part.source && record.node) { wrapper.appendChild(record.node); cache.set(i, record); }
+          else {
+            const content = doc.createElement("div");
+            jobs.push((async () => {
+              try { await MarkdownRenderer.render(this.app, part.source || "\u200b", content, opts.sourcePath || "", this); }
+              catch (_) { content.textContent = part.source; }
+              if (state.closed || sequence !== state.sequence) return;
+              wrapper.replaceChildren(content); cache.set(i, { source: part.source, node: content });
+            })());
+          }
+          wrapper.addEventListener("click", (event) => {
+            if (event.ctrlKey || event.metaKey || state.busy || state.composing) return;
+            event.preventDefault(); event.stopPropagation();
+            state.activate(i, this.lmbLivePointerOffset(wrapper, part.source, event));
+          }, true);
+          wrapper.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === "F2") { event.preventDefault(); state.activate(i, 0); }
+          });
+        }
+        return wrapper;
+      });
+      state.cache = cache; body.replaceChildren(...wrappers); body.scrollTop = scroll;
+      const position = Math.max(0, Math.min(input.value.length, caret));
+      // Size the textarea before focusing it: a default two-row field can make
+      // the browser reveal its caret by scrolling the PDF viewport first.
+      resize(); input.setSelectionRange(position, position);
+      if (focus) input.focus({ preventScroll: true });
+      for (const [el, top, left] of scrolls) { el.scrollTop = top; el.scrollLeft = left; }
+      return Promise.all(jobs);
+    };
+    state.sync = (record = true) => {
+      const old = state.parts[state.active], selection = input.selectionStart == null ? input.value.length : input.selectionStart;
+      const nextText = state.getText(), caret = old.start + selection;
+      if (nextText === state.text) { resize(); return Promise.resolve(); }
+      if (record) { state.history.push({ text: state.text, caret: state.beforeCaret == null ? old.start : state.beforeCaret }); if (state.history.length > 100) state.history.shift(); state.redo.length = 0; }
+      const parts = partsAtCaret(nextText, caret), index = lmbLiveBlockAt(parts, caret);
+      const stable = index === state.active && parts.length === state.parts.length && parts.every((part, i) => i === index || part.source === state.parts[i].source);
+      state.text = nextText; state.parts = parts;
+      changed(nextText);
+      if (stable) { if (input.parentElement) input.parentElement.dataset.kind = parts[index].kind; resize(); return Promise.resolve(); }
+      return state.rebuild(index, caret - parts[index].start);
+    };
+    state.render = () => state.sync();
+    state.activate = (index, caret = 0) => {
+      if (state.closed || state.busy || state.composing) return Promise.resolve();
+      state.sync();
+      index = Math.max(0, Math.min(state.parts.length - 1, index));
+      return state.rebuild(index, caret === "end" ? state.parts[index].source.length : caret);
+    };
+    state.restore = (snapshot) => {
+      state.text = snapshot.text; state.parts = partsAtCaret(state.text, snapshot.caret);
+      changed(state.text);
+      const index = lmbLiveBlockAt(state.parts, snapshot.caret);
+      return state.rebuild(index, snapshot.caret - state.parts[index].start);
+    };
+    state.undo = (redo = false) => {
+      const from = redo ? state.redo : state.history, to = redo ? state.history : state.redo;
+      if (!from.length || state.composing || state.busy) return;
+      const caret = state.parts[state.active].start + (input.selectionStart || 0);
+      to.push({ text: state.getText(), caret }); state.restore(from.pop());
+    };
+    state.close = (saved) => {
+      if (state.closed) return;
+      const result = state.getText(); state.closed = true; state.sequence++;
+      clearTimeout(autosaveTimer);
+      if (state.outsideClick) opts.pageRoot.removeEventListener("click", state.outsideClick, true);
+      if (state.observer) state.observer.disconnect();
+      panel.remove(); block.classList.remove("is-editing"); block.classList.remove("is-live-editing"); delete block._lmbInlineEditor; active.delete(block);
+      body._lmbMarkdown = undefined;
+      if (block.parentElement && block._lmbTextView) this.lmbStyleTextBlock(block, block.parentElement, block._lmbTextView);
+      if (opts.onClose) opts.onClose(saved, result);
+    };
+    state.persist = () => {
+      clearTimeout(autosaveTimer);
+      if (state.closed || state.composing) return Promise.resolve(false);
+      if (pendingSave) return pendingSave;
+      pendingSave = (async () => {
+        try {
+          // A write can finish after another keystroke. Drain the newest text
+          // serially before allowing the editor to close or switch notes.
+          do {
+            if (state.composing) return false;
+            const snapshot = state.getText();
+            if (opts.autosave && snapshot === state.lastSavedText) break;
+            status.setText("保存中…");
+            await opts.onSubmit(snapshot);
+            state.lastSavedText = snapshot;
+          } while (!state.closed && state.getText() !== state.lastSavedText);
+          status.setText(opts.autosave ? "已自动保存" : "已保存");
+          return true;
+        } catch (err) {
+          clearTimeout(autosaveTimer);
+          status.setText("保存失败，草稿已保留"); new Notice("保存失败，草稿已保留：" + err.message);
+          return false;
+        }
+      })().finally(() => { pendingSave = null; });
+      return pendingSave;
+    };
+    state.save = () => {
+      if (finishing) return finishing;
+      if (state.closed) return Promise.resolve(false);
+      if (state.composing) { if (opts.autosave) new Notice("请先确认输入法中的文字，草稿仍保留在当前备注"); return Promise.resolve(false); }
+      state.busy = true; input.readOnly = true; save.disabled = cancel.disabled = true; status.setText("保存中…");
+      finishing = (async () => {
+        try { const ok = await state.persist(); if (ok) state.close(true); return ok; }
+        finally { state.busy = false; input.readOnly = false; save.disabled = cancel.disabled = false; finishing = null; }
+      })();
+      return finishing;
+    };
+    state.cancel = () => { if (!state.busy && !pendingSave) state.close(false); };
+    if (opts.autosave) { status.setText("自动保存已开启"); cancel.setAttribute("title", "放弃尚未保存的修改；已自动保存的内容会保留"); }
+    save.onclick = (event) => { event.stopPropagation(); state.save(); }; cancel.onclick = (event) => { event.stopPropagation(); state.cancel(); };
+    input.addEventListener("compositionstart", () => { state.composing = true; });
+    input.addEventListener("compositionend", () => { state.composing = false; state.sync(); });
+    input.addEventListener("beforeinput", (event) => {
+      state.beforeCaret = state.parts[state.active].start + (input.selectionStart || 0);
+      if (event.inputType === "historyUndo" || event.inputType === "historyRedo") { event.preventDefault(); state.undo(event.inputType === "historyRedo"); }
+    });
+    input.addEventListener("input", (event) => { if (event.isComposing || state.composing) resize(); else state.sync(); });
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing || state.composing) return;
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); state.save(); return; }
+      if ((event.ctrlKey || event.metaKey) && /^(z|y)$/i.test(event.key)) { event.preventDefault(); event.stopPropagation(); state.undo(event.shiftKey || event.key.toLowerCase() === "y"); return; }
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); state.cancel(); return; }
+      const start = input.selectionStart, end = input.selectionEnd;
+      if (start !== end || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (start === 0 && /^(ArrowUp|ArrowLeft)$/.test(event.key) && state.active > 0) { event.preventDefault(); state.activate(state.active - 1, "end"); }
+      else if (end === input.value.length && /^(ArrowDown|ArrowRight)$/.test(event.key) && state.active + 1 < state.parts.length) { event.preventDefault(); state.activate(state.active + 1, 0); }
+      else if (event.key === "Backspace" && start === 0 && state.parts[state.active].start > 0 || event.key === "Delete" && end === input.value.length && state.parts[state.active].end < state.text.length) {
+        event.preventDefault(); const at = state.parts[state.active].start + start, remove = event.key === "Backspace" ? at - 1 : at;
+        state.history.push({ text: state.getText(), caret: at }); state.redo.length = 0;
+        state.restore({ text: state.text.slice(0, remove) + state.text.slice(remove + 1), caret: remove });
+      }
+    });
+    if (opts.pageRoot) {
+      let outsideRequest = 0;
+      state.outsideClick = async (event) => {
+        const target = event.target;
+        if (state.closed || block.contains(target) || event.ctrlKey || event.metaKey || event.button > 0) return;
+        const page = target.closest && target.closest(".page[data-page-number]");
+        if (!page || !opts.pageRoot.contains(page)) return;
+        const next = target.closest(".lmb-pdf-text-block");
+        // Toolbar actions are separate interactions; clicking a note body switches editors.
+        if (next && !target.closest(".lmb-pdf-text-body")) return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        const request = ++outsideRequest;
+        if (!await state.save()) { input.focus({ preventScroll: true }); return; }
+        if (request !== outsideRequest || this._unloaded) return;
+        if (next && next.isConnected) await this.lmbEditTextBlockNote(next._lmbTextEntry, null, next, event);
+      };
+      opts.pageRoot.addEventListener("click", state.outsideClick, true);
+    }
+    const initialOffset = Math.max(0, Math.min(text.length, opts.cursorOffset || 0));
+    state.rebuild(lmbLiveBlockAt(state.parts, initialOffset), initialOffset - state.parts[lmbLiveBlockAt(state.parts, initialOffset)].start);
+    if (typeof ResizeObserver !== "undefined" && block.parentElement && block._lmbTextView) {
+      state.observer = new ResizeObserver(() => { if (!state.closed && block.isConnected) resize(); }); state.observer.observe(block.parentElement);
+    }
+    return state;
+  }
+});
+
+/* Sidebar and page share one paragraph editor and the existing note source. */
+Object.assign(LuciasMarginBookPlugin.prototype, {
+  lmbNoteEditorKey(entry) {
+    return JSON.stringify([entry.pdfPath || "", entry.exId || "", entry.sourceMd || "", !!entry.quick]);
+  },
+
+  async lmbOpenSidebarNoteEditor(entry, leaf, preferredRow, afterSave) {
+    if (this.inkMode) await this.lmbSetInkMode(false);
+    const bar = leaf && this.lmbEnsurePdfSidebarEl(leaf);
+    if (!bar) return false;
+    // Serialize rapid card clicks, including clicks while a disk write is pending.
+    const previous = bar._lmbSidebarSwitch || Promise.resolve();
+    const task = previous.catch(() => {}).then(async () => {
+      if (!leaf.view.file || leaf.view.file.path !== entry.pdfPath) return false;
+      bar._lmbSidebarSwitching = true;
+      try {
+        for (const block of Array.from(this._lmbActiveInlineBlocks || [])) {
+          if (leaf.containerEl.contains(block) && block._lmbInlineEditor && !await block._lmbInlineEditor.save()) {
+            block._lmbInlineEditor.input.focus({ preventScroll: true }); return false;
+          }
+        }
+        const current = bar._lmbSidebarEditor;
+        if (current && !current.closed && this.lmbNoteEditorKey(current._entry) !== this.lmbNoteEditorKey(entry)) {
+          if (!await current.save()) {
+            current.input.focus({ preventScroll: true });
+            this.lmbSelectPdfSidebarEntry(leaf, current._entry);
+            return false;
+          }
+        }
+        await this.lmbMountSidebarNoteEditor(entry, leaf, preferredRow && preferredRow.isConnected ? preferredRow : null, afterSave);
+        return !!bar._lmbSidebarEditor && bar._lmbSidebarEditingId === entry.exId;
+      } finally { bar._lmbSidebarSwitching = false; }
+    });
+    bar._lmbSidebarSwitch = task;
+    try { return await task; } finally { if (bar._lmbSidebarSwitch === task) delete bar._lmbSidebarSwitch; }
+  },
+
+  async lmbMountSidebarNoteEditor(entry, leaf, preferredRow, afterSave) {
+    const file = leaf && leaf.view && leaf.view.file;
+    if (!file || file.path !== entry.pdfPath) return;
+    const bar = this.lmbEnsurePdfSidebarEl(leaf);
+    if (!bar) return;
+    const existing = this._lmbSidebarNoteDrafts && this._lmbSidebarNoteDrafts.get(this.lmbNoteEditorKey(entry));
+    if (existing && !existing.closed) {
+      const ownerLeaf = existing._leaf || leaf;
+      if (ownerLeaf !== leaf && this.app.workspace.setActiveLeaf) this.app.workspace.setActiveLeaf(ownerLeaf, { focus: true });
+      if (!existing.input.isConnected) await this.lmbRenderPdfSidebarForLeaf(ownerLeaf);
+      existing.input.focus({ preventScroll: true }); return;
+    }
+    if (bar._lmbSidebarEditor && !bar._lmbSidebarEditor.closed) {
+      bar._lmbSidebarEditor.input.focus({ preventScroll: true });
+      if (bar._lmbSidebarEditingId !== entry.exId) new Notice("请先保存或取消正在编辑的备注");
+      return;
+    }
+    if (bar._lmbSidebarOpening) return;
+    const pageEditor = Array.from(leaf.containerEl.querySelectorAll(".lmb-pdf-text-block"))
+      .find(block => block.dataset.exId === entry.exId && block._lmbInlineEditor);
+    if (pageEditor) { pageEditor._lmbInlineEditor.input.focus({ preventScroll: true }); new Notice("该备注正在页内编辑，请先保存或取消"); return; }
+    let row = preferredRow;
+    if (!row) {
+      await this.lmbRenderPdfSidebarForLeaf(leaf);
+      row = Array.from(bar.querySelectorAll(".lmb-pdf-sidebar-item")).find(el => el.dataset.exId === entry.exId);
+    }
+    if (!row) { new Notice("找不到对应的侧栏条目，请刷新后重试"); return; }
+    const token = {}; bar._lmbSidebarOpening = token; bar._lmbRenderToken = {};
+    try {
+      const value = await this.lmbTextBlockNote(entry);
+      if (this._unloaded || bar._lmbSidebarOpening !== token || leaf.view.file !== file || !row.isConnected) return;
+      this.lmbSetPdfSidebarVisible(leaf, true);
+      this.lmbSelectPdfSidebarEntry(leaf, entry);
+      row.classList.remove("is-compact"); row.classList.add("is-note-editing");
+      const headerButtons = Array.from(row.querySelectorAll(".lmb-pdf-sidebar-header-actions button"));
+      for (const button of headerButtons) button.disabled = true;
+      let host = row.querySelector(".lmb-pdf-sidebar-item-note");
+      if (!host) {
+        host = row.createDiv({ cls: "lmb-pdf-sidebar-item-note" });
+        row.insertBefore(host, row.querySelector(".lmb-pdf-sidebar-item-actions"));
+      }
+      host.classList.remove("is-collapsed"); host.classList.add("is-sidebar-editing");
+      let body = host.querySelector(".lmb-pdf-sidebar-item-note-body");
+      if (!body) body = host.createDiv({ cls: "lmb-pdf-sidebar-item-note-body markdown-rendered" });
+      if (!host._lmbEditorEvents) {
+        host._lmbEditorEvents = true;
+        for (const type of ["pointerdown", "click", "dblclick", "keydown"]) host.addEventListener(type, event => { if (host._lmbInlineEditor) event.stopPropagation(); });
+      }
+      const drafts = this._lmbSidebarNoteDrafts || (this._lmbSidebarNoteDrafts = new Map());
+      const key = this.lmbNoteEditorKey(entry);
+      let timer = null;
+      const state = this.lmbOpenInlineNoteEditor(host, { body, sidebar: true, autosave: true, value, sourcePath: entry.sourceMd || file.path,
+        onChange: () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => { if (!state.closed) this.lmbRefreshTextBlocks().catch(err => console.warn("[lmb] sidebar draft preview failed", err)); }, 80);
+        },
+        onSubmit: text => this.lmbSaveTextBlockNote(entry, text),
+        onClose: (saved, text) => {
+          clearTimeout(timer); drafts.delete(key);
+          if (bar._lmbSidebarEditor === state) { delete bar._lmbSidebarEditor; delete bar._lmbSidebarEditingId; }
+          row.classList.remove("is-note-editing"); host.classList.remove("is-sidebar-editing");
+          for (const button of headerButtons) button.disabled = false;
+          bar._lmbRenderSig = null;
+          // Keep the existing row visible until the detached sidebar render is ready.
+          const content = body.ownerDocument.createElement("div");
+          Promise.resolve().then(() => MarkdownRenderer.render(this.app, saved ? text : state.lastSavedText, content, entry.sourceMd || file.path, this))
+            .then(() => { if (!host._lmbInlineEditor && host.isConnected) body.replaceChildren(content); }).catch(() => {});
+          if (this._unloaded) return;
+          this.lmbRefreshTextBlocks().catch(err => console.warn("[lmb] sidebar preview restore failed", err));
+          if (!bar._lmbSidebarSwitching) this.lmbRenderPdfSidebarForLeaf(leaf).catch(err => console.warn("[lmb] sidebar editor refresh failed", err));
+          if (saved && afterSave) Promise.resolve(afterSave(text)).catch(err => new Notice(err.message));
+        }
+      });
+      state._entry = entry; state._row = row; state._sidebarBar = bar; state._pdfPath = file.path; state._leaf = leaf;
+      drafts.set(key, state); bar._lmbSidebarEditor = state; bar._lmbSidebarEditingId = entry.exId;
+    } catch (err) { new Notice("无法打开备注：" + err.message); }
+    finally {
+      if (bar._lmbSidebarOpening === token) delete bar._lmbSidebarOpening;
+      if (!this._unloaded && leaf.view.file !== file) this.lmbRenderPdfSidebarForLeaf(leaf).catch(() => {});
+    }
   }
 });
 
@@ -11197,6 +12042,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         // v0.13.5：等 nodeEl 就绪（最多 500ms）。canvas reactive 渲染是异步的，
         //   点 fit 按钮时 markdown 可能还在 layout —— 直接测 scrollHeight 会得 0。
         await this._lmbWaitForNodeEl(node, 500);
+        if (this.lmbMarkDualCards) this.lmbMarkDualCards(canvas);
 
         // v0.16.12：测量离屏自然展开副本，避免当前卡片的固定高度、滚动条宽度和
         // overflow 状态污染结果。同一内容/同一外框宽度应得到稳定的同一高度。
@@ -11218,7 +12064,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
               ? Array.from(contentEl.querySelectorAll("img")) : [];
             const tImg = Date.now();
             while (Date.now() - tImg < 2000) {
-              if (!imgs.some((im) => !im.complete)) break;
+              if (!imgs.some((im) => !im.complete && (!im.getClientRects || im.getClientRects().length))) break;
               await new Promise((r) => setTimeout(r, 120));
             }
           } catch (_) {}
@@ -11265,20 +12111,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
             if (!quiet) { try { new Notice("内容未就绪，使用估算高度", 1600); } catch (_) {} }
           } catch (_) {}
         }
-        // v0.14.6：合理性校验 —— 实测值若明显小于估算（< 60%）则采用估算值。
-        //   目的：防止测量异常时把卡片压得**比内容还矮**（内容会被裁剪，比"留白"
-        //   糟糕得多）。估算走 v0.13.3 修过 lmbRenderedText 的 estimateSizeFor。
-        try {
-          const est = this.estimateSizeFor(node.text, { width: node.width, view: opts && opts.view });
-          const estH = Math.round((est && est.h) || 0);
-          if (!(opts && opts.allowViewShrink) && estH > 0 && naturalH > 0 && naturalH < estH * 0.6) {
-            const measuredH = Math.round(naturalH);
-            naturalH = estH;
-            if (!quiet) try {
-              new Notice(`实测 ${measuredH}px 明显小于估算 ${estH}px，已采用估算值（防止内容被裁）`, 3000);
-            } catch (_) {}
-          }
-        } catch (_) {}
+        // A valid natural measurement takes precedence over estimates that may
+        // still include a hidden screenshot or raw Markdown. Verify overflow below.
         const origH = node.height;
         let beforeDomH = null;
         try {
@@ -11491,7 +12325,10 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         if (this.persistAutoSizeSoon) this.persistAutoSizeSoon();
         let store = this.autoSize ? this.autoSize.get(file.path) : null;
         if (!store) { store = new Map(); if (this.autoSize) this.autoSize.set(file.path, store); }
-        store.set(nodeId, { hash: this.simpleHash(node.text), w: node.width, h: finalH, locked: true });
+        store.set(nodeId, { hash: this.simpleHash(node.text), w: node.width, h: finalH,
+          locked: !usedEstimate, pendingActual: usedEstimate || undefined,
+          naturalHeightVersion: usedEstimate ? undefined : 3 });
+        if (usedEstimate && this._scheduleActualFitRetry) this._scheduleActualFitRetry(file);
         // 操作反馈：测量值 + 文件回读 + canvas 内存回读（双保险：哪条通道生效都显示）
         if (!quiet) try {
           const tag = usedEstimate ? "（估算：子元素未就绪）" : "";
@@ -12034,7 +12871,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc("0.25.5 · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.35.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -12086,10 +12923,20 @@ class LMBSettingTab extends PluginSettingTab {
         .onChange(async (v) => { this.plugin.settings.inkPressureMode = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("橡皮命中范围")
-      .setDesc("整笔橡皮与触控笔橡皮端的命中范围。")
+      .setDesc("局部／整笔橡皮的半径（屏幕像素）；可在手写工具栏的更多设置中切换模式。")
       .addSlider((s) => s.setLimits(8, 48, 2).setDynamicTooltip()
         .setValue(Number(this.plugin.settings.inkEraserSize) || 18)
         .onChange(async (v) => { this.plugin.settings.inkEraserSize = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName("橡皮模式")
+      .addDropdown(d => d.addOption("partial", "局部擦除").addOption("stroke", "整笔擦除")
+        .setValue(this.plugin.settings.inkEraserMode || "partial")
+        .onChange(async value => { this.plugin.settings.inkEraserMode = value; await this.plugin.saveSettings(); this.plugin.lmbRenderInkTools(); }));
+    new Setting(containerEl)
+      .setName("擦完自动回到画笔")
+      .setDesc("一次擦除结束后回到之前的画笔；关闭后可以连续擦除。")
+      .addToggle(t => t.setValue(this.plugin.settings.inkEraserAutoReturn !== false)
+        .onChange(async value => { this.plugin.settings.inkEraserAutoReturn = value; await this.plugin.saveSettings(); this.plugin.lmbRenderInkTools(); }));
 
     /* ---- v0.14.8 / v0.15.0：摘录附件与删除清理 ---- */
     containerEl.createEl("h2", { text: "摘录卡片与附件" });
@@ -12112,7 +12959,12 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.autoAttachScreenshot !== false)
         .onChange(async (v) => { this.plugin.settings.autoAttachScreenshot = v; await this.plugin.saveSettings(); }));
 
-    new Setting(containerEl)
+    if (this.plugin.settings.storageLayout === "central") {
+      new Setting(containerEl).setName("MarginBook 工作区")
+        .setDesc(`摘录、Canvas 与附件统一保存至 ${this.plugin.settings.storageRoot || "Lucia's Marginbook"}/课程路径/PDF名称/；PDF 原文保持原位。现有历史摘录保留独立关联，不自动合并。`);
+    }
+
+    if (this.plugin.settings.storageLayout !== "central") new Setting(containerEl)
       .setName("摘录截图保存目录")
       .setDesc("相对于 Vault 根目录；{pdf} 会替换为 PDF 文件名。默认：附件/{pdf}")
       .addText((t) => t
@@ -12233,6 +13085,7 @@ module.exports.__test = {
   lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso, lmbInkIsStylusInput, lmbInkTouchPointEvent,
   lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
   lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
+  lmbInkEraseFragments, lmbInkIsTextInput,
   // v0.8.0：卡片补充描述
   lmbSplitNote, lmbJoinNote, lmbStripNote, lmbRenderedText,
   LMB_NOTE_START, LMB_NOTE_END,

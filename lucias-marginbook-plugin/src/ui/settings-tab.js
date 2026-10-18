@@ -9,7 +9,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc("0.25.5 · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.35.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -61,10 +61,20 @@ class LMBSettingTab extends PluginSettingTab {
         .onChange(async (v) => { this.plugin.settings.inkPressureMode = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("橡皮命中范围")
-      .setDesc("整笔橡皮与触控笔橡皮端的命中范围。")
+      .setDesc("局部／整笔橡皮的半径（屏幕像素）；可在手写工具栏的更多设置中切换模式。")
       .addSlider((s) => s.setLimits(8, 48, 2).setDynamicTooltip()
         .setValue(Number(this.plugin.settings.inkEraserSize) || 18)
         .onChange(async (v) => { this.plugin.settings.inkEraserSize = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName("橡皮模式")
+      .addDropdown(d => d.addOption("partial", "局部擦除").addOption("stroke", "整笔擦除")
+        .setValue(this.plugin.settings.inkEraserMode || "partial")
+        .onChange(async value => { this.plugin.settings.inkEraserMode = value; await this.plugin.saveSettings(); this.plugin.lmbRenderInkTools(); }));
+    new Setting(containerEl)
+      .setName("擦完自动回到画笔")
+      .setDesc("一次擦除结束后回到之前的画笔；关闭后可以连续擦除。")
+      .addToggle(t => t.setValue(this.plugin.settings.inkEraserAutoReturn !== false)
+        .onChange(async value => { this.plugin.settings.inkEraserAutoReturn = value; await this.plugin.saveSettings(); this.plugin.lmbRenderInkTools(); }));
 
     /* ---- v0.14.8 / v0.15.0：摘录附件与删除清理 ---- */
     containerEl.createEl("h2", { text: "摘录卡片与附件" });
@@ -87,7 +97,12 @@ class LMBSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.autoAttachScreenshot !== false)
         .onChange(async (v) => { this.plugin.settings.autoAttachScreenshot = v; await this.plugin.saveSettings(); }));
 
-    new Setting(containerEl)
+    if (this.plugin.settings.storageLayout === "central") {
+      new Setting(containerEl).setName("MarginBook 工作区")
+        .setDesc(`摘录、Canvas 与附件统一保存至 ${this.plugin.settings.storageRoot || "Lucia's Marginbook"}/课程路径/PDF名称/；PDF 原文保持原位。现有历史摘录保留独立关联，不自动合并。`);
+    }
+
+    if (this.plugin.settings.storageLayout !== "central") new Setting(containerEl)
       .setName("摘录截图保存目录")
       .setDesc("相对于 Vault 根目录；{pdf} 会替换为 PDF 文件名。默认：附件/{pdf}")
       .addText((t) => t

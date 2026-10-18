@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>PDF selection isolation regression</title>
+<style>.page{position:relative;width:800px;height:600px;margin:20px;border:1px solid}.textLayer{padding:30px}.lmb-pdf-text-block{margin:40px}pre{white-space:pre-wrap}</style>
+<div class="page" data-page-number="1"><div class="textLayer"><span>First English sentence.</span><span> Second English sentence.</span></div><div class="lmb-pdf-text-block"><div class="lmb-pdf-text-tools">⠿ 编辑 样式 侧栏收起 移除</div><p>My Markdown note.</p></div></div><pre id="results"></pre>
+<script>
+window.module={exports:{}};window.require=()=>({Plugin:class{},PluginSettingTab:class{},Setting:class{},Modal:class{},FuzzySuggestModal:class{},Notice:class{},Platform:{}});
+</script><script src="../main.js"></script><script>
+const p=new module.exports(),page=document.querySelector('.page'),layer=document.querySelector('.textLayer'),first=layer.firstChild.firstChild,last=layer.lastChild.firstChild,toolbar=document.querySelector('.lmb-pdf-text-tools').firstChild,selection=getSelection();
+p.resolvePdfContext=()=>({pageEl:page,pageNum:1,view:{file:{path:'test.pdf',basename:'test'}}});p.detectColorTag=()=>null;
+let passed=0;const check=(condition,label)=>{if(!condition)throw Error(label);passed++;};
+const select=(a,ao,b,bo)=>{selection.setBaseAndExtent(a,ao,b,bo);return p.extractSelection(selection)};
+try {
+ let info=select(first,6,first,13);check(info.text==='English','ordinary selection');check(info.selectionParams==='0,6,0,13','exact span offsets');check(info._range.toString()==='English','screenshot range');
+ info=select(first,13,first,6);check(info.selectionParams==='0,6,0,13','reverse selection');
+ info=select(first,6,toolbar,5);check(info.text==='English sentence. Second English sentence.','cross overlay clips text');check(!info.link.includes('%E7%BC%96'),'no editor text in link');check(info._range.endContainer===layer,'range clipped at text layer');check(info.selectionParams==='0,6,1,25','clipped boundary indexes');
+ check(select(toolbar,0,toolbar,4)===null,'toolbar cannot originate excerpt');check(select(toolbar,0,first,5)===null,'reverse selection from overlay rejected');
+ info=select(last,7,page,0);check(info.text==='First English sentence. Second','selection before layer clipped');
+ check(p.lmbResolveSelectionRects(page,[0,0,0,5],'First English sentence.')===null,'partial matches rejected');
+ check(p.lmbResolveSelectionRects(page,[0,0,0,999],'First')===null,'invalid offsets rejected');
+ const rects=p.lmbResolveSelectionRects(page,[0,6,0,13],'English');check(rects&&rects.length>0,'exact match produces rects');
+ check(info.selectionRect&&info.selectionRect[1]<20,'geometry stays in original text layer');
+ document.querySelector('#results').textContent=`PASS ${passed} native DOM selection/highlight checks`;selection.removeAllRanges();
+} catch(error){document.querySelector('#results').textContent=`FAIL after ${passed}: ${error.stack}`;throw error;}
+</script>

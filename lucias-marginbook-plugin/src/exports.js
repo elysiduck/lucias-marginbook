@@ -12,6 +12,7 @@ module.exports.__test = {
   lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso, lmbInkIsStylusInput, lmbInkTouchPointEvent,
   lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
   lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
+  lmbInkEraseFragments, lmbInkIsTextInput,
   // v0.8.0：卡片补充描述
   lmbSplitNote, lmbJoinNote, lmbStripNote, lmbRenderedText,
   LMB_NOTE_START, LMB_NOTE_END,

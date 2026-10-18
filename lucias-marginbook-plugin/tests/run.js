@@ -10,7 +10,9 @@ const suites = [
   "tests/unit/ink.test.js",
   "tests/integration/behavior.test.js",
   "tests/integration/navigation.test.js",
-  "tests/integration/text-block.test.js"
+  "tests/integration/text-block.test.js",
+  "tests/integration/note-workflow.test.js",
+  "tests/integration/storage.test.js"
 ];
 
 for (const suite of suites) {

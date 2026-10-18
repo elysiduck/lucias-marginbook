@@ -1,0 +1,43 @@
+"use strict";
+const assert=require('node:assert/strict'),Module=require('node:module'),vm=require('node:vm'),fs=require('node:fs');
+class TFile{constructor(path){this.path=path;this.name=path.split('/').pop();this.basename=this.name.replace(/\.[^.]+$/,'');this.extension=this.name.split('.').pop();this.parent={path:path.includes('/')?path.slice(0,path.lastIndexOf('/')):'/'};}}
+const original=Module._load;Module._load=function(name,...rest){if(name==='obsidian')return{Plugin:class{},TFile,Notice:class{},PluginSettingTab:class{},Setting:class{},Modal:class{},FuzzySuggestModal:class{},normalizePath:p=>p.replace(/\\/g,'/'),setIcon:()=>{}};return original.call(this,name,...rest)};
+const P=require('../../main.js');Module._load=original;
+async function main(){
+ const p=new P();p.settings={storageLayout:'central',storageRoot:'MarginBook',pdfSourceRoot:'Books/pdf书籍'};
+ const a=new TFile('Books/pdf书籍/USC/508/作业2.pdf'),b=new TFile('Books/pdf书籍/USC/570/作业2.pdf');
+ assert.equal(p.lmbStoragePaths(a).md,'MarginBook/USC/508/作业2/作业2-摘录.md');assert.notEqual(p.lmbStoragePaths(a).folder,p.lmbStoragePaths(b).folder);
+ assert.equal(p.lmbStoragePaths('Other/file.pdf').attachments,'MarginBook/Other/file/附件');assert.equal(p.lmbStoragePaths('root.pdf').canvas,'MarginBook/root/root.canvas');
+ p.settings.storageRoot='../bad';assert.throws(()=>p.lmbStoragePaths(a));p.settings.storageRoot='MarginBook';
+ const paths=p.lmbStoragePaths(a);p.settings.storageBindings={[a.path]:{canvasDocuments:{'MarginBook/综合画布/English.canvas':paths.folder+'/历史摘录/旧摘录.md'}}};
+ assert.equal(p.lmbStoragePaths(a,'MarginBook/综合画布/English.canvas').md,paths.folder+'/历史摘录/旧摘录.md');
+ const files=new Map(),raws=new Map(),opened=[];files.set(a.path,a);
+ p.app={vault:{getAbstractFileByPath:path=>files.get(path),createFolder:async path=>{files.set(path,{path})},create:async(path,raw)=>{assert(files.has(path.slice(0,path.lastIndexOf('/'))));const file=new TFile(path);files.set(path,file);raws.set(path,raw);return file},read:async f=>raws.get(f.path),process:async(f,fn)=>raws.set(f.path,fn(raws.get(f.path)))},workspace:{getLeavesOfType:()=>[],getLeaf:()=>({openFile:async f=>opened.push(f.path)})}};
+ p.lmbIndexCanvasFile=async()=>{};p.reindexFile=async()=>{};p.findRelatedNotes=async()=>{};
+ const md=await p.lmbEnsureExcerptMdFile(a);const canvas=await p.lmbOpenOrCreatePdfCanvas(a);assert.equal(md.path,paths.md);assert.equal(canvas.path,paths.canvas);assert(raws.get(md.path).includes(paths.canvas));
+ const count=files.size;assert.equal(await p.lmbEnsureExcerptMdFile(a),md);assert.equal(await p.lmbOpenOrCreatePdfCanvas(a),canvas);assert.equal(files.size,count);
+ assert(!files.has('Books/pdf书籍/USC/508/作业2-摘录.md'));assert(!files.has('Books/pdf书籍/USC/508/作业2.canvas'));assert.equal(p._lmbExcerptImageFolder(a),paths.attachments);
+ const historic=p.lmbStoragePaths(a,'MarginBook/综合画布/English.canvas').md;await p.lmbEnsureStorageParent(historic);const historicFile=await p.app.vault.create(historic,'<!-- LMB:BEGIN -->\n<!-- LMB:END -->\n> [!lmb-note]\n> <!-- LMB-NOTE:BEGIN -->\n> 历史备注\n> <!-- LMB-NOTE:END -->\n> ^ex-sample01\n');
+ const canonicalBefore=raws.get(md.path);await p.writeExcerptMd(new TFile('MarginBook/综合画布/English.canvas'),a.path,[{id:'ex-sample01',body:'> source',page:1}],new Map());
+ assert(raws.get(historicFile.path).includes('历史备注'));assert.equal(raws.get(md.path),canonicalBefore);
+ const normalEntry={exId:'ex-sample01',pdfPath:a.path,sourceMd:md.path},archivedEntry={...normalEntry,sourceMd:historic};
+ p.excerptIndex=new Map([[a.path,[archivedEntry,normalEntry]]]);
+ assert.equal(p._lmbCanonicalEntryForExcerpt('ex-sample01'),normalEntry);
+ assert.equal(p._lmbCanonicalEntryForExcerpt('ex-sample01','MarginBook/综合画布/English.canvas'),archivedEntry);
+ p.excerptCanvasIndex=new Map([['ex-sample01',{canvasPath:'MarginBook/综合画布/English.canvas',nodeId:'node01'}]]);
+ p._lmbReadCanvasData=async()=>{throw new Error('Unrelated historical Canvas must never be written by primary Markdown');};
+ await p.lmbMirrorMdNotesToCanvas(md,'',[normalEntry]);
+ const personalEntry={exId:'ex-personal01',pdfPath:a.path,sourceMd:'Documents/个人笔记.md'};
+ p.excerptIndex=new Map([[a.path,[personalEntry]]]);
+ assert.equal(p._lmbCanonicalEntryForExcerpt('ex-personal01','Documents/个人画布.canvas'),personalEntry);
+ p.settings.storageLayout='legacy';assert.equal(p.lmbStoragePaths(a).md,'Books/pdf书籍/USC/508/作业2-摘录.md');
+ const ctx=vm.createContext({});vm.runInContext(fs.readFileSync('src/core/settings-store.js','utf8')+';globalThis.Store=LmbSettingsStore;',ctx);
+ const old=await new ctx.Store({loadData:async()=>({debug:false})}).load();assert.equal(old.settings.storageLayout,'legacy');
+ const fresh=await new ctx.Store({loadData:async()=>null}).load();assert.equal(fresh.settings.storageLayout,'central');
+ assert.equal(fresh.settings.storageRoot,"Lucia's Marginbook");
+ const renamed=new P();renamed.settings={...fresh.settings};assert.equal(renamed.lmbStoragePaths(a).md,"Lucia's Marginbook/USC/508/作业2/作业2-摘录.md");
+ const existing=await new ctx.Store({loadData:async()=>({storageLayout:'central',storageRoot:'MarginBook'})}).load();assert.equal(existing.settings.storageRoot,'MarginBook','existing explicit roots require a backed-up migration');
+ const store=new ctx.Store({_lmbSerializedRuntimeCaches:{}});p.settings.storageLayout='central';const serialized=store.serialize(p.settings,{});assert.equal(serialized.storageLayout,'central');assert.equal(serialized.storageBindings[a.path].canvasDocuments['MarginBook/综合画布/English.canvas'],historic);
+ console.log('Central MarginBook storage: path isolation, creation/reuse, historical Canvas sync, note retention and settings roundtrip passed');
+}
+main().catch(e=>{console.error(e);process.exitCode=1});

@@ -12,6 +12,10 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   excerptCardWidth: 560,
   autoAttachScreenshot: true,
   excerptImageFolder: "附件/{pdf}",
+  storageLayout: "central",
+  storageRoot: "Lucia's Marginbook",
+  pdfSourceRoot: "Books/pdf书籍",
+  storageBindings: {},
   imageExcerptMarkStyle: "dashed",
   autoCleanOnDelete: true,
   moveDescendantsWithParent: false,
@@ -34,6 +38,8 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   inkHighlighterColor: "#ffd84d",
   inkHighlighterWidth: 12,
   inkEraserSize: 18,
+  inkEraserMode: "partial",
+  inkEraserAutoReturn: true,
   inkToolbarCollapsed: false,
   inkAnnotations: {}
 });
@@ -44,7 +50,10 @@ class LmbSettingsStore {
   }
 
   async load() {
-    const settings = Object.assign({}, LMB_DEFAULT_SETTINGS, await this.plugin.loadData());
+    const saved = await this.plugin.loadData();
+    const settings = Object.assign({}, LMB_DEFAULT_SETTINGS, saved);
+    // Existing vaults retain their paths until an explicit, backed-up migration.
+    if (saved && Object.keys(saved).length && !saved.storageLayout) settings.storageLayout = "legacy";
     let migrated = false;
     if (!settings.notePlaceholderOffMigrated) {
       settings.noteAutoBoxOnNew = false;
@@ -79,6 +88,10 @@ class LmbSettingsStore {
       excerptCardWidth: Math.max(320, Math.min(800, Number(settings.excerptCardWidth) || 560)),
       autoAttachScreenshot: settings.autoAttachScreenshot !== false,
       excerptImageFolder: String(settings.excerptImageFolder || "附件/{pdf}"),
+      storageLayout: settings.storageLayout === "central" ? "central" : "legacy",
+      storageRoot: String(settings.storageRoot || "Lucia's Marginbook"),
+      pdfSourceRoot: String(settings.pdfSourceRoot || "Books/pdf书籍"),
+      storageBindings: settings.storageBindings || {},
       imageExcerptMarkStyle: settings.imageExcerptMarkStyle === "highlight" ? "highlight" : "dashed",
       autoCleanOnDelete: settings.autoCleanOnDelete === true,
       moveDescendantsWithParent: settings.moveDescendantsWithParent === true,
@@ -101,6 +114,8 @@ class LmbSettingsStore {
       inkHighlighterColor: String(settings.inkHighlighterColor || "#ffd84d"),
       inkHighlighterWidth: Math.max(4, Math.min(30, Number(settings.inkHighlighterWidth) || 12)),
       inkEraserSize: Math.max(8, Math.min(48, Number(settings.inkEraserSize) || 18)),
+      inkEraserMode: settings.inkEraserMode === "stroke" ? "stroke" : "partial",
+      inkEraserAutoReturn: settings.inkEraserAutoReturn !== false,
       inkToolbarCollapsed: !!settings.inkToolbarCollapsed,
       inkAnnotations: this.plugin._lmbInkSidecarReady ? {} :
         (this.plugin._lmbInkDocs && typeof this.plugin._lmbInkDocs === "object" ? this.plugin._lmbInkDocs :

@@ -52,7 +52,10 @@ async function main() {
   assert.notEqual(pure.lmbInkFileKey("books/a.pdf"), pure.lmbInkFileKey("books/b.pdf"));
   assert.equal(pure.lmbInkIsStylusInput({ pointerType: "pen" }), true);
   assert.equal(pure.lmbInkIsStylusInput({ pointerType: "touch", touchType: "stylus" }), true);
-  assert.equal(pure.lmbInkIsStylusInput({ touchType: "direct", altitudeAngle: .8 }), true);
+  assert.equal(pure.lmbInkIsStylusInput({ altitudeAngle: .8 }), true);
+  assert.equal(pure.lmbInkIsStylusInput({ touchType: "direct", altitudeAngle: .8 }), false);
+  assert.equal(pure.lmbInkIsStylusInput({ pointerType: "touch", altitudeAngle: Math.PI / 2, tiltX: 0, tiltY: 0 }), false, "default browser altitude is not evidence of a Pencil");
+  assert.equal(pure.lmbInkIsStylusInput({ pointerType: "mouse", altitudeAngle: Math.PI / 2 }), false);
   assert.equal(pure.lmbInkIsStylusInput({ pointerType: "touch", touchType: "direct", altitudeAngle: 0 }), false);
 
   const historyCtx = Object.create(proto);
@@ -118,7 +121,7 @@ async function main() {
   const flowCtx = Object.create(proto);
   Object.assign(flowCtx, {
     inkMode: true, inkTool: "pen", inkColor: "#e05252", inkWidth: 3,
-    settings: { inkInputMode: "pen-only", inkPressureMode: "natural", inkEraserSize: 18, inkAnnotations: {} },
+    settings: { inkInputMode: "pen-only", inkPressureMode: "natural", inkEraserSize: 18, inkEraserMode: "stroke", inkEraserAutoReturn: false, inkAnnotations: {} },
     _lmbInkDocs: {}, lmbMarkInkDirty: () => {}, lmbRenderInkTools: () => {}, lmbUpdateInkSaveStatus: () => {},
     lmbActiveInkCanvas: () => canvas
   });
@@ -126,7 +129,7 @@ async function main() {
   let touchPrevented = false;
   const touchEvent = (name, x, y) => ({ pointerType: "touch", pointerId: 1, button: 0, clientX: x, clientY: y, preventDefault: () => { touchPrevented = true; }, stopPropagation: () => {} });
   listeners.get("pointerdown")(touchEvent("down", 100, 100));
-  assert.equal(touchPrevented, false, "finger down must remain available for a later pinch gesture");
+  assert.equal(touchPrevented, true, "custom pan/pinch must own touch input instead of also triggering PDF selection");
   listeners.get("pointermove")(touchEvent("move", 120, 140));
   assert.equal(touchPrevented, true, "one-finger movement must be handled as PDF panning while ink capture is active");
   assert.equal(pdfScroller.scrollLeft, 0); assert.equal(pdfScroller.scrollTop, 60);
@@ -171,6 +174,64 @@ async function main() {
   listeners.get("touchend")(iosTouch("end", 280, 390, 0));
   assert.equal(stylusTouchPrevented, true, "the iOS stylus touch path must cancel WKWebView scrolling synchronously");
   assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").length, 3, "Touch.touchType=stylus must feed the handwriting pipeline");
+
+  // Sparse strokes and fast eraser sweeps must be clipped geometrically, not
+  // just by deleting sampled vertices. Preserve pressure and reversible IDs.
+  const sparse = { id: "sparse", type: "pen", width: .002, widthUnit: "page", color: "#123456", points: [{ x: .1, y: .5, p: .2, t: 0 }, { x: .9, y: .5, p: .8, t: 100 }] };
+  const parts = pure.lmbInkEraseFragments(sparse, { x: .5, y: .2 }, { x: .5, y: .8 }, 10, 1000, 1400);
+  assert.equal(parts.length, 2, "a fast sweep splits a sparsely sampled stroke");
+  assert(parts[0].at(-1).x < .5 && parts[1][0].x > .5);
+  assert(parts[0].at(-1).p > .2 && parts[0].at(-1).p < .8, "cut points interpolate pressure");
+  assert.equal(pure.lmbInkEraseFragments(sparse, { x: .5, y: .6 }, { x: .5, y: .6 }, 10, 1000, 1400), null, "page aspect ratio must not stretch eraser hit geometry");
+  assert.deepEqual(pure.lmbInkEraseFragments({ type: "pen", points: [{ x: .5, y: .5 }] }, { x: .5, y: .5 }, { x: .5, y: .5 }, 10, 1000, 1400), []);
+  const polyline = { ...sparse, points: [{ x: .1, y: .5 }, { x: .4, y: .5 }, { x: .5, y: .5 }, { x: .6, y: .5 }, { x: .9, y: .5 }] };
+  assert.equal(pure.lmbInkEraseFragments(polyline, { x: .5, y: .5 }, { x: .5, y: .5 }, 10, 1000, 1400).length, 2, "adjacent clipped segments join only across unerased endpoints");
+  assert.equal(pure.lmbInkEraseFragments({ ...sparse, type: "line", x1: .1, y1: .5, x2: .9, y2: .5 }, { x: .5, y: .5 }, { x: .5, y: .5 }, 10, 1000, 1400).length, 2);
+  assert(pure.lmbInkEraseFragments({ type: "rect", x1: .2, y1: .2, x2: .8, y2: .8 }, { x: .5, y: .2 }, { x: .5, y: .2 }, 10, 1000, 1400).length >= 2);
+  assert.equal(pure.lmbInkIsTextInput({ tagName: "TEXTAREA" }), true);
+  assert.equal(pure.lmbInkIsTextInput({ isContentEditable: true }), true);
+
+  flowCtx.lmbReplaceInkObjects("flow.pdf", "1", [sparse]);
+  flowCtx.inkTool = "eraser"; flowCtx.settings.inkEraserMode = "partial";
+  listeners.get("pointerdown")(event(500, 700, .5)); listeners.get("pointerup")(event(500, 700, .5));
+  const fragmented = flowCtx.lmbInkObjects("flow.pdf", "1");
+  assert.equal(fragmented.length, 2); assert.equal(new Set(fragmented.map(o => o.id)).size, 2);
+  assert.equal(fragmented[0].color, sparse.color);
+  assert.equal(flowCtx.lmbUndoInk(), true); assert.deepEqual(flowCtx.lmbInkObjects("flow.pdf", "1"), [sparse]);
+  assert.equal(flowCtx.lmbRedoInk(), true); assert.deepEqual(flowCtx.lmbInkObjects("flow.pdf", "1"), fragmented);
+  listeners.get("pointerdown")(event(200, 700, .5)); listeners.get("pointercancel")(event(200, 700, .5));
+  assert.deepEqual(flowCtx.lmbInkObjects("flow.pdf", "1"), fragmented, "cancelled erasing rolls back its fragments");
+  const returns = []; flowCtx.lmbSetInkTool = tool => { returns.push(tool); flowCtx.inkTool = tool; };
+  flowCtx.settings.inkEraserAutoReturn = true; flowCtx._lmbInkLastDrawTool = "highlighter";
+  listeners.get("pointerdown")(event(100, 700, .5)); listeners.get("pointerup")(event(100, 700, .5));
+  assert.deepEqual(returns, ["highlighter"], "normal eraser completion restores the previous drawing tool");
+  flowCtx.inkTool = "pen";
+  listeners.get("pointerdown")(event(900, 900, .5, { button: 5, buttons: 32 })); listeners.get("pointerup")(event(900, 900, .5));
+  assert.equal(flowCtx.inkTool, "pen", "hardware eraser never replaces the selected pen");
+
+  // A palm which lands first cannot resume scrolling after the pen lifts.
+  flowCtx.inkTool = "pen"; pdfScroller.scrollTop = 100;
+  const finger = (id, x, y) => ({ ...touchEvent("", x, y), pointerId: id });
+  listeners.get("pointerdown")(finger(81, 200, 200));
+  listeners.get("pointerdown")(event(200, 300, .5));
+  listeners.get("pointermove")(finger(81, 200, 500));
+  listeners.get("pointerup")(event(240, 350, .5));
+  listeners.get("pointermove")(finger(81, 200, 700));
+  assert.equal(pdfScroller.scrollTop, 100, "palm-first contacts remain quarantined until lifted");
+  listeners.get("pointerup")(finger(81, 200, 700));
+  // Pinch uses the host PDF scale, never CSS-transforms only the ink layer.
+  pageEl.closest = selector => selector === ".pdf-viewer-container" ? pdfScroller : null;
+  pdfScroller.getBoundingClientRect = () => ({ left: 0, top: 0 });
+  const zoom = { currentScale: 1 }; flowCtx.lmbInkZoomViewer = () => zoom;
+  pdfScroller._lmbInkNavigation.penUntil = 0;
+  listeners.get("pointerdown")(finger(82, 100, 100)); listeners.get("pointerdown")(finger(83, 300, 100));
+  listeners.get("pointermove")(finger(83, 400, 100));
+  assert.equal(zoom.currentScale, 1.5);
+  listeners.get("pointerup")(finger(82, 100, 100)); listeners.get("pointerup")(finger(83, 400, 100));
+  const countBeforeRecycle = flowCtx.lmbInkObjects("flow.pdf", "1").length;
+  listeners.get("pointerdown")(event(200, 200, .5)); listeners.get("pointermove")(event(220, 230, .6)); pageEl._lmbFinishInk();
+  assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").length, countBeforeRecycle + 1, "page recycling preserves sampled ink before changing identity");
+  assert.equal(live._lmbInkPendingActive, null, "queued frame cannot resurrect a finished stroke");
 
   const reverseRect = { id: "reverse", type: "rect", x1: .8, y1: .8, x2: .2, y2: .2, width: .003, widthUnit: "page" };
   flowCtx._lmbInkSelection = [];

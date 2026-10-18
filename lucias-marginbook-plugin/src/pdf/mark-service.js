@@ -46,22 +46,20 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const locate = (idx, off) => {
         const div = divs[idx];
         if (!div) return null;
-        const w = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+        const w = pageEl.ownerDocument.createTreeWalker(div, 4);
         let acc = 0, n;
         while ((n = w.nextNode())) {
           const len = n.textContent ? n.textContent.length : 0;
           if (acc + len >= off) return { node: n, offset: off - acc };
           acc += len;
         }
-        // 偏移超出该 span 长度 → 退到 span 末尾（不返回 null，尽量画出来）
-        const last = div.lastChild && div.lastChild.nodeType === 3 ? div.lastChild : div;
-        return { node: last, offset: (last.textContent || "").length };
+        return null; // Invalid offsets must use text lookup, never clamp to another location.
       };
 
       const s = locate(selection[0], selection[1]);
       const e = locate(selection[2], selection[3]);
       if (!s || !e) return null;
-      const r = document.createRange();
+      const r = pageEl.ownerDocument.createRange();
       r.setStart(s.node, s.offset);
       r.setEnd(e.node, e.offset);
       // textLayer 的子元素序号会随 PDF.js 版本、字体解析或文档重载发生漂移。
@@ -69,8 +67,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // 有 target 时必须核对内容，错误坐标交给文字搜索兜底，不能将错就错。
       const expected = this._lmbNormalizePdfMatchText(expectedText);
       const actual = this._lmbNormalizePdfMatchText(r.toString());
-      if (expected && actual && actual !== expected
-        && !actual.includes(expected) && !expected.includes(actual)) return null;
+      if (expected && actual !== expected
+        && !(expected.length >= 160 && actual.startsWith(expected))) return null;
       const rects = Array.from(r.getClientRects()).filter((x) => x.width > 0.5 && x.height > 0.5);
       if (rects.length && expectedRect && expectedRect.length === 4) {
         const pr = pageEl.getBoundingClientRect();
@@ -97,11 +95,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /** 在 textLayer 中查找文字，并保留归一化字符到真实文本节点偏移的映射。 */
   _lmbFindPdfTextMatch(layer, text, hintRect, pageEl) {
     try {
-      const needle = this._lmbNormalizePdfMatchText(text);
+      let needle = this._lmbNormalizePdfMatchText(text);
       if (!layer || !needle) return null;
       const doc = layer.ownerDocument;
       let haystack = "";
-      const positions = [];
+      let positions = [];
       const appendSpace = (node, offset) => {
         if (haystack && haystack.charAt(haystack.length - 1) !== " ") {
           haystack += " "; positions.push({ node, offset });
@@ -122,7 +120,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         }
       }
       let index = haystack.indexOf(needle);
-      if (index < 0) return null;
+      if (index < 0) {
+        // Some PDF.js versions split words into individual text-layer spans.
+        // The separator above must not turn “models” into “m o d e l s”.
+        let compact = ""; const mapped = [];
+        for (let i = 0; i < haystack.length; i++) {
+          if (!/\s/.test(haystack[i])) { compact += haystack[i]; mapped.push(positions[i]); }
+        }
+        haystack = compact; positions = mapped; needle = needle.replace(/\s/g, "");
+        index = haystack.indexOf(needle);
+        if (index < 0) return null;
+      }
       let best = null, bestDistance = Infinity;
       while (index >= 0) {
         const start = positions[index], last = positions[index + needle.length - 1];
@@ -350,6 +358,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         pageEl._lmbMarkSignature = signature;
       }
       // v0.12.0：Observer 已在函数开头挂过（幂等），这里不再重复
+      for (const leaf of this.app.workspace.getLeavesOfType("pdf") || []) {
+        if (leaf._lmbSelectedExcerpt && leaf.view === view) this.lmbSyncPdfNoteSelection(leaf);
+      }
     } catch (err) {
       console.warn("[lmb] lmbDrawMarksForView error:", err);
     }

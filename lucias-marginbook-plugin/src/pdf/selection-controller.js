@@ -256,6 +256,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /* ==================== mouseup：出示手柄 ==================== */
 
   onDocMouseUp(e) {
+    const eventEl = e.target && (e.target.nodeType === 1 ? e.target : e.target.parentElement);
+    if (eventEl && eventEl.closest && eventEl.closest(".lmb-pdf-text-block")) return;
     const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
 
     // ① 文字选区（v0.3.1：经 lmbShouldReshowSelection 把关，杜绝拖放后旧选区反复重建 chip）
@@ -288,7 +290,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
            *        dragstart 通常晚于 mousedown 几十~几百毫秒，截图基本已就绪；
            *        万一没赶上 → info.img 为 undefined，自动降级为纯文字摘录（成熟降级路径）。
            *   降级是安全的：与「关掉自动附截图」走同一条分支，不会报错也不会写坏卡。 */
-          try { info._range = sel.getRangeAt(0).cloneRange(); } catch (_) { info._range = null; }
+          // extractSelection owns the sanitized PDF-only range.
           this.showChip(e.clientX, e.clientY, "📑 " + info.text.length + " 字 · 按住拖到 md 或画布", info);
           return;
         }
@@ -336,8 +338,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!info) return false;
       const sig = info.text + "@" + info.pageNum;
       if (this.chipEl && this._chipSig === sig) return true;
-      const range = sel.getRangeAt(0);
-      try { info._range = range.cloneRange(); } catch (_) { info._range = null; }
+      const range = info._range;
       const rect = range.getBoundingClientRect();
       const px = Number.isFinite(x) && x > 0 ? x : rect.left + Math.min(rect.width, 48);
       const py = Number.isFinite(y) && y > 0 ? y : rect.bottom;
@@ -443,6 +444,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   /* ==================== 图片：裁剪页面画布 → webp 附件 ==================== */
 
   _lmbExcerptImageFolder(pdfFile) {
+    if (this.settings && this.settings.storageLayout === "central") return this.lmbStoragePaths(pdfFile).attachments;
     const safe = (value) => String(value || "").replace(/[\\:*?"<>|]/g, "-").replace(/[. ]+$/g, "").trim();
     const pdfName = safe(pdfFile && pdfFile.basename) || "未命名PDF";
     const template = String((this.settings && this.settings.excerptImageFolder) || "附件/{pdf}")
@@ -535,6 +537,23 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
 
   /* ==================== 文字选区 ==================== */
 
+  lmbPdfSelectionRange(sel, pageEl) {
+    const layer = pageEl.querySelector(".textLayer");
+    if (!layer || !sel || sel.rangeCount !== 1) return null;
+    const anchor = sel.anchorNode;
+    const el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+    // A page is also home to our editor, toolbar and marks. Only PDF text may
+    // originate an excerpt; never trust the page ancestor alone.
+    if (!el || !layer.contains(el) || el.closest(".lmb-pdf-text-block")) return null;
+    const bounds = pageEl.ownerDocument.createRange(); bounds.selectNodeContents(layer);
+    const range = sel.getRangeAt(0).cloneRange();
+    if (bounds.comparePoint(range.startContainer, range.startOffset) > 0
+      || bounds.comparePoint(range.endContainer, range.endOffset) < 0) return null;
+    if (bounds.comparePoint(range.startContainer, range.startOffset) < 0) range.setStart(bounds.startContainer, bounds.startOffset);
+    if (bounds.comparePoint(range.endContainer, range.endOffset) > 0) range.setEnd(bounds.endContainer, bounds.endOffset);
+    return range.collapsed ? null : range;
+  },
+
   resolvePdfContext(el) {
     const pageEl = el && el.closest && el.closest(".page[data-page-number]");
     if (!pageEl) return null;
@@ -564,7 +583,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       if (!ctx || ctx.pageEl !== pageEl) return null;
       const file = ctx.view.file;
       const pageNum = ctx.pageNum;
-      const text = sel.toString().replace(/\s+/g, " ").trim();
+      const pdfRange = this.lmbPdfSelectionRange(sel, pageEl);
+      if (!pdfRange) return null;
+      const text = pdfRange.toString().replace(/\s+/g, " ").trim();
       if (!text) return null;
       const display = "【" + file.basename + "-P." + pageNum + "】";
 
@@ -572,7 +593,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       // 自动附图也复用它，避免延迟截图把整页裁进去。
       let selectionRect = null;
       try {
-        const range = sel.getRangeAt(0), pr = pageEl.getBoundingClientRect();
+        const range = pdfRange, pr = pageEl.getBoundingClientRect();
         const rects = Array.from(range.getClientRects()).filter((r) => {
           if (!r || r.width < .5 || r.height < .5) return false;
           if (r.right <= pr.left || r.left >= pr.right || r.bottom <= pr.top || r.top >= pr.bottom) return false;
@@ -600,7 +621,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       let selectionParams = null; // Bugfix: 必须随 info 返回，contentExId 才能区分「同页同文本不同位置」的选区
       const targetText = text;
       try {
-        const params = this.buildSelectionParams(sel, pageEl);
+        const params = this.buildSelectionParams({ anchorNode: pdfRange.startContainer, anchorOffset: pdfRange.startOffset,
+          focusNode: pdfRange.endContainer, focusOffset: pdfRange.endOffset }, pageEl);
         if (!params) throw new Error("no selection params");
         selectionParams = params;
         link = "[[" + file.path + "#page=" + pageNum + "&selection=" + params
@@ -623,7 +645,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         colorTag,
         selectionParams,
         selectionRect,
-        targetText
+        targetText,
+        _range: pdfRange
       };
     } catch (err) {
       console.warn("[lmb] extractSelection error:", err);
@@ -640,6 +663,11 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!divs.length) return null;
 
     const toIdxOff = (node, offset) => {
+      if (node === layer) {
+        const atEnd = offset >= divs.length;
+        const idx = atEnd ? divs.length - 1 : Math.max(0, offset);
+        return { idx, off: atEnd ? (divs[idx].textContent || "").length : 0 };
+      }
       const el = node.nodeType === 1 ? node : node.parentElement;
       if (!el || !layer.contains(el)) return null;
       let div = el;

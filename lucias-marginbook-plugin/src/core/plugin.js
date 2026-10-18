@@ -196,8 +196,10 @@ class LuciasMarginBookPlugin extends Plugin {
       this.lmbSchedulePdfSidebarRefresh(120);
       this.lmbScheduleInkRefresh(120);
       this.lmbRenderActivePdfSidebar().catch(() => {});
+      this.lmbScheduleVisibleCanvasFits();
     }));
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
+      if (f && f.extension === "canvas") this._scheduleActualFitRetry(f);
       if (f && f.extension === "pdf") {
         this.lmbScheduleToolbarButtons();
         this.lmbSchedulePdfSidebarRefresh(180);
@@ -301,6 +303,7 @@ class LuciasMarginBookPlugin extends Plugin {
       this.lmbSchedulePdfSidebarRefresh(250);
       // v0.13.0：启动 canvas 卡片悬浮栏轮询（每 120ms 比对选中集合与视口状态）
       if (typeof this.lmbStartCanvasBarWatch === "function") this.lmbStartCanvasBarWatch();
+      this.lmbScheduleVisibleCanvasFits();
     });
 
     /* ---- P2：回绘标记的触发时机 ----
@@ -378,6 +381,10 @@ class LuciasMarginBookPlugin extends Plugin {
           const file = this.app.workspace.getActiveFile();
           if (!file || file.extension !== "pdf") return false; // 非活动 PDF 时置灰
           if (checking) return true;
+          if (this.settings.storageLayout === "central") {
+            this.lmbOpenOrCreateExcerptMd(file).catch(err => new Notice("无法打开摘录文档：" + err.message));
+            return true;
+          }
           // v0.9.1：同名摘录 md 可能撞名（命名按 basename，跨目录会重）。
           //   优先取与 PDF 同目录的；仍有多个 → 弹选择器让用户挑，不再静默取第一个。
           const all = this.app.vault.getMarkdownFiles()
@@ -824,7 +831,7 @@ class LuciasMarginBookPlugin extends Plugin {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-md";
         btn.setAttribute("aria-label",
-          "MarginBook: 打开 / 创建该 PDF 的摘录文档（<PDF名>-摘录.md，与 PDF 同目录）");
+          "MarginBook: 打开 / 创建该 PDF 的摘录文档（使用 MarginBook 存储规则）");
         try { setIcon(btn, "file-text"); }
         catch (_) { btn.setText("📄"); }
         btn.addEventListener("click", (e) => {
@@ -852,7 +859,7 @@ class LuciasMarginBookPlugin extends Plugin {
         const btn = document.createElement("div");
         btn.className = "clickable-icon lmb-toolbar-canvas";
         btn.setAttribute("aria-label",
-          "MarginBook: 打开 / 创建该 PDF 的专属画布（<PDF名>.canvas，与 PDF 同目录）");
+          "MarginBook: 打开 / 创建该 PDF 的专属画布（使用 MarginBook 存储规则）");
         try { setIcon(btn, "layout-dashboard"); }
         catch (_) { btn.setText("▦"); }
         btn.addEventListener("click", (e) => {
@@ -1028,10 +1035,18 @@ class LuciasMarginBookPlugin extends Plugin {
 
   /* ==================== 设置 ==================== */
 
-  async saveSettings() {
-    this._lmbPrunePersistedCaches();
-    const obj = this.settingsStore.serialize(this.settings, this.runtimeState);
-    await this.saveData(obj);
+  saveSettings() {
+    // One writer for data.json: overlapping editor/preferences saves must not
+    // finish out of order. Snapshot when this job starts, after prior failures
+    // have reached their callers and rolled back the affected note.
+    const previous = this._lmbSettingsWriteQueue || Promise.resolve();
+    const pending = previous.catch(() => {}).then(() => {
+      this._lmbPrunePersistedCaches();
+      const obj = this.settingsStore.serialize(this.settings, this.runtimeState);
+      return this.saveData(obj);
+    });
+    this._lmbSettingsWriteQueue = pending.catch(() => {});
+    return pending;
   }
 
   /** 清除已删除画布和附件留下的持久化缓存，避免 data.json 无限制增长。 */
@@ -1073,7 +1088,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.28.0";
+    st.dataset.lmbVersion = "0.35.0";
   }
 
 }

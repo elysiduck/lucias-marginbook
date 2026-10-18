@@ -18,6 +18,13 @@ const LmbCanvasAdapter = Object.freeze({
 });
 
 const LmbPdfAdapter = Object.freeze({
+  zoomViewer(view) {
+    try {
+      const child = view && view.viewer && view.viewer.child;
+      const viewer = child && child.pdfViewer;
+      return viewer && Number(viewer.currentScale) > 0 ? viewer : null;
+    } catch (_) { return null; }
+  },
   viewer(view) {
     try { return view && view.containerEl && (view.containerEl.querySelector(".pdfViewer") || view.containerEl); }
     catch (_) { return null; }
