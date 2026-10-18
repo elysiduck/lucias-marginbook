@@ -1,0 +1,39 @@
+{
+  "version": "0.41.0",
+  "date": "2026-10-18",
+  "nodeSuites": 10,
+  "browserChecks": {
+    "inkLinks": 70,
+    "markdownFlow": 105,
+    "sidebar": 74,
+    "layout": 54,
+    "ink": 32,
+    "controls": 84,
+    "selection": 21,
+    "thumbnailMenu": 12,
+    "total": 452,
+    "pageErrors": 0
+  },
+  "nativeObsidian": {
+    "version": "1.14.4",
+    "platform": "Windows",
+    "isolatedFixtureOnly": true,
+    "beforeSecondPage": "3 pages -> 4; original page 2 and excerpt move to page 3",
+    "afterLastPage": "4 pages -> 5; new page 5 blank",
+    "reloadedApp": "5 pages retained; original excerpt and comment visible on P.3",
+    "canvasGeometryAndEdges": "unchanged; source link moves to page 3",
+    "existingFilesAudited": 57,
+    "existingNotesCanvasAndInk": "byte-identical",
+    "existingSettings": "unchanged; only empty text-block map added for isolated fixture",
+    "backup": "verified; committed journal; previous 4-page PDF recoverable"
+  },
+  "failureInjection": [
+    "sidecar write failure restores all original files and memory",
+    "interrupted journal restores PDF before settings load",
+    "rollback write failure locks further insertion until recovery",
+    "stale menu does not edit changed PDF",
+    "host refresh failure retains committed data and rebuilds index",
+    "host refresh failure after rollback does not invalidate successful disk restoration"
+  ],
+  "remainingValidation": "Touch and pen events tested in browser; physical tablet/mobile hardware not tested."
+}

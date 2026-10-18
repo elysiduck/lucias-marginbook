@@ -5,6 +5,8 @@
 // never inferred from filenames or directory enumeration.
 module.exports = Object.freeze([
   "src/bootstrap.js",
+  "src/vendor/pdf-lib.js",
+  "src/pdf/pure-page-edit.js",
   "src/shared/foundation.js",
   "src/compat/obsidian-adapters.js",
   "src/note/pure-note.js",
@@ -20,6 +22,7 @@ module.exports = Object.freeze([
   "src/core/runtime-state.js",
   "src/core/settings-store.js",
   "src/core/plugin.js",
+  "src/pdf/page-edit-controller.js",
   "src/pdf/ink-controller.js",
   "src/pdf/ink-links-controller.js",
   "src/pdf/selection-controller.js",

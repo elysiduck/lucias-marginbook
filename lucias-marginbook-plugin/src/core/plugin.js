@@ -34,6 +34,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // 补丁 B：相关笔记缓存 + 颜色归一化上下文（须在 settings 与 canvas 监听之前就绪）
     this._colorCtx = null;           // 颜色归一化用的离屏 canvas 2d context（惰性创建）
     this.settingsStore = new LmbSettingsStore(this);
+    await this.lmbRecoverPdfPageEdit();
     const loadedSettings = await this.settingsStore.load();
     this.settings = loadedSettings.settings;
     const inkStorageMigrated = await this.lmbInitializeInkStorage();
@@ -41,6 +42,7 @@ class LuciasMarginBookPlugin extends Plugin {
     const inkLinkNumbersMigrated = this.lmbInitializeInkLinkNumbers();
     this.lmbSetupInkReferences();
     this.lmbSetupTextBlocks();
+    this.lmbSetupPdfPageEditing();
     // v0.12.0 一次性迁移：老配置里 noteAutoBoxOnNew 已被持久化成 true，
     //   只改默认值不生效。用标记保证只强制关这一次，之后用户在设置里改回 true 不再被覆盖。
     let settingsMigrated = loadedSettings.migrated || inkStorageMigrated || inkLinkNumbersMigrated;
@@ -138,6 +140,7 @@ class LuciasMarginBookPlugin extends Plugin {
     }, true);
 
     this.registerEvent(this.app.vault.on("modify", (f) => {
+      if (this._lmbPdfPageMutation) return;
       if (f instanceof TFile && f.extension === "canvas") {
         // v0.16.4 修复 P2-4：selfWritten 的值改为写入时刻的时间戳。
         //   旧版存 true 且靠下一次 modify 清除——若该 modify 未触发，残留标志会吞掉
@@ -265,6 +268,7 @@ class LuciasMarginBookPlugin extends Plugin {
      * （不链 pdf 且不在索引中 → 跳过；mtime 未变 → 跳过），不会读盘。
      */
     this.registerEvent(this.app.vault.on("modify", (f) => {
+      if (this._lmbPdfPageMutation) return;
       if (f && f.extension === "md") this.lmbInvalidateRelatedFile(f);
       if (f && f.extension === "canvas") this.lmbScheduleCanvasIndex(f); // P3.5 canvas 索引（v0.16.5 R7 防抖）
       else this.reindexFile(f);
@@ -1090,7 +1094,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.40.1";
+    st.dataset.lmbVersion = "0.41.0";
   }
 
 }

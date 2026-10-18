@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.41.0
+
+- Right-click a PDF page thumbnail to insert a blank page before or after it. Touch and pen long-press open the same menu; scrolling, short taps, cancelled contacts and a second finger cancel the long-press.
+- Modify the original PDF locally with an adjacent page's dimensions and rotation. Shift subsequent excerpt, Markdown block, ink association and sidecar page references together, plus resolved Markdown/Canvas PDF links. Preserve note text, stroke payloads, identifiers and Canvas geometry/edges.
+- Verify backups before writing; keep a transaction journal and restore interrupted or failed writes before loading plugin settings. Save active note editors first, reject stale menus and concurrent insertion, and retain backups under the plugin's `page-backups/` directory.
+- Bundle pdf-lib 1.17.1 locally with its MIT license and dependency notices; insertion needs no download or server.
+- Validate real PDF insertion/rollback/recovery, 12 browser gesture/menu cases, existing Markdown and handwriting workflows, and native Obsidian before/after insertion plus reopening. Physical tablet testing remains outstanding.
+
 ## 0.36.0
 
 - Add contextual lasso actions to associate selected ink with an existing excerpt or create a named handwritten note. Persist references only after original ink is durable; creation failures retain the title and selection for retry.

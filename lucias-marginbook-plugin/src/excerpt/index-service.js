@@ -16,6 +16,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * updated 仅在内容实际变化时刷新：比较时剔除时间戳行，避免无意义全量重写。
    */
   async writeExcerptMd(cf, pdfPath, entries, parentOf) {
+    if (this._lmbPdfPageMutation) return;
     try {
       const pdfBase = pdfPath.split("/").pop().replace(/\.pdf$/i, "");
       const folder = cf.parent && cf.parent.path ? cf.parent.path : "/";
@@ -293,6 +294,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    *                    ② mtime 未变化 → 直接跳过
    */
   async reindexFile(f, force) {
+    if (this._lmbPdfPageMutation) return;
     try {
       if (!f || f.extension !== "md") return;
       // v0.16.4 P3-5：force=true 跳过 resolvedLinks 闸门（新建摘录 md 的瞬间

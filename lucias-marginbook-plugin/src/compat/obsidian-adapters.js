@@ -18,6 +18,20 @@ const LmbCanvasAdapter = Object.freeze({
 });
 
 const LmbPdfAdapter = Object.freeze({
+  document(view) {
+    const child = view?.viewer?.child, outer = child?.pdfViewer || view?.viewer?.pdfViewer;
+    return outer?.pdfDocument || outer?.pdfViewer?.pdfDocument || child?.pdfDocument || null;
+  },
+  async reload(view, file) {
+    if (typeof view.onLoadFile === 'function') await view.onLoadFile(file);
+    else if (typeof view.viewer?.loadFile === 'function') await view.viewer.loadFile(file);
+    else if (typeof view.loadFile === 'function') await view.loadFile(file);
+  },
+  page(view, page) {
+    if (typeof view.setEphemeralState === 'function') { view.setEphemeralState({ subpath: '#page=' + page }); return; }
+    const outer = view.viewer?.child?.pdfViewer || view.viewer?.pdfViewer;
+    if (outer) (outer.pdfViewer || outer).currentPageNumber = page;
+  },
   zoomViewer(view) {
     try {
       const child = view && view.viewer && view.viewer.child;

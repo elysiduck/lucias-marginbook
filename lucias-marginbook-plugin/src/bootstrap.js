@@ -8,7 +8,7 @@
 "use strict";
 
 const {
-  Plugin, Notice, TFile, PluginSettingTab, Setting, normalizePath, Modal,
+  Plugin, Notice, Menu, TFile, PluginSettingTab, Setting, normalizePath, Modal,
   FuzzySuggestModal, MarkdownRenderer, setIcon, Platform
 } = require("obsidian");
 

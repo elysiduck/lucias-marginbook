@@ -71,6 +71,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
    * @returns {boolean} 是否写盘成功
    */
   async _lmbWriteCanvasData(cf, data, memCanvas, rawForIndent) {
+    if (this._lmbPdfPageMutation) return false;
     let indent = "  ";
     try { indent = /\n\t"/.test(rawForIndent || "") ? "\t" : "  "; } catch (_) {}
     if (memCanvas && typeof memCanvas.setData === "function"
@@ -113,6 +114,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   },
 
   async processCanvas(cf) {
+    if (this._lmbPdfPageMutation) return;
     // v0.16.1【Bug6 根因修复】：数据源从「文件」改为「canvas 内存」优先。
     //   旧版第 17 行 vault.read(cf) 读到的是**磁盘内容**：用户刚拖动 / 删除卡片后
     //   Obsidian 未必已落盘（modify 防抖 400ms + Obsidian 自身落盘时机不定），此时

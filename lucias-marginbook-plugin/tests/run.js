@@ -9,6 +9,7 @@ const suites = [
   "tests/unit/architecture.test.js",
   "tests/unit/ink.test.js",
   "tests/integration/ink-links.test.js",
+  "tests/integration/pdf-pages.test.js",
   "tests/integration/behavior.test.js",
   "tests/integration/navigation.test.js",
   "tests/integration/text-block.test.js",
