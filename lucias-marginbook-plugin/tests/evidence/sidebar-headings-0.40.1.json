@@ -1,0 +1,57 @@
+{
+  "version": "0.40.1",
+  "buildSha256": "d3e5f5181a66acb0920bbf0ecec3314d7744efe4f1813bcf62922b5432439b05",
+  "scope": "Sidebar Markdown headings and active heading source only; PDF page note sizes unchanged.",
+  "themeSimulation": "Global important h1 48px, h2 40px and h3-h6 32px.",
+  "computedSizes": [
+    {
+      "touch": false,
+      "base": 12,
+      "preview": [
+        16.2,
+        14.64,
+        13.44,
+        12,
+        12,
+        12
+      ],
+      "active": [
+        16.2,
+        14.64,
+        13.44,
+        12,
+        12,
+        12
+      ],
+      "inactive": 16.2,
+      "pdfHeadingHeightBefore": 144,
+      "pdfHeadingHeightAfter": 144
+    },
+    {
+      "touch": true,
+      "base": 12,
+      "preview": [
+        16.2,
+        14.64,
+        13.44,
+        12,
+        12,
+        12
+      ],
+      "active": [
+        16.2,
+        14.64,
+        13.44,
+        12,
+        12,
+        12
+      ],
+      "inactive": 16.2,
+      "pdfHeadingHeightBefore": 144,
+      "pdfHeadingHeightAfter": 144
+    }
+  ],
+  "nodeSuitesPassed": 9,
+  "browserRegressionChecksPassed": 440,
+  "limits": "Browser screenshots and computed styles verified; no actual Obsidian or physical tablet operations."
+}

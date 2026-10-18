@@ -67,7 +67,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const wrappers = state.parts.map((part, i) => {
         const wrapper = doc.createElement("div"); wrapper.classList.add("lmb-live-markdown-block"); wrapper.dataset.kind = part.kind;
         const heading = /^(#{1,6})\s/.exec(part.source);
-        if (heading) wrapper.style.setProperty("--lmb-live-heading-size", heading[1].length === 1 ? "1.7em" : heading[1].length === 2 ? "1.4em" : heading[1].length === 3 ? "1.2em" : "1em");
+        if (heading) wrapper.style.setProperty("--lmb-live-heading-size", (opts.sidebar ? ["1.35em", "1.22em", "1.12em", "1em", "1em", "1em"] : ["1.7em", "1.4em", "1.2em", "1em", "1em", "1em"])[heading[1].length - 1]);
         if (i === state.active) {
           wrapper.classList.add("is-active"); wrapper.appendChild(input); input.value = part.source;
         } else {

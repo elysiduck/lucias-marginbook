@@ -693,6 +693,8 @@ const LMB_STYLES = [
 
   '.lmb-pdf-excerpt-sidebar :is(.lmb-pdf-sidebar-title,.lmb-pdf-sidebar-list,.lmb-pdf-sidebar-item,.lmb-pdf-sidebar-item-body,.lmb-pdf-sidebar-item-text,.lmb-pdf-sidebar-item-note,.lmb-pdf-sidebar-item-note-body,.lmb-pdf-sidebar-item-actions){min-width:0!important;max-width:100%;box-sizing:border-box;}.lmb-pdf-sidebar-list>.lmb-pdf-sidebar-item{width:100%;}.lmb-pdf-sidebar-item-actions{flex-wrap:wrap!important;}.lmb-pdf-excerpt-sidebar :is(.lmb-pdf-sidebar-item-text,.lmb-pdf-sidebar-item-note-body){overflow-wrap:anywhere;}.lmb-pdf-excerpt-sidebar pre,.lmb-pdf-excerpt-sidebar pre code{white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:break-word;min-width:0!important;max-width:100%;}.lmb-pdf-excerpt-sidebar :is(.table-wrapper,table){min-width:0!important;max-width:100%!important;}.lmb-pdf-excerpt-sidebar table{width:100%!important;table-layout:fixed;}.lmb-pdf-excerpt-sidebar :is(th,td){overflow-wrap:anywhere!important;word-break:break-word;}.lmb-pdf-excerpt-sidebar :is(img,video,svg){max-width:100%;}.lmb-pdf-sidebar-title-main{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.lmb-pdf-sidebar-count{flex-shrink:0;}.lmb-pdf-excerpt-sidebar .lmb-inline-note-controls{flex-wrap:wrap;}.lmb-pdf-excerpt-sidebar :is(textarea,.lmb-live-markdown-input){min-width:0!important;max-width:100%;}',
 
+  '.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body{--h1-size:1.35em;--h2-size:1.22em;--h3-size:1.12em;--h4-size:1em;--h5-size:1em;--h6-size:1em;font-size:12px;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered :is(h1,h2,h3,h4,h5,h6){line-height:1.35!important;margin-block:.6em .3em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered h1{font-size:1.35em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered h2{font-size:1.22em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered h3{font-size:1.12em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered :is(h4,h5,h6){font-size:1em!important;}',
+
 ];
 
 if (typeof module !== "undefined" && module.exports) {
@@ -3949,7 +3951,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.40.0";
+    st.dataset.lmbVersion = "0.40.1";
   }
 
 }
@@ -11314,7 +11316,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const wrappers = state.parts.map((part, i) => {
         const wrapper = doc.createElement("div"); wrapper.classList.add("lmb-live-markdown-block"); wrapper.dataset.kind = part.kind;
         const heading = /^(#{1,6})\s/.exec(part.source);
-        if (heading) wrapper.style.setProperty("--lmb-live-heading-size", heading[1].length === 1 ? "1.7em" : heading[1].length === 2 ? "1.4em" : heading[1].length === 3 ? "1.2em" : "1em");
+        if (heading) wrapper.style.setProperty("--lmb-live-heading-size", (opts.sidebar ? ["1.35em", "1.22em", "1.12em", "1em", "1em", "1em"] : ["1.7em", "1.4em", "1.2em", "1em", "1em", "1em"])[heading[1].length - 1]);
         if (i === state.active) {
           wrapper.classList.add("is-active"); wrapper.appendChild(input); input.value = part.source;
         } else {
@@ -13697,7 +13699,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.40.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.40.1") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
