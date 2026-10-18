@@ -78,7 +78,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   _lmbClearPdfSidebars() {
     try {
       document.querySelectorAll(".lmb-pdf-excerpt-sidebar").forEach((bar) => bar.remove());
-      document.querySelectorAll(".lmb-sidebar-state-toggle").forEach((button) => button.remove());
+      document.querySelectorAll(".lmb-sidebar-header-actions").forEach((group) => group.remove());
       document.querySelectorAll(".lmb-pdf-sidebar-host").forEach((host) => {
         if (host._lmbSidebarToolbarObserver) host._lmbSidebarToolbarObserver.disconnect();
         const win = host.ownerDocument && host.ownerDocument.defaultView;
@@ -101,9 +101,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const host = leaf.containerEl.querySelector(":scope > .view-content") || leaf.containerEl.querySelector(".view-content") || leaf.containerEl;
       host.addClass("lmb-pdf-sidebar-host");
       host.toggleClass("lmb-sidebar-left", this.settings.pdfSidebarSide === "left");
-      let stateToggle = host.querySelector(":scope > .lmb-sidebar-state-toggle");
+      let headerActions = host.querySelector(":scope > .lmb-sidebar-header-actions");
+      if (!headerActions) headerActions = host.createDiv({ cls: "lmb-sidebar-header-actions" });
+      let sideButton = headerActions.querySelector(".lmb-sidebar-side-toggle");
+      if (!sideButton) {
+        sideButton = headerActions.createEl("button", { cls: "lmb-sidebar-side-toggle", attr: { type: "button", "aria-label": "切换批注侧栏左右位置" } });
+        sideButton.onclick = event => { event.stopPropagation(); this.lmbSetPdfSidebarSide(this.settings.pdfSidebarSide === "left" ? "right" : "left"); };
+      }
+      this.lmbSyncSidebarSideButton(sideButton);
+      let stateToggle = headerActions.querySelector(".lmb-sidebar-state-toggle");
       if (!stateToggle) {
-        stateToggle = host.createEl("button", { cls: "lmb-sidebar-state-toggle", attr: { type: "button" } });
+        stateToggle = headerActions.createEl("button", { cls: "lmb-sidebar-state-toggle", attr: { type: "button" } });
         stateToggle.onclick = event => { event.preventDefault(); event.stopPropagation(); this.lmbSetPdfSidebarVisible(leaf, leaf._lmbPdfSidebarOpen === false); };
       }
       this.lmbSyncSidebarToggle(leaf, stateToggle);
@@ -169,9 +177,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!button) return;
     const open = leaf._lmbPdfSidebarOpen !== false, label = open ? "收起批注侧栏" : "打开批注侧栏";
     const left = this.settings.pdfSidebarSide === "left";
-    button.setText(open ? (left ? "‹" : "›") : (left ? "›" : "‹"));
+    const pointsLeft = open ? left : !left;
+    try { setIcon(button, pointsLeft ? "chevron-left" : "chevron-right"); }
+    catch (_) { button.setText(pointsLeft ? "‹" : "›"); }
     button.setAttribute("aria-label", label); button.setAttribute("title", label);
     button.setAttribute("aria-expanded", String(open));
+  },
+
+  lmbSyncSidebarSideButton(button) {
+    if (!button) return;
+    const left = this.settings.pdfSidebarSide === "left";
+    try { setIcon(button, left ? "panel-left" : "panel-right"); } catch (_) { button.empty(); }
+    button.createSpan({ text: left ? "左侧" : "右侧" });
+    button.title = left ? "侧栏位于左侧，点击移到右侧" : "侧栏位于右侧，点击移到左侧";
   },
 
   async lmbSetPdfSidebarSide(side) {
@@ -186,7 +204,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         host.toggleClass("lmb-sidebar-left", side === "left");
         this.lmbSyncSidebarToggle(leaf, host.querySelector(".lmb-sidebar-state-toggle"));
         const button = host.querySelector(".lmb-sidebar-side-toggle");
-        if (button) { button.textContent = side === "left" ? "侧栏：左" : "侧栏：右"; button.title = side === "left" ? "移到 PDF 右侧" : "移到 PDF 左侧"; }
+        this.lmbSyncSidebarSideButton(button);
         this._lmbNotifyPdfSidebarLayout(leaf, true);
       }
       return true;
@@ -503,8 +521,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const head = prepared.createDiv({ cls: "lmb-pdf-sidebar-title" }), titleRow = head.createDiv({ cls: "lmb-pdf-sidebar-title-row" });
       titleRow.createDiv({ cls: "lmb-pdf-sidebar-title-main", text: "PDF 批注" });
       titleRow.createSpan({ cls: "lmb-pdf-sidebar-count", text: String(entries.length) });
-      const sideButton = titleRow.createEl("button", { cls: "lmb-sidebar-side-toggle", text: this.settings.pdfSidebarSide === "left" ? "侧栏：左" : "侧栏：右", attr: { type: "button", title: this.settings.pdfSidebarSide === "left" ? "移到 PDF 右侧" : "移到 PDF 左侧", "aria-label": "切换批注侧栏左右位置" } });
-      sideButton.onclick = event => { event.stopPropagation(); this.lmbSetPdfSidebarSide(this.settings.pdfSidebarSide === "left" ? "right" : "left"); };
       head.createDiv({ cls: "lmb-pdf-sidebar-file", text: file.name });
       head.createDiv({ cls: "lmb-pdf-sidebar-title-sub", text: "" });
       const controls = head.createDiv({ cls: "lmb-pdf-sidebar-controls" });

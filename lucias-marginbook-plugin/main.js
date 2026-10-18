@@ -425,7 +425,7 @@ const LMB_STYLES = [
   '.lmb-ink-tool-buttons,.lmb-ink-actions,.lmb-ink-swatches{display:flex;align-items:center;gap:3px;flex:0 0 auto;}.lmb-ink-tools button{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-width:30px;width:30px;height:30px;flex:0 0 30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);padding:5px;cursor:pointer;line-height:1;}.lmb-ink-tools button svg{display:block;width:17px;height:17px;stroke:currentColor;}.lmb-ink-tools button:hover{background:var(--background-modifier-hover);}.lmb-ink-tools button.is-active{background:var(--interactive-accent);color:var(--text-on-accent);}',
   '.lmb-ink-tools .lmb-ink-collapse{min-width:24px;width:24px;height:30px;flex:0 0 24px;padding:4px;}.lmb-ink-swatches{padding:0 2px;}.lmb-ink-tools .lmb-ink-swatch{min-width:18px;width:18px;height:18px;flex:0 0 18px;padding:0;border:2px solid var(--background-primary);box-shadow:0 0 0 1px var(--background-modifier-border);border-radius:50%;}.lmb-ink-tools .lmb-ink-swatch.is-active{box-shadow:0 0 0 2px var(--interactive-accent);}',
   '.lmb-ink-color-picker{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:34px;height:30px;flex:0 0 34px;border-radius:7px;color:var(--text-muted);overflow:hidden;cursor:pointer;}.lmb-ink-color-picker:hover{background:var(--background-modifier-hover);}.lmb-ink-color-icon svg{display:block;width:17px;height:17px;}.lmb-ink-color-preview{position:absolute;right:3px;bottom:3px;width:9px;height:9px;border:1px solid var(--background-primary);border-radius:50%;}.lmb-ink-color-input{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;opacity:0!important;cursor:pointer!important;}',
-  '.lmb-ink-width-control{display:flex;align-items:center;gap:3px;height:30px;min-width:94px;flex:0 1 112px;padding:0 4px;border-radius:7px;color:var(--text-muted);}.lmb-ink-width-icon svg{display:block;width:14px;height:14px;}.lmb-ink-tools input[type="range"]{-webkit-appearance:none;appearance:none;width:72px;min-width:48px;height:24px;margin:0;padding:0;background:transparent;cursor:pointer;}.lmb-ink-tools input[type="range"]::-webkit-slider-runnable-track{height:4px;border-radius:99px;background:var(--background-modifier-border);}.lmb-ink-tools input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;margin-top:-6px;border:2px solid var(--background-primary);border-radius:50%;background:var(--interactive-accent);box-shadow:0 0 0 1px var(--background-modifier-border);}.lmb-ink-width-value{min-width:16px;font-size:10px;text-align:right;color:var(--text-faint);}.lmb-ink-save-status{min-width:42px;color:var(--text-faint);font-size:10px;white-space:nowrap;}.lmb-ink-save-status[data-state="error"]{color:var(--text-error);}',
+  '.lmb-ink-width-control{display:flex;align-items:center;gap:3px;height:30px;min-width:94px;flex:0 1 112px;padding:0 4px;border-radius:7px;color:var(--text-muted);}.lmb-ink-width-icon svg{display:block;width:14px;height:14px;}.lmb-ink-tools input[type="range"]{-webkit-appearance:none!important;appearance:none!important;display:block;box-sizing:border-box;width:72px;min-width:48px;height:24px!important;min-height:24px!important;max-height:24px!important;align-self:center;margin:0!important;padding:0!important;border:0!important;border-radius:0;box-shadow:none!important;background:transparent!important;cursor:pointer;}.lmb-ink-tools input[type="range"]::-webkit-slider-runnable-track{display:block!important;box-sizing:border-box;height:4px!important;margin:0!important;padding:0!important;border:0!important;border-radius:99px;background:var(--background-modifier-border);}.lmb-ink-tools input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;box-sizing:border-box;position:static!important;transform:none!important;flex:0 0 16px;width:16px!important;height:16px!important;margin:-6px 0 0!important;padding:0!important;border:2px solid var(--background-primary);border-radius:50%;background:var(--interactive-accent);box-shadow:0 0 0 1px var(--background-modifier-border);}.lmb-ink-width-value{min-width:16px;font-size:10px;text-align:right;color:var(--text-faint);}.lmb-ink-save-status{min-width:42px;color:var(--text-faint);font-size:10px;white-space:nowrap;}.lmb-ink-save-status[data-state="error"]{color:var(--text-error);}',
   'body.lmb-mobile .lmb-ink-tools{top:48px;left:6px;right:calc(var(--lmb-pdf-sidebar-width,0px) + 6px);padding:5px;gap:3px;border-radius:10px;}body.lmb-mobile .lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed>.lmb-ink-tools{right:6px;}body.lmb-mobile .lmb-ink-tools-content{justify-content:flex-start;flex-wrap:wrap;row-gap:4px;}body.lmb-mobile .lmb-ink-tools button{min-width:36px;width:36px;height:36px;flex-basis:36px;padding:7px;}body.lmb-mobile .lmb-ink-tools button svg{width:19px;height:19px;}body.lmb-mobile .lmb-ink-tools .lmb-ink-collapse{min-width:32px;width:32px;height:36px;flex-basis:32px;}body.lmb-mobile .lmb-ink-color-picker{width:36px;height:36px;flex-basis:36px;}body.lmb-mobile .lmb-ink-width-control{height:36px;flex-basis:106px;}body.lmb-mobile .lmb-ink-save-status{display:none;}',
   '@media(max-width:700px){body.lmb-mobile .lmb-ink-tools{right:6px;}body.lmb-mobile .lmb-pdf-sidebar-host:not(.lmb-pdf-sidebar-closed)>.lmb-ink-tools{right:calc(min(46vw,320px) + 6px);}}',
   '.lmb-ink-tools{flex-wrap:wrap;padding:4px;gap:2px;align-items:center;}.lmb-ink-tools-content{flex:1;justify-content:flex-start;overflow-x:auto;flex-wrap:nowrap!important;scrollbar-width:thin;}.lmb-ink-tools button{border:1px solid var(--background-modifier-border);transition:background .12s,box-shadow .12s;}.lmb-ink-tools button:active{box-shadow:inset 0 1px 4px #0004;}.lmb-ink-tools button:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:-2px;}.lmb-ink-advanced{display:flex;align-items:center;flex-wrap:wrap;gap:4px;width:100%;padding:4px 2px 0;border-top:1px solid var(--background-modifier-border);}.lmb-ink-advanced[hidden],.lmb-ink-tools.is-collapsed .lmb-ink-advanced{display:none;}.lmb-ink-eraser-mode{height:30px;max-width:120px;}.lmb-ink-auto-return{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;min-height:30px;}.lmb-ink-auto-return input{margin:0;}.lmb-ink-save-status{margin-left:auto;}.lmb-ink-tools .lmb-ink-swatch{width:28px;height:30px;min-width:28px;flex-basis:28px;padding:5px;border:3px solid transparent;border-radius:7px;background-clip:content-box;box-shadow:none;}.lmb-ink-tools .lmb-ink-swatch.is-active{border-color:var(--interactive-accent);box-shadow:none;}',
@@ -590,8 +590,8 @@ const LMB_STYLES = [
   '.lmb-pdf-sidebar-resizer:hover,.lmb-pdf-sidebar-resizer.is-dragging{background:var(--interactive-accent);opacity:.75;}',
   '.lmb-pdf-sidebar-title{position:sticky;top:0;padding:12px 3px 10px;margin-bottom:9px;',
   'background:var(--background-primary);border-bottom:1px solid var(--background-modifier-border);z-index:2;}',
-  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;padding-right:38px;}',
-  '.lmb-sidebar-state-toggle{position:absolute;z-index:20;right:12px;top:calc(var(--lmb-pdf-sidebar-top,0px) + 8px);display:flex;align-items:center;justify-content:center;width:30px;height:30px;min-height:30px;padding:0;border:1px solid var(--background-modifier-border);border-radius:7px;background:var(--background-secondary);color:var(--text-muted);font:24px/1 var(--font-interface);cursor:pointer;transition:background .15s,box-shadow .15s,transform .1s;}.lmb-sidebar-state-toggle:hover{background:var(--background-modifier-hover);color:var(--text-normal);box-shadow:0 2px 7px #0003;}.lmb-sidebar-state-toggle:active{transform:scale(.94);}.lmb-sidebar-state-toggle:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px;}@media(any-pointer:coarse){.lmb-sidebar-state-toggle{width:40px;height:40px;min-height:40px;}.lmb-pdf-sidebar-title-row{padding-right:46px;}}',
+  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;min-height:30px;padding-right:112px;}',
+  '.lmb-sidebar-header-actions{position:absolute;z-index:1100;right:12px;top:calc(var(--lmb-pdf-sidebar-top,0px) + 12px);display:flex;align-items:center;gap:6px;}.lmb-sidebar-header-actions button{position:static;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;flex:0 0 auto;height:30px!important;min-height:30px!important;max-height:30px;margin:0!important;padding:0 8px!important;gap:5px;border:1px solid var(--background-modifier-border);border-radius:7px;background:var(--background-secondary);color:var(--text-muted);font:11px/1 var(--font-interface);box-shadow:none;cursor:pointer;transition:background .15s,color .15s,box-shadow .15s,transform .1s;}.lmb-sidebar-header-actions button svg{display:block;width:17px;height:17px;flex:0 0 17px;stroke:currentColor;}.lmb-sidebar-header-actions .lmb-sidebar-state-toggle{width:30px;min-width:30px;padding:0!important;}.lmb-sidebar-header-actions button:hover{background:var(--background-modifier-hover);color:var(--text-normal);box-shadow:0 2px 7px #0003;}.lmb-sidebar-header-actions button:active{transform:scale(.96);box-shadow:inset 0 1px 4px #0003;}.lmb-sidebar-header-actions button:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px;}.lmb-pdf-sidebar-closed .lmb-sidebar-side-toggle{display:none;}.lmb-sidebar-side-toggle{white-space:nowrap;}.lmb-sidebar-left>.lmb-sidebar-header-actions{left:calc(var(--lmb-pdf-sidebar-width,340px) - 12px);right:auto;transform:translateX(-100%);}.lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-sidebar-header-actions{left:12px;transform:none;}@media(any-pointer:coarse){.lmb-sidebar-header-actions button{height:40px!important;min-height:40px!important;max-height:40px;font-size:12px;}.lmb-sidebar-header-actions .lmb-sidebar-state-toggle{width:40px;min-width:40px;}.lmb-pdf-sidebar-title-row{min-height:40px;padding-right:134px;}}',
   '.lmb-pdf-sidebar-title-main{font-size:14px;font-weight:700;line-height:1.4;}',
   '.lmb-pdf-sidebar-count{font-size:10px;color:var(--text-on-accent);background:var(--interactive-accent);padding:1px 6px;border-radius:99px;}',
   '.lmb-pdf-sidebar-file{font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}',
@@ -687,8 +687,10 @@ const LMB_STYLES = [
   '@media(any-pointer:coarse){.lmb-pdf-text-tools button,.lmb-pdf-text-tools input{height:40px!important;min-height:40px!important;font-size:13px;}.lmb-pdf-text-tools button:first-child,.lmb-pdf-text-tools .lmb-text-size-step{min-width:36px;}.lmb-pdf-text-tools input{width:44px!important;min-width:44px;max-width:44px;}}',
   '.lmb-ink-tools-content>.lmb-ink-width-control{flex:0 0 105px;min-width:105px;}.lmb-ink-link-drag{touch-action:none;user-select:none;cursor:grab!important;}.lmb-ink-link-drag:active{cursor:grabbing!important;}.lmb-ink-link-ghost{position:fixed;z-index:100000;pointer-events:none;background:var(--interactive-accent);color:var(--text-on-accent);padding:7px 11px;border-radius:8px;box-shadow:0 3px 12px #0005;font-size:13px;}',
   '.lmb-ink-association-hint{display:flex;align-items:center;gap:8px;padding:8px;margin-top:6px;border:1px solid var(--interactive-accent);border-radius:7px;font-size:12px;line-height:1.5;color:var(--text-normal);}.lmb-ink-association-hint>span{flex:1;}.lmb-ink-association-hint button{min-height:32px;}.lmb-pdf-sidebar-item.is-ink-link-target{outline:1px dashed var(--interactive-accent);outline-offset:-3px;cursor:copy;}.lmb-pdf-sidebar-item.is-ink-drop-target{outline:3px solid var(--interactive-accent);background:color-mix(in srgb,var(--interactive-accent) 25%,var(--background-primary));}.lmb-ink-ref-actions{display:flex;flex-wrap:wrap;gap:6px;}',
-  '.lmb-sidebar-side-toggle{margin-left:auto;white-space:nowrap;min-height:28px;padding:2px 6px;font-size:11px;border:1px solid var(--background-modifier-border);border-radius:6px;background:var(--background-secondary);color:var(--text-muted);}.lmb-sidebar-side-toggle:hover{background:var(--background-modifier-hover);}.lmb-pdf-sidebar-host.lmb-sidebar-left{padding-right:0!important;padding-left:var(--lmb-pdf-sidebar-width,340px)!important;}.lmb-pdf-sidebar-host.lmb-sidebar-left.lmb-pdf-sidebar-closed{padding-left:0!important;}.lmb-sidebar-left>.lmb-pdf-excerpt-sidebar{left:0;right:auto;border-left:0;border-right:1px solid var(--background-modifier-border);padding:0 13px 28px 10px;}.lmb-sidebar-left .lmb-pdf-sidebar-resizer{left:auto;right:-3px;}.lmb-sidebar-left>.lmb-sidebar-state-toggle{left:calc(var(--lmb-pdf-sidebar-width,340px) - 42px);right:auto;}.lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-sidebar-state-toggle{left:12px;}.lmb-sidebar-left:not(.lmb-pdf-sidebar-closed)>.lmb-ink-tools{left:calc(var(--lmb-pdf-sidebar-width,340px) + 12px);right:12px;}.lmb-sidebar-left>.lmb-ink-tools.is-collapsed{left:auto;right:12px;}',
-  '@media(any-pointer:coarse){.lmb-sidebar-side-toggle{min-height:40px;}.lmb-sidebar-left>.lmb-sidebar-state-toggle{left:calc(var(--lmb-pdf-sidebar-width,340px) - 52px);}.lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-sidebar-state-toggle{left:6px;}}@media(max-width:700px){body.lmb-mobile .lmb-sidebar-left:not(.lmb-pdf-sidebar-closed){padding-left:min(46vw,320px)!important;}body.lmb-mobile .lmb-sidebar-left:not(.lmb-pdf-sidebar-closed)>.lmb-ink-tools{left:calc(min(46vw,320px) + 6px);right:6px;}body.lmb-mobile .lmb-sidebar-left:not(.lmb-pdf-sidebar-closed)>.lmb-sidebar-state-toggle{left:calc(min(46vw,320px) - 52px);}}',
+  '.lmb-pdf-sidebar-host.lmb-sidebar-left{padding-right:0!important;padding-left:var(--lmb-pdf-sidebar-width,340px)!important;}.lmb-pdf-sidebar-host.lmb-sidebar-left.lmb-pdf-sidebar-closed{padding-left:0!important;}.lmb-sidebar-left>.lmb-pdf-excerpt-sidebar{left:0;right:auto;border-left:0;border-right:1px solid var(--background-modifier-border);padding:0 13px 28px 10px;}.lmb-sidebar-left .lmb-pdf-sidebar-resizer{left:auto;right:-3px;}.lmb-sidebar-left:not(.lmb-pdf-sidebar-closed)>.lmb-ink-tools{left:calc(var(--lmb-pdf-sidebar-width,340px) + 12px);right:12px;}.lmb-sidebar-left>.lmb-ink-tools.is-collapsed{left:auto;right:12px;}',
+  '@media(max-width:700px){body.lmb-mobile .lmb-sidebar-left:not(.lmb-pdf-sidebar-closed){padding-left:min(46vw,320px)!important;}body.lmb-mobile .lmb-sidebar-left:not(.lmb-pdf-sidebar-closed)>.lmb-ink-tools{left:calc(min(46vw,320px) + 6px);right:6px;}body.lmb-mobile .lmb-sidebar-left:not(.lmb-pdf-sidebar-closed)>.lmb-sidebar-header-actions{left:calc(min(46vw,320px) - 12px);}}',
+  '.lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed>.lmb-ink-tools{right:62px;}.lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-ink-tools{left:62px;right:12px;}.lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-ink-tools.is-collapsed{left:auto;right:12px;}body.lmb-mobile .lmb-pdf-sidebar-host.lmb-pdf-sidebar-closed>.lmb-ink-tools{right:62px;}body.lmb-mobile .lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-ink-tools{left:62px;right:6px;}body.lmb-mobile .lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-ink-tools.is-collapsed{left:auto;}',
+
 ];
 
 if (typeof module !== "undefined" && module.exports) {
@@ -3945,7 +3947,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.39.0";
+    st.dataset.lmbVersion = "0.39.1";
   }
 
 }
@@ -10103,7 +10105,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
   _lmbClearPdfSidebars() {
     try {
       document.querySelectorAll(".lmb-pdf-excerpt-sidebar").forEach((bar) => bar.remove());
-      document.querySelectorAll(".lmb-sidebar-state-toggle").forEach((button) => button.remove());
+      document.querySelectorAll(".lmb-sidebar-header-actions").forEach((group) => group.remove());
       document.querySelectorAll(".lmb-pdf-sidebar-host").forEach((host) => {
         if (host._lmbSidebarToolbarObserver) host._lmbSidebarToolbarObserver.disconnect();
         const win = host.ownerDocument && host.ownerDocument.defaultView;
@@ -10126,9 +10128,17 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const host = leaf.containerEl.querySelector(":scope > .view-content") || leaf.containerEl.querySelector(".view-content") || leaf.containerEl;
       host.addClass("lmb-pdf-sidebar-host");
       host.toggleClass("lmb-sidebar-left", this.settings.pdfSidebarSide === "left");
-      let stateToggle = host.querySelector(":scope > .lmb-sidebar-state-toggle");
+      let headerActions = host.querySelector(":scope > .lmb-sidebar-header-actions");
+      if (!headerActions) headerActions = host.createDiv({ cls: "lmb-sidebar-header-actions" });
+      let sideButton = headerActions.querySelector(".lmb-sidebar-side-toggle");
+      if (!sideButton) {
+        sideButton = headerActions.createEl("button", { cls: "lmb-sidebar-side-toggle", attr: { type: "button", "aria-label": "切换批注侧栏左右位置" } });
+        sideButton.onclick = event => { event.stopPropagation(); this.lmbSetPdfSidebarSide(this.settings.pdfSidebarSide === "left" ? "right" : "left"); };
+      }
+      this.lmbSyncSidebarSideButton(sideButton);
+      let stateToggle = headerActions.querySelector(".lmb-sidebar-state-toggle");
       if (!stateToggle) {
-        stateToggle = host.createEl("button", { cls: "lmb-sidebar-state-toggle", attr: { type: "button" } });
+        stateToggle = headerActions.createEl("button", { cls: "lmb-sidebar-state-toggle", attr: { type: "button" } });
         stateToggle.onclick = event => { event.preventDefault(); event.stopPropagation(); this.lmbSetPdfSidebarVisible(leaf, leaf._lmbPdfSidebarOpen === false); };
       }
       this.lmbSyncSidebarToggle(leaf, stateToggle);
@@ -10194,9 +10204,19 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     if (!button) return;
     const open = leaf._lmbPdfSidebarOpen !== false, label = open ? "收起批注侧栏" : "打开批注侧栏";
     const left = this.settings.pdfSidebarSide === "left";
-    button.setText(open ? (left ? "‹" : "›") : (left ? "›" : "‹"));
+    const pointsLeft = open ? left : !left;
+    try { setIcon(button, pointsLeft ? "chevron-left" : "chevron-right"); }
+    catch (_) { button.setText(pointsLeft ? "‹" : "›"); }
     button.setAttribute("aria-label", label); button.setAttribute("title", label);
     button.setAttribute("aria-expanded", String(open));
+  },
+
+  lmbSyncSidebarSideButton(button) {
+    if (!button) return;
+    const left = this.settings.pdfSidebarSide === "left";
+    try { setIcon(button, left ? "panel-left" : "panel-right"); } catch (_) { button.empty(); }
+    button.createSpan({ text: left ? "左侧" : "右侧" });
+    button.title = left ? "侧栏位于左侧，点击移到右侧" : "侧栏位于右侧，点击移到左侧";
   },
 
   async lmbSetPdfSidebarSide(side) {
@@ -10211,7 +10231,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         host.toggleClass("lmb-sidebar-left", side === "left");
         this.lmbSyncSidebarToggle(leaf, host.querySelector(".lmb-sidebar-state-toggle"));
         const button = host.querySelector(".lmb-sidebar-side-toggle");
-        if (button) { button.textContent = side === "left" ? "侧栏：左" : "侧栏：右"; button.title = side === "left" ? "移到 PDF 右侧" : "移到 PDF 左侧"; }
+        this.lmbSyncSidebarSideButton(button);
         this._lmbNotifyPdfSidebarLayout(leaf, true);
       }
       return true;
@@ -10528,8 +10548,6 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const head = prepared.createDiv({ cls: "lmb-pdf-sidebar-title" }), titleRow = head.createDiv({ cls: "lmb-pdf-sidebar-title-row" });
       titleRow.createDiv({ cls: "lmb-pdf-sidebar-title-main", text: "PDF 批注" });
       titleRow.createSpan({ cls: "lmb-pdf-sidebar-count", text: String(entries.length) });
-      const sideButton = titleRow.createEl("button", { cls: "lmb-sidebar-side-toggle", text: this.settings.pdfSidebarSide === "left" ? "侧栏：左" : "侧栏：右", attr: { type: "button", title: this.settings.pdfSidebarSide === "left" ? "移到 PDF 右侧" : "移到 PDF 左侧", "aria-label": "切换批注侧栏左右位置" } });
-      sideButton.onclick = event => { event.stopPropagation(); this.lmbSetPdfSidebarSide(this.settings.pdfSidebarSide === "left" ? "right" : "left"); };
       head.createDiv({ cls: "lmb-pdf-sidebar-file", text: file.name });
       head.createDiv({ cls: "lmb-pdf-sidebar-title-sub", text: "" });
       const controls = head.createDiv({ cls: "lmb-pdf-sidebar-controls" });
@@ -13612,7 +13630,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.39.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.39.1") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")

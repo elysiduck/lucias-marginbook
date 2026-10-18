@@ -1,0 +1,65 @@
+{
+  "version": "0.39.1",
+  "buildSha256": "aca51ec444e19433df48f4579f437f650ac90f9a6423011b75b16b291eb86a5a",
+  "browser": "Headless Microsoft Edge",
+  "buttonGeometry": [
+    {
+      "touch": false,
+      "side": "right",
+      "topDelta": 0,
+      "heightDelta": 0,
+      "height": 30,
+      "gap": 6,
+      "sameParent": true
+    },
+    {
+      "touch": false,
+      "side": "left",
+      "topDelta": 0,
+      "heightDelta": 0,
+      "height": 30,
+      "gap": 6,
+      "sameParent": true
+    },
+    {
+      "touch": true,
+      "side": "right",
+      "topDelta": 0,
+      "heightDelta": 0,
+      "height": 40,
+      "gap": 6,
+      "sameParent": true
+    },
+    {
+      "touch": true,
+      "side": "left",
+      "topDelta": 0,
+      "heightDelta": 0,
+      "height": 40,
+      "gap": 6,
+      "sameParent": true
+    }
+  ],
+  "sliderPixelAlignment": [
+    {
+      "device": "desktop",
+      "thumbCenterY": 11.5,
+      "trackCenterY": 11.5,
+      "difference": 0.0
+    },
+    {
+      "device": "touch",
+      "thumbCenterY": 11.5,
+      "trackCenterY": 11.5,
+      "difference": 0.0
+    }
+  ],
+  "checks": [
+    "Same button parent, top and height; desktop 30px and touch 40px; both sidebar sides.",
+    "Sidebar reopens with a real browser mouse click while the ink toolbar is present.",
+    "Hostile host range styles do not displace the slider thumb; colored pixel centers match."
+  ],
+  "nodeSuitesPassed": 9,
+  "browserRegressionChecksPassed": 335,
+  "limits": "Browser layout and screenshots verified; no native Obsidian UI or physical tablet validation in this run."
+}
