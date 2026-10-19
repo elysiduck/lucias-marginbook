@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.42.0
+
+- Stop stylus drawing at the final valid contact sample. Do not append pointerup/touchend hover coordinates, even when a driver repeats positive pressure on release. Filter zero-pressure and buttons-up movement before fallback pressure normalization; retain valid coalesced samples and light-pressure finishing flicks.
+- Render new pen strokes as a continuous filled outline with bounded, corner-aware display smoothing instead of individually stroked segments. Keep endpoints and raw contact geometry, and preserve old strokes with their previous renderer. Sidebar and Canvas previews use matching outlines.
+- Keep new strokes editable through partial erasing, undo/redo, associations and persistence. No schema migration or rewrite of existing handwriting is performed.
+- Add regressions for displaced releases, hover events, legacy Pencil force, coalesced contacts, dots, corner preservation and exact undo/save roundtrips. Verify Canvas/SVG render agreement and the existing Markdown autosave workflows. Physical stylus feel and latency remain hardware checks.
+
 ## 0.41.0
 
 - Right-click a PDF page thumbnail to insert a blank page before or after it. Touch and pen long-press open the same menu; scrolling, short taps, cancelled contacts and a second finger cancel the long-press.

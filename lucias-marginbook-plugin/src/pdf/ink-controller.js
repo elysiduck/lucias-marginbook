@@ -438,7 +438,7 @@ LuciasMarginBookPlugin.prototype.lmbInkPoint = function (pageEl, event) {
   return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: pressure, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
 };
 
-LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
+LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event, contactOnly = false) {
   let events = [event];
   try {
     if (typeof event.getCoalescedEvents === "function") {
@@ -450,7 +450,7 @@ LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
       }
     }
   } catch (_) {}
-  return events.map((sample) => this.lmbInkPoint(pageEl, sample));
+  return events.filter(sample => !contactOnly || lmbInkIsContactSample(sample, event)).map((sample) => this.lmbInkPoint(pageEl, sample));
 };
 
 LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
@@ -532,7 +532,8 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
       : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
     const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
     this.lmbAssignInkContinuation(object, path(), page());
-    active = { kind: "draw", object, before, pointerId: event.pointerId }; redrawLive();
+    if (tool === "pen") object.renderVersion = 2;
+    active = { kind: "draw", object, before, pointerId: event.pointerId, stylus }; redrawLive();
   };
   const move = (event) => {
     if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
@@ -562,7 +563,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     }
     if (!active || active.pointerId != null && event.pointerId !== active.pointerId) return;
     event.preventDefault(); event.stopPropagation();
-    const points = this.lmbInkEventPoints(pageEl, event), point = points[points.length - 1];
+    const points = this.lmbInkEventPoints(pageEl, event, active.kind === "draw" && active.stylus);
+    if (!points.length) return;
+    const point = points[points.length - 1];
     if (active.kind === "draw") {
       const object = active.object;
       if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
@@ -581,7 +584,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     }
     if (!active || event && active.pointerId != null && event.pointerId !== active.pointerId) return;
     if (event) { event.preventDefault(); event.stopPropagation(); }
-    if (!cancelled && event) {
+    // A stylus release is not a contact sample, even on devices reporting the
+    // preceding pressure at new hover coordinates. Keep the last valid move.
+    if (!cancelled && event && !(active.kind === "draw" && active.stylus)) {
       const finalPoints = this.lmbInkEventPoints(pageEl, event), finalPoint = finalPoints[finalPoints.length - 1];
       if (active.kind === "draw") {
         if (active.object.type === "pen" || active.object.type === "highlighter") lmbInkAppendSamples(active.object.points, finalPoints, .00005);
@@ -681,6 +686,20 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
     if (points.length === 1) {
       const radius = lmbInkSegmentWidth(object, points[0], null, width) / 2;
       ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
+    } else if (type === "pen" && object.renderVersion === 2) {
+      const { centers, left, right } = lmbInkRibbon(object, width, height);
+      const trace = side => {
+        for (let i = 1; i < side.length - 1; i++) ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+        ctx.lineTo(side[side.length - 1].x, side[side.length - 1].y);
+      };
+      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left);
+      const last = centers.length - 1, end = centers[last], start = centers[0];
+      const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
+      ctx.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
+      trace(right.slice().reverse());
+      const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
+      ctx.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
+      ctx.closePath(); ctx.fill();
     } else if (type === "highlighter") {
       ctx.lineWidth = lmbInkSegmentWidth(object, points[0], null, width);
       ctx.beginPath(); ctx.moveTo(points[0].x * width, points[0].y * height);

@@ -1774,7 +1774,7 @@ function lmbInkTouchPointEvent(touch, sourceEvent, ended) {
     pointerType: "pen", pointerId: `stylus-touch-${touch.identifier}`,
     button: 0, buttons: ended ? 0 : 1,
     clientX: touch.clientX, clientY: touch.clientY,
-    pressure: Number(touch.force) > 0 ? Number(touch.force) : .5,
+    pressure: Number.isFinite(touch.force) ? touch.force : .5,
     timeStamp: sourceEvent && sourceEvent.timeStamp,
     preventDefault: () => { if (sourceEvent && sourceEvent.cancelable !== false) sourceEvent.preventDefault(); },
     stopPropagation: () => { if (sourceEvent) sourceEvent.stopPropagation(); }
@@ -1902,6 +1902,63 @@ function lmbInkAppendSamples(target, samples, minDistance) {
     else prior.p = (prior.p * 2 + point.p) / 3;
   }
   return result;
+}
+
+// Inspect raw contact values BEFORE normalization supplies fallback pressure.
+// Coalesced events may omit pointerType, so inherit the parent event's type.
+function lmbInkIsContactSample(sample, parent) {
+  if (!lmbInkIsStylusInput(sample) && !lmbInkIsStylusInput(parent)) return true;
+  return sample.buttons !== 0 && sample.pressure !== 0 && sample.force !== 0;
+}
+
+// Rendering-only stabilization. Persist original contact samples so hit tests,
+// erasing, undo and linked references retain their original geometry. Preserve
+// corners and endpoints; bound displacement in page-width units at every zoom.
+function lmbInkDisplayPoints(points, aspect = 1) {
+  return (points || []).map((point, i) => {
+    const previous = points[i - 1], next = points[i + 1];
+    if (!previous || !next) return { ...point };
+    const ax = point.x - previous.x, ay = (point.y - previous.y) * aspect;
+    const bx = next.x - point.x, by = (next.y - point.y) * aspect;
+    const lengths = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    if (!lengths || (ax * bx + ay * by) / lengths < .5) return { ...point };
+    const dx = (previous.x + next.x - 2 * point.x) / 4;
+    const dy = (previous.y + next.y - 2 * point.y) / 4;
+    const offset = Math.hypot(dx, dy * aspect), weight = offset > .0007 ? .0007 / offset : 1;
+    return { ...point, x: point.x + dx * weight, y: point.y + dy * weight,
+      p: ((previous.p ?? .5) + 2 * (point.p ?? .5) + (next.p ?? .5)) / 4 };
+  });
+}
+
+function lmbInkRibbon(object, width, height) {
+  const points = lmbInkDisplayPoints(object.points, height / Math.max(1, width));
+  const centers = points.map(point => ({ x: point.x * width, y: point.y * height }));
+  const left = [], right = [];
+  for (let i = 0; i < centers.length; i++) {
+    const a = centers[Math.max(0, i - 1)], b = centers[Math.min(centers.length - 1, i + 1)];
+    let dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
+    if (!length) { dx = 1; dy = 0; length = 1; }
+    const radius = lmbInkSegmentWidth(object, points[i], points[i - 1], width) / 2;
+    const nx = -dy / length * radius, ny = dx / length * radius;
+    left.push({ x: centers[i].x + nx, y: centers[i].y + ny });
+    right.push({ x: centers[i].x - nx, y: centers[i].y - ny });
+  }
+  return { centers, left, right };
+}
+
+function lmbInkRibbonPath(object, width, height) {
+  const { centers, left, right } = lmbInkRibbon(object, width, height);
+  if (centers.length < 2) return '';
+  const xy = point => `${point.x},${point.y}`;
+  const trace = side => {
+    let d = '';
+    for (let i = 1; i < side.length - 1; i++) d += ` Q${xy(side[i])} ${(side[i].x + side[i + 1].x) / 2},${(side[i].y + side[i + 1].y) / 2}`;
+    return d + ` L${xy(side[side.length - 1])}`;
+  };
+  const end = centers.length - 1;
+  const endRadius = Math.hypot(left[end].x - centers[end].x, left[end].y - centers[end].y);
+  const startRadius = Math.hypot(left[0].x - centers[0].x, left[0].y - centers[0].y);
+  return `M${xy(left[0])}${trace(left)} A${endRadius},${endRadius} 0 0 0 ${xy(right[end])}${trace(right.slice().reverse())} A${startRadius},${startRadius} 0 0 0 ${xy(left[0])} Z`;
 }
 
 function lmbInkPerpendicularDistance(point, start, end) {
@@ -4050,7 +4107,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.41.0";
+    st.dataset.lmbVersion = "0.42.0";
   }
 
 }
@@ -4763,7 +4820,7 @@ LuciasMarginBookPlugin.prototype.lmbInkPoint = function (pageEl, event) {
   return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: pressure, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
 };
 
-LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
+LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event, contactOnly = false) {
   let events = [event];
   try {
     if (typeof event.getCoalescedEvents === "function") {
@@ -4775,7 +4832,7 @@ LuciasMarginBookPlugin.prototype.lmbInkEventPoints = function (pageEl, event) {
       }
     }
   } catch (_) {}
-  return events.map((sample) => this.lmbInkPoint(pageEl, sample));
+  return events.filter(sample => !contactOnly || lmbInkIsContactSample(sample, event)).map((sample) => this.lmbInkPoint(pageEl, sample));
 };
 
 LuciasMarginBookPlugin.prototype.lmbInkShouldDraw = function (event) {
@@ -4857,7 +4914,8 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
       : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
     const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
     this.lmbAssignInkContinuation(object, path(), page());
-    active = { kind: "draw", object, before, pointerId: event.pointerId }; redrawLive();
+    if (tool === "pen") object.renderVersion = 2;
+    active = { kind: "draw", object, before, pointerId: event.pointerId, stylus }; redrawLive();
   };
   const move = (event) => {
     if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
@@ -4887,7 +4945,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     }
     if (!active || active.pointerId != null && event.pointerId !== active.pointerId) return;
     event.preventDefault(); event.stopPropagation();
-    const points = this.lmbInkEventPoints(pageEl, event), point = points[points.length - 1];
+    const points = this.lmbInkEventPoints(pageEl, event, active.kind === "draw" && active.stylus);
+    if (!points.length) return;
+    const point = points[points.length - 1];
     if (active.kind === "draw") {
       const object = active.object;
       if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
@@ -4906,7 +4966,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     }
     if (!active || event && active.pointerId != null && event.pointerId !== active.pointerId) return;
     if (event) { event.preventDefault(); event.stopPropagation(); }
-    if (!cancelled && event) {
+    // A stylus release is not a contact sample, even on devices reporting the
+    // preceding pressure at new hover coordinates. Keep the last valid move.
+    if (!cancelled && event && !(active.kind === "draw" && active.stylus)) {
       const finalPoints = this.lmbInkEventPoints(pageEl, event), finalPoint = finalPoints[finalPoints.length - 1];
       if (active.kind === "draw") {
         if (active.object.type === "pen" || active.object.type === "highlighter") lmbInkAppendSamples(active.object.points, finalPoints, .00005);
@@ -5006,6 +5068,20 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
     if (points.length === 1) {
       const radius = lmbInkSegmentWidth(object, points[0], null, width) / 2;
       ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
+    } else if (type === "pen" && object.renderVersion === 2) {
+      const { centers, left, right } = lmbInkRibbon(object, width, height);
+      const trace = side => {
+        for (let i = 1; i < side.length - 1; i++) ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+        ctx.lineTo(side[side.length - 1].x, side[side.length - 1].y);
+      };
+      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left);
+      const last = centers.length - 1, end = centers[last], start = centers[0];
+      const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
+      ctx.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
+      trace(right.slice().reverse());
+      const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
+      ctx.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
+      ctx.closePath(); ctx.fill();
     } else if (type === "highlighter") {
       ctx.lineWidth = lmbInkSegmentWidth(object, points[0], null, width);
       ctx.beginPath(); ctx.moveTo(points[0].x * width, points[0].y * height);
@@ -5875,7 +5951,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const style = { fill: "none", stroke: o.color || "#e05252", "stroke-width": o.widthUnit === "page" ? Math.max(.5, (Number(o.width) || .003) * 1000) : Number(o.width) || 3, opacity: o.opacity == null ? 1 : o.opacity, "stroke-linecap": "round", "stroke-linejoin": "round" };
         if (o.type === "pen" || o.type === "highlighter") {
           const points = o.points || [];
-          if (points.length === 1) add("circle", { cx: points[0].x * 1000, cy: points[0].y * height, r: Number(style["stroke-width"]) / 2, fill: style.stroke, opacity: style.opacity });
+          if (points.length === 1) add("circle", { cx: points[0].x * 1000, cy: points[0].y * height, r: (o.renderVersion === 2 ? lmbInkSegmentWidth(o, points[0], null, 1000) : Number(style["stroke-width"])) / 2, fill: style.stroke, opacity: style.opacity });
+          else if (points.length && o.type === "pen" && o.renderVersion === 2) add("path", { fill: style.stroke, stroke: "none", opacity: style.opacity, d: lmbInkRibbonPath(o, 1000, height) });
           else if (points.length) add("path", { ...style, d: points.map((p, i) => `${i ? "L" : "M"}${p.x * 1000},${p.y * height}`).join(" ") });
         } else if (o.type === "line") add("line", { ...style, x1: o.x1 * 1000, y1: o.y1 * height, x2: o.x2 * 1000, y2: o.y2 * height });
         else if (o.type === "rect") add("rect", { ...style, x: Math.min(o.x1, o.x2) * 1000, y: Math.min(o.y1, o.y2) * height, width: Math.abs(o.x2 - o.x1) * 1000, height: Math.abs(o.y2 - o.y1) * height });
@@ -14070,7 +14147,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.41.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.42.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -14284,6 +14361,7 @@ module.exports.__test = {
   LMB_INK_SCHEMA_VERSION, LMB_INK_HISTORY_LIMIT,
   lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso, lmbInkIsStylusInput, lmbInkTouchPointEvent,
   lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
+  lmbInkIsContactSample, lmbInkDisplayPoints, lmbInkRibbon, lmbInkRibbonPath,
   lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
   lmbInkEraseFragments, lmbInkIsTextInput,
   lmbInkGroupObjects, lmbInkGroupBounds, lmbInkCanvasReference,

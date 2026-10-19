@@ -9,7 +9,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.41.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.42.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")

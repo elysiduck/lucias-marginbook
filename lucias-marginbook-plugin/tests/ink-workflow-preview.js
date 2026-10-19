@@ -113,6 +113,17 @@
     await plugin.lmbFlushInkStorage(); check(disk.inkAnnotations['demo.pdf']['1'].objects.length === items().length, 'ink persistence retains editable fragments separately from Markdown');
     check(disk.quickExcerpts['demo.pdf'][0].note === '手写后继续编辑 Markdown', 'ink saving preserves the exact Markdown note');
     plugin.lmbSetInkTool('pen');
+    pointer(activeLive, 'pointerdown', 91, 80, 610, 'pen', { pressure: .3 });
+    pointer(activeLive, 'pointermove', 91, 180, 610, 'pen', { pressure: .04 });
+    pointer(activeLive, 'pointermove', 91, 450, 700, 'pen', { pressure: 0, buttons: 0 });
+    pointer(activeLive, 'pointerup', 91, 650, 760, 'pen', { pressure: .5 });
+    const cleanStroke = items().at(-1), pageRect = page.getBoundingClientRect();
+    check(Math.abs(cleanStroke.points.at(-1).x * pageRect.width - 180) < .01, 'hover and positive-pressure stylus release do not add a tail');
+    check(Math.abs(cleanStroke.points.at(-1).p - .04) < .000001 && cleanStroke.renderVersion === 2, 'light contact remains editable with continuous outline rendering');
+    const roundtrip = JSON.stringify(cleanStroke); await plugin.lmbFlushInkStorage();
+    check(JSON.stringify(disk.inkAnnotations['demo.pdf']['1'].objects.at(-1)) === roundtrip, 'new render version and exact contact samples survive persistence');
+    plugin.lmbUndoInk(page.querySelector('.lmb-ink-layer')); plugin.lmbRedoInk(page.querySelector('.lmb-ink-layer'));
+    check(JSON.stringify(items().at(-1)) === roundtrip, 'undo redo preserves stabilized strokes exactly');
     out.textContent = 'PASS ' + results.length + ' ink / palm / Markdown workflow checks';
     out.dataset.report = JSON.stringify({ checks: results.length, results, physicalTablet: false });
   } catch (error) { out.textContent = 'FAIL after ' + results.length + ': ' + error.stack; throw error; }

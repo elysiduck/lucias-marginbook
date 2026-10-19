@@ -1,0 +1,35 @@
+{
+  "version": "0.42.0",
+  "date": "2026-10-19",
+  "nodeSuites": 10,
+  "browserChecks": {
+    "inkLinks": 70,
+    "markdownFlow": 105,
+    "sidebar": 74,
+    "layout": 54,
+    "ink": 36,
+    "controls": 84,
+    "selection": 21,
+    "thumbnailMenu": 12,
+    "total": 456
+  },
+  "regressions": [
+    "zero-pressure hover cannot extend a stroke",
+    "positive-pressure release at a displaced coordinate cannot add a tail",
+    "valid coalesced contact remains when the parent event is hover",
+    "light-pressure finishing flicks and single-point dots remain",
+    "legacy Pencil zero-force move and touchend are excluded",
+    "lost capture after release does not commit a second stroke",
+    "display smoothing reduces fine jitter while keeping corners and endpoints",
+    "display smoothing leaves original sample data unchanged",
+    "new renderer version and samples survive save and undo/redo",
+    "existing partial erase, associations, Markdown editing and autosave remain valid"
+  ],
+  "visual": {
+    "fixture": "4 synthetic pressure-varying curves with alternating fine jitter",
+    "comparisonInspected": true,
+    "canvasVsSvgMeanAbsoluteAlphaDifference": 0.00002,
+    "alphaScale": "0..255 over 1000x1000 pixels"
+  },
+  "remainingValidation": "Physical tablet/stylus handwriting feel and device latency were not measured."
+}

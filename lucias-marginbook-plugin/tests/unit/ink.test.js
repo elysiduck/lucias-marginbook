@@ -175,6 +175,38 @@ async function main() {
   assert.equal(stylusTouchPrevented, true, "the iOS stylus touch path must cancel WKWebView scrolling synchronously");
   assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").length, 3, "Touch.touchType=stylus must feed the handwriting pipeline");
 
+  const previousInk = JSON.parse(JSON.stringify(flowCtx.lmbInkObjects("flow.pdf", "1")));
+  listeners.get("pointerdown")(event(100, 600, .2));
+  listeners.get("pointermove")(event(300, 600, .04)); // a light finishing flick is valid contact
+  listeners.get("pointermove")(event(700, 900, 0, { buttons: 0 }));
+  listeners.get("pointerup")(event(900, 1000, .5, { buttons: 0 })); // some drivers repeat positive pressure on release
+  let newStroke = flowCtx.lmbInkObjects("flow.pdf", "1").at(-1);
+  assert.equal(newStroke.renderVersion, 2);
+  assert.equal(newStroke.points.at(-1).x, .3, "hover and release coordinates cannot extend a pen stroke");
+  assert.equal(newStroke.points.at(-1).p, .04, "light genuine contact is preserved without tail trimming");
+  const repeated = JSON.parse(JSON.stringify(newStroke));listeners.get("lostpointercapture")(event(999, 999, 0));
+  assert.deepEqual(flowCtx.lmbInkObjects("flow.pdf", "1").at(-1), repeated, "release followed by lost capture does not append or commit twice");
+  listeners.get("pointerdown")(event(100, 600, .3));
+  listeners.get("pointermove")(event(900, 900, 0, { buttons: 0, getCoalescedEvents: () => [event(200, 600, .4), event(300, 600, .2), event(700, 900, 0, { buttons: 0 })] }));
+  listeners.get("pointerup")(event(900, 900, 0, { buttons: 0 }));
+  assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").at(-1).points.at(-1).x, .3, "valid coalesced contact survives a hover parent event");
+  listeners.get("touchstart")(iosTouch("start", 100, 600, .3));
+  listeners.get("touchmove")(iosTouch("move", 200, 600, .2));
+  listeners.get("touchmove")(iosTouch("move", 700, 900, 0));
+  listeners.get("touchend")(iosTouch("end", 900, 1000, 0));
+  assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").at(-1).points.at(-1).x, .2, "legacy Pencil zero-force movement and touchend cannot extend ink");
+  listeners.get("pointerdown")(event(500, 600, .3));listeners.get("pointerup")(event(900, 900, 0, { buttons: 0 }));
+  assert.equal(flowCtx.lmbInkObjects("flow.pdf", "1").at(-1).points.length, 1, "brief dots survive release at a displaced coordinate");
+  const noisy = Array.from({ length: 30 }, (_, i) => ({ x: .1 + i * .005, y: .5 + (i % 2 ? .0006 : -.0006), p: .4, t: i * 8 }));
+  const sourceCopy = JSON.stringify(noisy), display = pure.lmbInkDisplayPoints(noisy, 1.4);
+  assert.equal(JSON.stringify(noisy), sourceCopy, "stabilization never changes persisted samples");
+  assert.deepEqual(display[0], noisy[0]);assert.deepEqual(display.at(-1), noisy.at(-1));
+  assert(display.slice(1, -1).reduce((sum, p) => sum + Math.abs(p.y - .5), 0) < noisy.slice(1, -1).reduce((sum, p) => sum + Math.abs(p.y - .5), 0) * .4, "fine alternating jitter is substantially reduced");
+  const corner = [{ x: .1, y: .1 }, { x: .2, y: .1 }, { x: .2, y: .2 }];assert.deepEqual(pure.lmbInkDisplayPoints(corner), corner, "right-angle character corners remain intact");
+  const ribbon = pure.lmbInkRibbon(newStroke, 1000, 1400);assert(ribbon.left.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)));
+  assert.deepEqual(ribbon.centers.at(-1), { x: 300, y: 600 }, "continuous outline keeps the last contact endpoint");
+  flowCtx.lmbReplaceInkObjects("flow.pdf", "1", previousInk);
+
   // Sparse strokes and fast eraser sweeps must be clipped geometrically, not
   // just by deleting sampled vertices. Preserve pressure and reversible IDs.
   const sparse = { id: "sparse", type: "pen", width: .002, widthUnit: "page", color: "#123456", points: [{ x: .1, y: .5, p: .2, t: 0 }, { x: .9, y: .5, p: .8, t: 100 }] };

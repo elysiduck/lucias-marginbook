@@ -394,7 +394,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const style = { fill: "none", stroke: o.color || "#e05252", "stroke-width": o.widthUnit === "page" ? Math.max(.5, (Number(o.width) || .003) * 1000) : Number(o.width) || 3, opacity: o.opacity == null ? 1 : o.opacity, "stroke-linecap": "round", "stroke-linejoin": "round" };
         if (o.type === "pen" || o.type === "highlighter") {
           const points = o.points || [];
-          if (points.length === 1) add("circle", { cx: points[0].x * 1000, cy: points[0].y * height, r: Number(style["stroke-width"]) / 2, fill: style.stroke, opacity: style.opacity });
+          if (points.length === 1) add("circle", { cx: points[0].x * 1000, cy: points[0].y * height, r: (o.renderVersion === 2 ? lmbInkSegmentWidth(o, points[0], null, 1000) : Number(style["stroke-width"])) / 2, fill: style.stroke, opacity: style.opacity });
+          else if (points.length && o.type === "pen" && o.renderVersion === 2) add("path", { fill: style.stroke, stroke: "none", opacity: style.opacity, d: lmbInkRibbonPath(o, 1000, height) });
           else if (points.length) add("path", { ...style, d: points.map((p, i) => `${i ? "L" : "M"}${p.x * 1000},${p.y * height}`).join(" ") });
         } else if (o.type === "line") add("line", { ...style, x1: o.x1 * 1000, y1: o.y1 * height, x2: o.x2 * 1000, y2: o.y2 * height });
         else if (o.type === "rect") add("rect", { ...style, x: Math.min(o.x1, o.x2) * 1000, y: Math.min(o.y1, o.y2) * height, width: Math.abs(o.x2 - o.x1) * 1000, height: Math.abs(o.y2 - o.y1) * height });

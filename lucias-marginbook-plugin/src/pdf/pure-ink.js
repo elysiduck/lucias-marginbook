@@ -39,7 +39,7 @@ function lmbInkTouchPointEvent(touch, sourceEvent, ended) {
     pointerType: "pen", pointerId: `stylus-touch-${touch.identifier}`,
     button: 0, buttons: ended ? 0 : 1,
     clientX: touch.clientX, clientY: touch.clientY,
-    pressure: Number(touch.force) > 0 ? Number(touch.force) : .5,
+    pressure: Number.isFinite(touch.force) ? touch.force : .5,
     timeStamp: sourceEvent && sourceEvent.timeStamp,
     preventDefault: () => { if (sourceEvent && sourceEvent.cancelable !== false) sourceEvent.preventDefault(); },
     stopPropagation: () => { if (sourceEvent) sourceEvent.stopPropagation(); }
@@ -167,6 +167,63 @@ function lmbInkAppendSamples(target, samples, minDistance) {
     else prior.p = (prior.p * 2 + point.p) / 3;
   }
   return result;
+}
+
+// Inspect raw contact values BEFORE normalization supplies fallback pressure.
+// Coalesced events may omit pointerType, so inherit the parent event's type.
+function lmbInkIsContactSample(sample, parent) {
+  if (!lmbInkIsStylusInput(sample) && !lmbInkIsStylusInput(parent)) return true;
+  return sample.buttons !== 0 && sample.pressure !== 0 && sample.force !== 0;
+}
+
+// Rendering-only stabilization. Persist original contact samples so hit tests,
+// erasing, undo and linked references retain their original geometry. Preserve
+// corners and endpoints; bound displacement in page-width units at every zoom.
+function lmbInkDisplayPoints(points, aspect = 1) {
+  return (points || []).map((point, i) => {
+    const previous = points[i - 1], next = points[i + 1];
+    if (!previous || !next) return { ...point };
+    const ax = point.x - previous.x, ay = (point.y - previous.y) * aspect;
+    const bx = next.x - point.x, by = (next.y - point.y) * aspect;
+    const lengths = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    if (!lengths || (ax * bx + ay * by) / lengths < .5) return { ...point };
+    const dx = (previous.x + next.x - 2 * point.x) / 4;
+    const dy = (previous.y + next.y - 2 * point.y) / 4;
+    const offset = Math.hypot(dx, dy * aspect), weight = offset > .0007 ? .0007 / offset : 1;
+    return { ...point, x: point.x + dx * weight, y: point.y + dy * weight,
+      p: ((previous.p ?? .5) + 2 * (point.p ?? .5) + (next.p ?? .5)) / 4 };
+  });
+}
+
+function lmbInkRibbon(object, width, height) {
+  const points = lmbInkDisplayPoints(object.points, height / Math.max(1, width));
+  const centers = points.map(point => ({ x: point.x * width, y: point.y * height }));
+  const left = [], right = [];
+  for (let i = 0; i < centers.length; i++) {
+    const a = centers[Math.max(0, i - 1)], b = centers[Math.min(centers.length - 1, i + 1)];
+    let dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
+    if (!length) { dx = 1; dy = 0; length = 1; }
+    const radius = lmbInkSegmentWidth(object, points[i], points[i - 1], width) / 2;
+    const nx = -dy / length * radius, ny = dx / length * radius;
+    left.push({ x: centers[i].x + nx, y: centers[i].y + ny });
+    right.push({ x: centers[i].x - nx, y: centers[i].y - ny });
+  }
+  return { centers, left, right };
+}
+
+function lmbInkRibbonPath(object, width, height) {
+  const { centers, left, right } = lmbInkRibbon(object, width, height);
+  if (centers.length < 2) return '';
+  const xy = point => `${point.x},${point.y}`;
+  const trace = side => {
+    let d = '';
+    for (let i = 1; i < side.length - 1; i++) d += ` Q${xy(side[i])} ${(side[i].x + side[i + 1].x) / 2},${(side[i].y + side[i + 1].y) / 2}`;
+    return d + ` L${xy(side[side.length - 1])}`;
+  };
+  const end = centers.length - 1;
+  const endRadius = Math.hypot(left[end].x - centers[end].x, left[end].y - centers[end].y);
+  const startRadius = Math.hypot(left[0].x - centers[0].x, left[0].y - centers[0].y);
+  return `M${xy(left[0])}${trace(left)} A${endRadius},${endRadius} 0 0 0 ${xy(right[end])}${trace(right.slice().reverse())} A${startRadius},${startRadius} 0 0 0 ${xy(left[0])} Z`;
 }
 
 function lmbInkPerpendicularDistance(point, start, end) {
