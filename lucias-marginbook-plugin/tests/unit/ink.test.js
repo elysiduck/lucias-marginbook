@@ -121,7 +121,7 @@ async function main() {
   const flowCtx = Object.create(proto);
   Object.assign(flowCtx, {
     inkMode: true, inkTool: "pen", inkColor: "#e05252", inkWidth: 3,
-    settings: { inkInputMode: "pen-only", inkPressureMode: "natural", inkEraserSize: 18, inkEraserMode: "stroke", inkEraserAutoReturn: false, inkAnnotations: {} },
+    settings: { inkInputMode: "pen-only", inkPressureMode: "natural", inkStabilization: 0, inkEraserSize: 18, inkEraserMode: "stroke", inkEraserAutoReturn: false, inkAnnotations: {} },
     _lmbInkDocs: {}, lmbMarkInkDirty: () => {}, lmbRenderInkTools: () => {}, lmbUpdateInkSaveStatus: () => {},
     lmbActiveInkCanvas: () => canvas
   });
@@ -206,6 +206,21 @@ async function main() {
   const ribbon = pure.lmbInkRibbon(newStroke, 1000, 1400);assert(ribbon.left.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)));
   assert.deepEqual(ribbon.centers.at(-1), { x: 300, y: 600 }, "continuous outline keeps the last contact endpoint");
   flowCtx.lmbReplaceInkObjects("flow.pdf", "1", previousInk);
+
+  const jitter = Array.from({ length: 100 }, (_, i) => ({ x: (100 + i * 2) / 1000, y: (500 + (i % 2 ? 1.2 : -1.2)) / 1400, p: .2 + i / 200, t: i * 8 }));
+  const stabilized = [jitter[0]], stableState = { level: 2, width: 1000, height: 1400, raw: jitter[0], tip: jitter[0] };
+  pure.lmbInkStabilizeSamples(stabilized, jitter.slice(1), stableState);
+  const error = points => points.slice(10).reduce((sum, p) => sum + Math.abs(p.y * 1400 - 500), 0) / (points.length - 10);
+  assert(error(stabilized) < error(jitter) * .65, "input-stage standard stability suppresses lateral writing jitter");
+  assert(Math.hypot((stableState.tip.x - jitter.at(-1).x) * 1000, (stableState.tip.y - jitter.at(-1).y) * 1400) <= 3.200001, "standard follower lag stays bounded in screen pixels");
+  assert.equal(stabilized.at(-1).p, jitter.at(-1).p, "stabilization preserves intentional pressure");
+  const batched = [jitter[0]], batchState = { level: 2, width: 1000, height: 1400, raw: jitter[0], tip: jitter[0] };
+  for (let i = 1; i < jitter.length; i += 7) pure.lmbInkStabilizeSamples(batched, jitter.slice(i, i + 7), batchState);
+  assert.deepEqual(batched, stabilized, "coalescing batch size cannot change stable handwriting");
+  const rawOutput = [jitter[0]];pure.lmbInkStabilizeSamples(rawOutput, jitter.slice(1), { level: 0, width: 1000, height: 1400, raw: jitter[0], tip: jitter[0] });assert.deepEqual(rawOutput, jitter, "stability off keeps contact geometry");
+  const tiny = [{ x: .1, y: .2, p: .4, t: 1 }], tinyState = { level: 3, width: 1000, height: 1400, raw: tiny[0], tip: tiny[0] };
+  pure.lmbInkStabilizeSamples(tiny, [{ x: .1008, y: .2, p: .4, t: 2 }], tinyState);pure.lmbInkFinishStabilization(tiny, tinyState);assert.equal(tiny.at(-1).x, .1008, "short dashes do not disappear in strong stability mode");
+  assert.equal(pure.lmbInkStabilityLevel(undefined), 2);assert.equal(pure.lmbInkStabilityLevel(0), 0);assert.equal(pure.lmbInkStabilityLevel(8), 2);
 
   // Sparse strokes and fast eraser sweeps must be clipped geometrically, not
   // just by deleting sampled vertices. Preserve pressure and reversible IDs.

@@ -13,6 +13,7 @@ module.exports.__test = {
   lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso, lmbInkIsStylusInput, lmbInkTouchPointEvent,
   lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
   lmbInkIsContactSample, lmbInkDisplayPoints, lmbInkRibbon, lmbInkRibbonPath,
+  lmbInkStabilityLevel, lmbInkStabilizeSamples, lmbInkFinishStabilization,
   lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
   lmbInkEraseFragments, lmbInkIsTextInput,
   lmbInkGroupObjects, lmbInkGroupBounds, lmbInkCanvasReference,

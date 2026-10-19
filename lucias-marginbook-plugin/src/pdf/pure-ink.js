@@ -176,6 +176,39 @@ function lmbInkIsContactSample(sample, parent) {
   return sample.buttons !== 0 && sample.pressure !== 0 && sample.force !== 0;
 }
 
+function lmbInkStabilityLevel(value) {
+  return [0, 1, 2, 3].includes(Number(value)) && value != null ? Number(value) : 2;
+}
+
+// A bounded trailing nib acts on contact samples, not on saved strokes. Its
+// radius is in CSS pixels so zoom and event frequency cannot change the feel.
+function lmbInkStabilizeSamples(target, samples, state) {
+  const level = lmbInkStabilityLevel(state.level), width = Math.max(1, state.width), height = Math.max(1, state.height);
+  const lag = [0, 1.8, 3.2, 5.5][level], friction = [0, .45, .9, 1.5][level], tau = [0, 7, 14, 24][level];
+  for (const raw of samples || []) {
+    const prior = state.tip || target[target.length - 1], previousRaw = state.raw || prior;
+    const point = lmbInkNormalizePoint(raw, previousRaw); state.raw = point;
+    if (!prior || !level) { lmbInkAppendSamples(target, [point], .00005); state.tip = point; continue; }
+    const dt = Math.max(1, point.t - previousRaw.t), speed = Math.hypot((point.x - previousRaw.x) * width, (point.y - previousRaw.y) * height) / dt;
+    const dx = (point.x - prior.x) * width, dy = (point.y - prior.y) * height, distance = Math.hypot(dx, dy);
+    const alpha = dt / (dt + tau / (1 + speed * 1.8));
+    const travel = Math.max(0, distance - lag, (distance - friction) * alpha), fraction = distance ? travel / distance : 0;
+    const tip = { ...point, x: prior.x + dx * fraction / width, y: prior.y + dy * fraction / height };
+    state.tip = tip; lmbInkAppendSamples(target, [tip], .00005);
+  }
+  return target;
+}
+
+function lmbInkFinishStabilization(points, state) {
+  // Never turn a deliberate short dash into a dot. Only flush the last known
+  // CONTACT sample, never the release/hover coordinate.
+  if (state?.raw && points.length && points.every(p => Math.hypot((p.x - points[0].x) * state.width, (p.y - points[0].y) * state.height) < .5)
+    && Math.hypot((state.raw.x - points[0].x) * state.width, (state.raw.y - points[0].y) * state.height) >= .5) {
+    lmbInkAppendSamples(points, [state.raw], .00005);
+  }
+  return points;
+}
+
 // Rendering-only stabilization. Persist original contact samples so hit tests,
 // erasing, undo and linked references retain their original geometry. Preserve
 // corners and endpoints; bound displacement in page-width units at every zoom.

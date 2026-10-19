@@ -118,12 +118,56 @@
     pointer(activeLive, 'pointermove', 91, 450, 700, 'pen', { pressure: 0, buttons: 0 });
     pointer(activeLive, 'pointerup', 91, 650, 760, 'pen', { pressure: .5 });
     const cleanStroke = items().at(-1), pageRect = page.getBoundingClientRect();
-    check(Math.abs(cleanStroke.points.at(-1).x * pageRect.width - 180) < .01, 'hover and positive-pressure stylus release do not add a tail');
+    check(cleanStroke.points.at(-1).x * pageRect.width <= 180.01 && cleanStroke.points.at(-1).x * pageRect.width >= 176.7, 'hover and positive-pressure stylus release do not add a tail');
     check(Math.abs(cleanStroke.points.at(-1).p - .04) < .000001 && cleanStroke.renderVersion === 2, 'light contact remains editable with continuous outline rendering');
     const roundtrip = JSON.stringify(cleanStroke); await plugin.lmbFlushInkStorage();
     check(JSON.stringify(disk.inkAnnotations['demo.pdf']['1'].objects.at(-1)) === roundtrip, 'new render version and exact contact samples survive persistence');
     plugin.lmbUndoInk(page.querySelector('.lmb-ink-layer')); plugin.lmbRedoInk(page.querySelector('.lmb-ink-layer'));
     check(JSON.stringify(items().at(-1)) === roundtrip, 'undo redo preserves stabilized strokes exactly');
+    await plugin.lmbSetInkMode(false); await frame();
+    const durableBeforeZoom = JSON.stringify(items());
+    for (const layer of page.querySelectorAll(':scope > .lmb-ink-layer,:scope > .lmb-ink-live-layer')) layer.remove();
+    // PDF.js zoom resets children on a retained .page, not always the .page itself.
+    await until(() => page.querySelector('.lmb-ink-layer')?.dataset.lmbInkDrawn === '1', 'zoom reset must restore ink on an existing PDF page');
+    check(JSON.stringify(items()) === durableBeforeZoom, 'PDF child-layer reset preserves all stored strokes');
+    const inkVisible = () => {
+      const c = page.querySelector('.lmb-ink-layer'); if (!c || !c.width || !c.height) return false;
+      const pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) return true;
+      return false;
+    };
+    check(inkVisible(), 'restored reading-mode canvas contains real ink pixels');
+    for (const zoom of [.6, 1.7, 1]) {
+      page._lmbInkNearViewport = false; leaf.view.viewer.child.pdfViewer.currentScale = zoom;
+      await until(() => { const c = page.querySelector('.lmb-ink-layer'); return c && c.width === Math.round(page.clientWidth * Math.min(2.5, Math.max(1, devicePixelRatio))) && c.dataset.lmbInkDrawn === '1'; }, 'zoom resize redraw ' + zoom);
+      check(inkVisible() && JSON.stringify(items()) === durableBeforeZoom, 'zoom ' + zoom + ' redraws ink without changing stroke data');
+    }
+    await plugin.lmbSetInkMode(true); await frame();
+    const selectStability = leaf.containerEl.querySelector('[aria-label="跟笔稳定"]');
+    check(selectStability?.value === '2', 'standard input stability is available without opening plugin settings');
+    selectStability.value = '3'; selectStability.dispatchEvent(new Event('change')); check(plugin.settings.inkStabilization === 3, 'toolbar stability adjustment selects strong damping');
+    for (const kind of ['static', 'live']) {
+      const oldInput = page._lmbInkInputAbort, oldSurface = page.querySelector('.lmb-ink-live-layer'), countBefore = items().length;
+      page.querySelector(kind === 'static' ? '.lmb-ink-layer' : '.lmb-ink-live-layer').remove();
+      await until(() => page._lmbInkInputAbort !== oldInput && page.querySelector('.lmb-ink-layer')?.dataset.lmbInkDrawn === '1', 'rebind replaced ' + kind + ' canvas');
+      check(oldInput.signal.aborted, kind + ' replacement releases old input handlers');
+      const surface = page.querySelector('.lmb-ink-live-layer');
+      pointer(surface, 'pointerdown', 101, 120, 650); pointer(surface, 'pointermove', 101, 220, 650); pointer(surface, 'pointerup', 101, 550, 700, 'pen', { pressure: 0 });
+      check(items().length === countBefore + 1 && inkVisible(), kind + ' replacement accepts one gesture exactly once on the new layer');
+      if (surface !== oldSurface) { pointer(oldSurface, 'pointerdown', 102, 120, 650); pointer(oldSurface, 'pointerup', 102, 220, 650); check(items().length === countBefore + 1, 'detached input canvas cannot create a ghost stroke'); }
+    }
+    const dataBeforeRecycle = JSON.stringify(items()), parent = page.parentElement, nextSibling = page.nextSibling;
+    page.remove(); await frame(); parent.insertBefore(page, nextSibling);
+    await until(() => page._lmbInkInputAbort && !page._lmbInkInputAbort.signal.aborted && page.dataset.lmbInkBound === '1', 'recycled page rebind');
+    check(inkVisible() && JSON.stringify(items()) === dataBeforeRecycle, 'detaching and reinserting a PDF page keeps editable strokes');
+    const countBeforeResize = items().length, resizeSurface = page.querySelector('.lmb-ink-live-layer');
+    pointer(resizeSurface, 'pointerdown', 103, 150, 620); pointer(resizeSurface, 'pointermove', 103, 250, 620);
+    leaf.view.viewer.child.pdfViewer.currentScale = 1.2;
+    await until(() => !plugin._lmbInkPenActive, 'resize must finish pending contact stroke');
+    check(items().length === countBeforeResize + 1 && inkVisible(), 'zoom during a stroke preserves it once and redraws the backing canvas');
+    pointer(resizeSurface, 'pointerup', 103, 700, 700, 'pen', { pressure: 0 });
+    check(items().length === countBeforeResize + 1, 'late release after zoom cannot duplicate or extend the saved stroke');
+    await plugin.lmbFlushInkStorage(); check(disk.quickExcerpts['demo.pdf'][0].note === '手写后继续编辑 Markdown', 'zoom rebuild and stability preferences preserve Markdown notes');
     out.textContent = 'PASS ' + results.length + ' ink / palm / Markdown workflow checks';
     out.dataset.report = JSON.stringify({ checks: results.length, results, physicalTablet: false });
   } catch (error) { out.textContent = 'FAIL after ' + results.length + ': ' + error.stack; throw error; }

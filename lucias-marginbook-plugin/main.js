@@ -1911,6 +1911,39 @@ function lmbInkIsContactSample(sample, parent) {
   return sample.buttons !== 0 && sample.pressure !== 0 && sample.force !== 0;
 }
 
+function lmbInkStabilityLevel(value) {
+  return [0, 1, 2, 3].includes(Number(value)) && value != null ? Number(value) : 2;
+}
+
+// A bounded trailing nib acts on contact samples, not on saved strokes. Its
+// radius is in CSS pixels so zoom and event frequency cannot change the feel.
+function lmbInkStabilizeSamples(target, samples, state) {
+  const level = lmbInkStabilityLevel(state.level), width = Math.max(1, state.width), height = Math.max(1, state.height);
+  const lag = [0, 1.8, 3.2, 5.5][level], friction = [0, .45, .9, 1.5][level], tau = [0, 7, 14, 24][level];
+  for (const raw of samples || []) {
+    const prior = state.tip || target[target.length - 1], previousRaw = state.raw || prior;
+    const point = lmbInkNormalizePoint(raw, previousRaw); state.raw = point;
+    if (!prior || !level) { lmbInkAppendSamples(target, [point], .00005); state.tip = point; continue; }
+    const dt = Math.max(1, point.t - previousRaw.t), speed = Math.hypot((point.x - previousRaw.x) * width, (point.y - previousRaw.y) * height) / dt;
+    const dx = (point.x - prior.x) * width, dy = (point.y - prior.y) * height, distance = Math.hypot(dx, dy);
+    const alpha = dt / (dt + tau / (1 + speed * 1.8));
+    const travel = Math.max(0, distance - lag, (distance - friction) * alpha), fraction = distance ? travel / distance : 0;
+    const tip = { ...point, x: prior.x + dx * fraction / width, y: prior.y + dy * fraction / height };
+    state.tip = tip; lmbInkAppendSamples(target, [tip], .00005);
+  }
+  return target;
+}
+
+function lmbInkFinishStabilization(points, state) {
+  // Never turn a deliberate short dash into a dot. Only flush the last known
+  // CONTACT sample, never the release/hover coordinate.
+  if (state?.raw && points.length && points.every(p => Math.hypot((p.x - points[0].x) * state.width, (p.y - points[0].y) * state.height) < .5)
+    && Math.hypot((state.raw.x - points[0].x) * state.width, (state.raw.y - points[0].y) * state.height) >= .5) {
+    lmbInkAppendSamples(points, [state.raw], .00005);
+  }
+  return points;
+}
+
 // Rendering-only stabilization. Persist original contact samples so hit tests,
 // erasing, undo and linked references retain their original geometry. Preserve
 // corners and endpoints; bound displacement in page-width units at every zoom.
@@ -2889,6 +2922,7 @@ const LMB_DEFAULT_SETTINGS = Object.freeze({
   inkSidecarV2Migrated: false,
   inkInputMode: "pen-mouse",
   inkPressureMode: "natural",
+  inkStabilization: 2,
   inkLastTool: "pen",
   inkPenColor: "#e05252",
   inkPenWidth: 3,
@@ -2971,6 +3005,7 @@ class LmbSettingsStore {
       inkSidecarV2Migrated: !!settings.inkSidecarV2Migrated,
       inkInputMode: settings.inkInputMode === "pen-only" ? "pen-only" : "pen-mouse",
       inkPressureMode: ["fixed", "natural", "fountain"].includes(settings.inkPressureMode) ? settings.inkPressureMode : "natural",
+      inkStabilization: settings.inkStabilization != null && [0, 1, 2, 3].includes(Number(settings.inkStabilization)) ? Number(settings.inkStabilization) : 2,
       inkLastTool: typeof settings.inkLastTool === "string" ? settings.inkLastTool : "pen",
       inkPenColor: String(settings.inkPenColor || "#e05252"),
       inkPenWidth: Math.max(1, Math.min(14, Number(settings.inkPenWidth) || 3)),
@@ -4107,7 +4142,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.42.0";
+    st.dataset.lmbVersion = "0.43.0";
   }
 
 }
@@ -4717,7 +4752,7 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   // IntersectionObserver includes the PDF scroller's clipping, not just the window.
   if (this._lmbInkVisibilityObserver && pageEl._lmbInkNearViewport !== true) {
     let visiblyNear = false;
-    if (this.inkMode && typeof pageEl.getBoundingClientRect === "function") {
+    if (typeof pageEl.getBoundingClientRect === "function") {
       try {
         const rect = pageEl.getBoundingClientRect();
         const viewer = pageEl.closest && pageEl.closest(".pdf-viewer-container");
@@ -4751,16 +4786,20 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   const width = Math.max(1, Math.round(pageEl.clientWidth)), height = Math.max(1, Math.round(pageEl.clientHeight));
   const ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
   let resized = false;
+  if ([canvas, live].some(layer => layer.width !== Math.round(width * ratio) || layer.height !== Math.round(height * ratio)) && pageEl._lmbFinishInk) pageEl._lmbFinishInk();
   for (const layer of [canvas, live]) {
     if (layer.width !== Math.round(width * ratio) || layer.height !== Math.round(height * ratio)) {
       layer.width = Math.round(width * ratio); layer.height = Math.round(height * ratio);
       layer.style.width = width + "px"; layer.style.height = height + "px"; resized = true;
     }
   }
-  if (!pageEl.dataset.lmbInkBound || pageEl._lmbInkInputSurface && pageEl._lmbInkInputSurface !== live) {
+  if (!pageEl.dataset.lmbInkBound || pageEl._lmbInkInputSurface && pageEl._lmbInkInputSurface !== live || pageEl._lmbInkStaticSurface && pageEl._lmbInkStaticSurface !== canvas) {
     if (pageEl._lmbFinishInk) pageEl._lmbFinishInk();
+    if (pageEl._lmbInkInputAbort) pageEl._lmbInkInputAbort.abort();
+    if (this._lmbInkSelectionContext?.canvas === pageEl._lmbInkStaticSurface && pageEl._lmbInkStaticSurface !== canvas) { this._lmbInkSelection = []; this._lmbInkSelectionContext = null; }
     pageEl.dataset.lmbInkBound = "1";
     pageEl._lmbInkInputSurface = live;
+    pageEl._lmbInkStaticSurface = canvas;
     this.lmbBindInkPage(pageEl, canvas, live);
   }
     if (!pageEl._lmbInkResizeObserver && typeof ResizeObserver !== "undefined") {
@@ -4773,7 +4812,8 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
       });
       observer.observe(pageEl); pageEl._lmbInkResizeObserver = observer;
     }
-  if (identityChanged) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLiveLayer(live, null); }
+  if (identityChanged) canvas.dataset.lmbInkDrawn = "0";
+  if (identityChanged || resized) this.lmbDrawInkLiveLayer(live, null);
   if (identityChanged || resized || canvas.dataset.lmbInkDrawn !== "1") this.lmbDrawInkLayer(canvas);
 };
 
@@ -4915,7 +4955,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
     this.lmbAssignInkContinuation(object, path(), page());
     if (tool === "pen") object.renderVersion = 2;
-    active = { kind: "draw", object, before, pointerId: event.pointerId, stylus }; redrawLive();
+    const rect = pageEl.getBoundingClientRect();
+    active = { kind: "draw", object, before, pointerId: event.pointerId, stylus,
+      stabilizer: tool === "pen" && stylus ? { level: lmbInkStabilityLevel(this.settings.inkStabilization), width: rect.width, height: rect.height, raw: point, tip: point } : null }; redrawLive();
   };
   const move = (event) => {
     if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
@@ -4950,7 +4992,8 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     const point = points[points.length - 1];
     if (active.kind === "draw") {
       const object = active.object;
-      if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
+      if (active.stabilizer) lmbInkStabilizeSamples(object.points, points, active.stabilizer);
+      else if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
       else { object.x2 = point.x; object.y2 = point.y; }
     } else if (active.kind === "erase") for (const sample of points) this.lmbEraseAt(canvas, sample, active);
     else if (active.kind === "lasso") lmbInkAppendSamples(active.points, points, .0015);
@@ -4988,6 +5031,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     if (cancelled && !salvageCancelledStroke) this.lmbReplaceInkObjects(path(), page(), current.beforePage || current.before || objects);
     else if (current.kind === "draw") {
       const object = current.object;
+      if (current.stabilizer) lmbInkFinishStabilization(object.points, current.stabilizer);
       if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, .00018, .055);
       const isStroke = object.type === "pen" || object.type === "highlighter";
       const longEnough = Math.hypot((object.x2 || 0) - (object.x1 || 0), (object.y2 || 0) - (object.y1 || 0)) > .001;
@@ -5005,7 +5049,8 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     if (this.inkTool === "select") this.lmbRenderInkTools();
     if (current.kind === "erase" && current.returnTool && !cancelled && this.inkTool === "eraser") this.lmbSetInkTool(current.returnTool);
   };
-  const captureActive = { capture: true, passive: false };
+  const inputAbort = new AbortController(); pageEl._lmbInkInputAbort = inputAbort;
+  const captureActive = { capture: true, passive: false, signal: inputAbort.signal };
   inputSurface.addEventListener("pointerdown", down, captureActive);
   inputSurface.addEventListener("pointermove", move, captureActive);
   inputSurface.addEventListener("pointerup", (event) => finish(event, false), captureActive);
@@ -5036,7 +5081,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
   };
   inputSurface.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
   inputSurface.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
-  inputSurface.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
+  inputSurface.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, captureActive);
 };
 
 LuciasMarginBookPlugin.prototype.lmbInkZoomViewer = function (pageEl) {
@@ -5424,6 +5469,11 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     const autoReturn = document.createElement("label"); autoReturn.className = "lmb-ink-auto-return";
     const check = document.createElement("input"); check.type = "checkbox"; check.checked = this.settings.inkEraserAutoReturn !== false;
     check.addEventListener("change", () => { this.settings.inkEraserAutoReturn = check.checked; this.lmbPersistInkPreferences(); }); autoReturn.appendChild(check); autoReturn.appendChild(document.createTextNode("擦完回笔")); advanced.appendChild(autoReturn);
+    const stabilityLabel = document.createElement("label"); stabilityLabel.textContent = "跟笔稳定 ";
+    const stability = document.createElement("select"); stability.setAttribute("aria-label", "跟笔稳定");
+    for (const [value, label] of [[0, "关闭"], [1, "轻"], [2, "标准"], [3, "强"]]) { const option = document.createElement("option"); option.value = String(value); option.textContent = label; stability.appendChild(option); }
+    stability.value = String(lmbInkStabilityLevel(this.settings.inkStabilization));
+    stability.addEventListener("change", () => { this.settings.inkStabilization = Number(stability.value); this.lmbPersistInkPreferences(); }); stabilityLabel.appendChild(stability); advanced.appendChild(stabilityLabel);
     const leafCanvas = () => this.lmbActiveInkCanvas(host, leaf.view && leaf.view.file && leaf.view.file.path);
     const actions = document.createElement("div"); actions.className = "lmb-ink-actions"; content.appendChild(actions);
     const action = (icon, title, handler, fallback) => { const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); applyIcon(button, icon, fallback); button.addEventListener("click", handler); actions.appendChild(button); };
@@ -5525,6 +5575,8 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
       for (const pageEl of pages) {
         if (pageEl.isConnected) continue;
         if (pageEl._lmbFinishInk) pageEl._lmbFinishInk();
+        if (pageEl._lmbInkInputAbort) pageEl._lmbInkInputAbort.abort();
+        delete pageEl.dataset.lmbInkBound; delete pageEl._lmbInkInputSurface; delete pageEl._lmbInkStaticSurface;
         this.lmbReleaseTextBlockPage(pageEl);
         clearTimeout(pageEl._lmbInkResizeTimer);
         if (this._lmbInkVisibilityObserver) this._lmbInkVisibilityObserver.unobserve(pageEl);
@@ -5534,7 +5586,15 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
         if (this._lmbInkSelectionContext && pageEl.contains && pageEl.contains(this._lmbInkSelectionContext.canvas)) { this._lmbInkSelection = []; this._lmbInkSelectionContext = null; }
       }
     }
-    const relevant = records.some((record) => Array.from(record.addedNodes || []).some((node) => node.nodeType === 1 && (node.matches && node.matches(".page,.pdf-viewer-container") || node.querySelector && node.querySelector(".page"))));
+    const relevant = records.some((record) => {
+      const nodes = Array.from(record.addedNodes || []);
+      if (nodes.some(node => node.nodeType === 1 && (node.matches?.(".page,.pdf-viewer-container") || node.querySelector?.(".page")))) return true;
+      // PDF.js reset() can remove our canvases while retaining the same page.
+      // Do not react to our own layer additions, which would form a refresh loop.
+      const page = record.target.closest?.('.page');
+      return page?.isConnected && (Array.from(record.removedNodes || []).some(node => node.nodeType === 1 && (node.matches?.('.lmb-ink-layer,.lmb-ink-live-layer') || node.querySelector?.('.lmb-ink-layer,.lmb-ink-live-layer')))
+        || nodes.some(node => node.nodeType === 1 && node.matches?.('.canvasWrapper,.textLayer,.annotationLayer')));
+    });
     if (relevant) this.lmbScheduleInkRefresh(60);
   });
   observer.observe(document.body, { childList: true, subtree: true });
@@ -5547,10 +5607,11 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
     document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
     document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => {
       this.lmbUpdateInkPageCapture(pageEl, true);
+      if (pageEl._lmbInkInputAbort) pageEl._lmbInkInputAbort.abort();
       if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect();
       pageEl._lmbInkResizeObserver = null;
       pageEl.querySelectorAll(":scope > .lmb-ink-layer,:scope > .lmb-ink-live-layer").forEach(layer => { if (layer._lmbInkFrame) cancelAnimationFrame(layer._lmbInkFrame); if (layer._lmbInkStaticFrame) cancelAnimationFrame(layer._lmbInkStaticFrame); layer.remove(); });
-      delete pageEl.dataset.lmbInkBound; delete pageEl._lmbInkInputSurface; delete pageEl._lmbFinishInk;
+      delete pageEl.dataset.lmbInkBound; delete pageEl._lmbInkInputSurface; delete pageEl._lmbInkStaticSurface; delete pageEl._lmbInkInputAbort; delete pageEl._lmbFinishInk;
     });
   });
 };
@@ -14147,7 +14208,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.42.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.43.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -14197,6 +14258,12 @@ class LMBSettingTab extends PluginSettingTab {
         .addOption("fixed", "固定宽度")
         .setValue(this.plugin.settings.inkPressureMode || "natural")
         .onChange(async (v) => { this.plugin.settings.inkPressureMode = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName("跟笔稳定")
+      .setDesc("抑制细小偏移，增强跟笔阻尼。标准适合普通书写；强更稳但跟笔稍慢；只影响新写的触控笔笔迹。手写工具栏的更多设置中也能调整。")
+      .addDropdown(d => d.addOption("0", "关闭").addOption("1", "轻").addOption("2", "标准").addOption("3", "强")
+        .setValue(String(lmbInkStabilityLevel(this.plugin.settings.inkStabilization)))
+        .onChange(async value => { this.plugin.settings.inkStabilization = Number(value); await this.plugin.saveSettings(); this.plugin.lmbRenderInkTools(); }));
     new Setting(containerEl)
       .setName("橡皮命中范围")
       .setDesc("局部／整笔橡皮的半径（屏幕像素）；可在手写工具栏的更多设置中切换模式。")
@@ -14362,6 +14429,7 @@ module.exports.__test = {
   lmbInkBounds, lmbInkObjectHit, lmbInkObjectsInLasso, lmbInkIsStylusInput, lmbInkTouchPointEvent,
   lmbInkAppendSamples, lmbInkSimplifyPoints, lmbInkSegmentWidth, lmbInkFileKey,
   lmbInkIsContactSample, lmbInkDisplayPoints, lmbInkRibbon, lmbInkRibbonPath,
+  lmbInkStabilityLevel, lmbInkStabilizeSamples, lmbInkFinishStabilization,
   lmbInkBuildPatch, lmbInkApplyPatch, lmbInkMergePages,
   lmbInkEraseFragments, lmbInkIsTextInput,
   lmbInkGroupObjects, lmbInkGroupBounds, lmbInkCanvasReference,

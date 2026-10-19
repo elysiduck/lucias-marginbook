@@ -335,7 +335,7 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   // IntersectionObserver includes the PDF scroller's clipping, not just the window.
   if (this._lmbInkVisibilityObserver && pageEl._lmbInkNearViewport !== true) {
     let visiblyNear = false;
-    if (this.inkMode && typeof pageEl.getBoundingClientRect === "function") {
+    if (typeof pageEl.getBoundingClientRect === "function") {
       try {
         const rect = pageEl.getBoundingClientRect();
         const viewer = pageEl.closest && pageEl.closest(".pdf-viewer-container");
@@ -369,16 +369,20 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
   const width = Math.max(1, Math.round(pageEl.clientWidth)), height = Math.max(1, Math.round(pageEl.clientHeight));
   const ratio = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
   let resized = false;
+  if ([canvas, live].some(layer => layer.width !== Math.round(width * ratio) || layer.height !== Math.round(height * ratio)) && pageEl._lmbFinishInk) pageEl._lmbFinishInk();
   for (const layer of [canvas, live]) {
     if (layer.width !== Math.round(width * ratio) || layer.height !== Math.round(height * ratio)) {
       layer.width = Math.round(width * ratio); layer.height = Math.round(height * ratio);
       layer.style.width = width + "px"; layer.style.height = height + "px"; resized = true;
     }
   }
-  if (!pageEl.dataset.lmbInkBound || pageEl._lmbInkInputSurface && pageEl._lmbInkInputSurface !== live) {
+  if (!pageEl.dataset.lmbInkBound || pageEl._lmbInkInputSurface && pageEl._lmbInkInputSurface !== live || pageEl._lmbInkStaticSurface && pageEl._lmbInkStaticSurface !== canvas) {
     if (pageEl._lmbFinishInk) pageEl._lmbFinishInk();
+    if (pageEl._lmbInkInputAbort) pageEl._lmbInkInputAbort.abort();
+    if (this._lmbInkSelectionContext?.canvas === pageEl._lmbInkStaticSurface && pageEl._lmbInkStaticSurface !== canvas) { this._lmbInkSelection = []; this._lmbInkSelectionContext = null; }
     pageEl.dataset.lmbInkBound = "1";
     pageEl._lmbInkInputSurface = live;
+    pageEl._lmbInkStaticSurface = canvas;
     this.lmbBindInkPage(pageEl, canvas, live);
   }
     if (!pageEl._lmbInkResizeObserver && typeof ResizeObserver !== "undefined") {
@@ -391,7 +395,8 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
       });
       observer.observe(pageEl); pageEl._lmbInkResizeObserver = observer;
     }
-  if (identityChanged) { canvas.dataset.lmbInkDrawn = "0"; this.lmbDrawInkLiveLayer(live, null); }
+  if (identityChanged) canvas.dataset.lmbInkDrawn = "0";
+  if (identityChanged || resized) this.lmbDrawInkLiveLayer(live, null);
   if (identityChanged || resized || canvas.dataset.lmbInkDrawn !== "1") this.lmbDrawInkLayer(canvas);
 };
 
@@ -533,7 +538,9 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
     this.lmbAssignInkContinuation(object, path(), page());
     if (tool === "pen") object.renderVersion = 2;
-    active = { kind: "draw", object, before, pointerId: event.pointerId, stylus }; redrawLive();
+    const rect = pageEl.getBoundingClientRect();
+    active = { kind: "draw", object, before, pointerId: event.pointerId, stylus,
+      stabilizer: tool === "pen" && stylus ? { level: lmbInkStabilityLevel(this.settings.inkStabilization), width: rect.width, height: rect.height, raw: point, tip: point } : null }; redrawLive();
   };
   const move = (event) => {
     if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
@@ -568,7 +575,8 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     const point = points[points.length - 1];
     if (active.kind === "draw") {
       const object = active.object;
-      if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
+      if (active.stabilizer) lmbInkStabilizeSamples(object.points, points, active.stabilizer);
+      else if (object.type === "pen" || object.type === "highlighter") lmbInkAppendSamples(object.points, points, .0003);
       else { object.x2 = point.x; object.y2 = point.y; }
     } else if (active.kind === "erase") for (const sample of points) this.lmbEraseAt(canvas, sample, active);
     else if (active.kind === "lasso") lmbInkAppendSamples(active.points, points, .0015);
@@ -606,6 +614,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     if (cancelled && !salvageCancelledStroke) this.lmbReplaceInkObjects(path(), page(), current.beforePage || current.before || objects);
     else if (current.kind === "draw") {
       const object = current.object;
+      if (current.stabilizer) lmbInkFinishStabilization(object.points, current.stabilizer);
       if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, .00018, .055);
       const isStroke = object.type === "pen" || object.type === "highlighter";
       const longEnough = Math.hypot((object.x2 || 0) - (object.x1 || 0), (object.y2 || 0) - (object.y1 || 0)) > .001;
@@ -623,7 +632,8 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     if (this.inkTool === "select") this.lmbRenderInkTools();
     if (current.kind === "erase" && current.returnTool && !cancelled && this.inkTool === "eraser") this.lmbSetInkTool(current.returnTool);
   };
-  const captureActive = { capture: true, passive: false };
+  const inputAbort = new AbortController(); pageEl._lmbInkInputAbort = inputAbort;
+  const captureActive = { capture: true, passive: false, signal: inputAbort.signal };
   inputSurface.addEventListener("pointerdown", down, captureActive);
   inputSurface.addEventListener("pointermove", move, captureActive);
   inputSurface.addEventListener("pointerup", (event) => finish(event, false), captureActive);
@@ -654,7 +664,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
   };
   inputSurface.addEventListener("touchend", (event) => finishStylusTouch(event, false), captureActive);
   inputSurface.addEventListener("touchcancel", (event) => finishStylusTouch(event, true), captureActive);
-  inputSurface.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, true);
+  inputSurface.addEventListener("contextmenu", (event) => { if (this.inkMode && event.pointerType === "pen") event.preventDefault(); }, captureActive);
 };
 
 LuciasMarginBookPlugin.prototype.lmbInkZoomViewer = function (pageEl) {
@@ -1042,6 +1052,11 @@ LuciasMarginBookPlugin.prototype.lmbRenderInkTools = function () {
     const autoReturn = document.createElement("label"); autoReturn.className = "lmb-ink-auto-return";
     const check = document.createElement("input"); check.type = "checkbox"; check.checked = this.settings.inkEraserAutoReturn !== false;
     check.addEventListener("change", () => { this.settings.inkEraserAutoReturn = check.checked; this.lmbPersistInkPreferences(); }); autoReturn.appendChild(check); autoReturn.appendChild(document.createTextNode("擦完回笔")); advanced.appendChild(autoReturn);
+    const stabilityLabel = document.createElement("label"); stabilityLabel.textContent = "跟笔稳定 ";
+    const stability = document.createElement("select"); stability.setAttribute("aria-label", "跟笔稳定");
+    for (const [value, label] of [[0, "关闭"], [1, "轻"], [2, "标准"], [3, "强"]]) { const option = document.createElement("option"); option.value = String(value); option.textContent = label; stability.appendChild(option); }
+    stability.value = String(lmbInkStabilityLevel(this.settings.inkStabilization));
+    stability.addEventListener("change", () => { this.settings.inkStabilization = Number(stability.value); this.lmbPersistInkPreferences(); }); stabilityLabel.appendChild(stability); advanced.appendChild(stabilityLabel);
     const leafCanvas = () => this.lmbActiveInkCanvas(host, leaf.view && leaf.view.file && leaf.view.file.path);
     const actions = document.createElement("div"); actions.className = "lmb-ink-actions"; content.appendChild(actions);
     const action = (icon, title, handler, fallback) => { const button = document.createElement("button"); button.type = "button"; button.title = title; button.setAttribute("aria-label", title); applyIcon(button, icon, fallback); button.addEventListener("click", handler); actions.appendChild(button); };
@@ -1143,6 +1158,8 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
       for (const pageEl of pages) {
         if (pageEl.isConnected) continue;
         if (pageEl._lmbFinishInk) pageEl._lmbFinishInk();
+        if (pageEl._lmbInkInputAbort) pageEl._lmbInkInputAbort.abort();
+        delete pageEl.dataset.lmbInkBound; delete pageEl._lmbInkInputSurface; delete pageEl._lmbInkStaticSurface;
         this.lmbReleaseTextBlockPage(pageEl);
         clearTimeout(pageEl._lmbInkResizeTimer);
         if (this._lmbInkVisibilityObserver) this._lmbInkVisibilityObserver.unobserve(pageEl);
@@ -1152,7 +1169,15 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
         if (this._lmbInkSelectionContext && pageEl.contains && pageEl.contains(this._lmbInkSelectionContext.canvas)) { this._lmbInkSelection = []; this._lmbInkSelectionContext = null; }
       }
     }
-    const relevant = records.some((record) => Array.from(record.addedNodes || []).some((node) => node.nodeType === 1 && (node.matches && node.matches(".page,.pdf-viewer-container") || node.querySelector && node.querySelector(".page"))));
+    const relevant = records.some((record) => {
+      const nodes = Array.from(record.addedNodes || []);
+      if (nodes.some(node => node.nodeType === 1 && (node.matches?.(".page,.pdf-viewer-container") || node.querySelector?.(".page")))) return true;
+      // PDF.js reset() can remove our canvases while retaining the same page.
+      // Do not react to our own layer additions, which would form a refresh loop.
+      const page = record.target.closest?.('.page');
+      return page?.isConnected && (Array.from(record.removedNodes || []).some(node => node.nodeType === 1 && (node.matches?.('.lmb-ink-layer,.lmb-ink-live-layer') || node.querySelector?.('.lmb-ink-layer,.lmb-ink-live-layer')))
+        || nodes.some(node => node.nodeType === 1 && node.matches?.('.canvasWrapper,.textLayer,.annotationLayer')));
+    });
     if (relevant) this.lmbScheduleInkRefresh(60);
   });
   observer.observe(document.body, { childList: true, subtree: true });
@@ -1165,10 +1190,11 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
     document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
     document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => {
       this.lmbUpdateInkPageCapture(pageEl, true);
+      if (pageEl._lmbInkInputAbort) pageEl._lmbInkInputAbort.abort();
       if (pageEl._lmbInkResizeObserver) pageEl._lmbInkResizeObserver.disconnect();
       pageEl._lmbInkResizeObserver = null;
       pageEl.querySelectorAll(":scope > .lmb-ink-layer,:scope > .lmb-ink-live-layer").forEach(layer => { if (layer._lmbInkFrame) cancelAnimationFrame(layer._lmbInkFrame); if (layer._lmbInkStaticFrame) cancelAnimationFrame(layer._lmbInkStaticFrame); layer.remove(); });
-      delete pageEl.dataset.lmbInkBound; delete pageEl._lmbInkInputSurface; delete pageEl._lmbFinishInk;
+      delete pageEl.dataset.lmbInkBound; delete pageEl._lmbInkInputSurface; delete pageEl._lmbInkStaticSurface; delete pageEl._lmbInkInputAbort; delete pageEl._lmbFinishInk;
     });
   });
 };

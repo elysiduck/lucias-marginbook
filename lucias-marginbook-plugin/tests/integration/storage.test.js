@@ -34,10 +34,13 @@ async function main(){
  const ctx=vm.createContext({});vm.runInContext(fs.readFileSync('src/core/settings-store.js','utf8')+';globalThis.Store=LmbSettingsStore;',ctx);
  const old=await new ctx.Store({loadData:async()=>({debug:false})}).load();assert.equal(old.settings.storageLayout,'legacy');
  const fresh=await new ctx.Store({loadData:async()=>null}).load();assert.equal(fresh.settings.storageLayout,'central');
+ assert.equal(fresh.settings.inkStabilization,2,'new and upgraded settings default to standard input stability');
  assert.equal(fresh.settings.storageRoot,"Lucia's Marginbook");
  const renamed=new P();renamed.settings={...fresh.settings};assert.equal(renamed.lmbStoragePaths(a).md,"Lucia's Marginbook/USC/508/作业2/作业2-摘录.md");
  const existing=await new ctx.Store({loadData:async()=>({storageLayout:'central',storageRoot:'MarginBook'})}).load();assert.equal(existing.settings.storageRoot,'MarginBook','existing explicit roots require a backed-up migration');
  const store=new ctx.Store({_lmbSerializedRuntimeCaches:{}});p.settings.storageLayout='central';p.settings.inkExcerptLinks={[a.path]:{'ink-note-id':{id:'inkref-stable',groups:[{page:2,objectIds:['stroke1']}]}}};const serialized=store.serialize(p.settings,{});assert.equal(serialized.storageLayout,'central');assert.equal(serialized.storageBindings[a.path].canvasDocuments['MarginBook/综合画布/English.canvas'],historic);assert.equal(serialized.inkExcerptLinks[a.path]['ink-note-id'].id,'inkref-stable');
+ for(const level of [0,1,2,3]){const roundtrip=store.serialize({...p.settings,inkStabilization:level},{});assert.equal(roundtrip.inkStabilization,level,'stability choice survives serialization including off');}
+ assert.equal(store.serialize({...p.settings,inkStabilization:99},{}).inkStabilization,2);
  console.log('Central MarginBook storage: path isolation, creation/reuse, historical Canvas sync, note retention and settings roundtrip passed');
 }
 main().catch(e=>{console.error(e);process.exitCode=1});

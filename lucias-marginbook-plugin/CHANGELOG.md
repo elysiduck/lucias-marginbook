@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.43.0
+
+- Add input-stage pen stabilization with off/light/standard/strong levels, selectable in plugin settings and the handwriting toolbar's More area. Default to standard. Apply speed-adaptive damping and bounded screen-pixel trailing distance before persistence; keep pressure, short dashes and release filtering. Existing ink is not reprocessed.
+- Restore handwriting when PDF.js removes only child canvases during zoom while retaining the page element. Repaint visible reading-mode pages even if intersection state is stale; redraw static/live layers after backing-size changes.
+- Finish active strokes before resizing, abort obsolete input listeners on layer replacement, and rebind recycled page elements. Replacing only the static canvas cannot leave handlers drawing into a detached surface or commit gestures twice.
+- Reproduce the missing-layer bug against the prior build, then verify repeated zoom, real pixel redraw, partial layer replacement, detached input, page recycling, in-flight stroke preservation, Markdown autosave and stability preference persistence. Native Obsidian zoom in/out and reload passed on an isolated PDF; 49 existing managed files and settings remained unchanged. Physical tablet feel remains a user hardware check.
+
 ## 0.42.0
 
 - Stop stylus drawing at the final valid contact sample. Do not append pointerup/touchend hover coordinates, even when a driver repeats positive pressure on release. Filter zero-pressure and buttons-up movement before fallback pressure normalization; retain valid coalesced samples and light-pressure finishing flicks.

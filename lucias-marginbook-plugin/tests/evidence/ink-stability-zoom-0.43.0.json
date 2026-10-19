@@ -1,0 +1,42 @@
+{
+  "version": "0.43.0",
+  "date": "2026-10-19",
+  "nodeSuites": 10,
+  "browserChecks": {
+    "inkLinks": 70,
+    "markdownFlow": 105,
+    "sidebar": 74,
+    "layout": 54,
+    "ink": 52,
+    "controls": 84,
+    "selection": 21,
+    "thumbnailMenu": 12,
+    "total": 472,
+    "pageErrors": 0
+  },
+  "beforeFix": "0.42.0 fails to restore ink after removing child ink canvases from a retained PDF page; stored objects remain present",
+  "afterFix": [
+    "reading-mode reset restores real ink pixels without changing stored objects",
+    "60%, 170%, 100% page resize repaints correctly even with stale intersection state",
+    "static-only and live-only replacements abort obsolete listeners and accept each gesture once",
+    "detached canvas cannot create ghost strokes",
+    "page recycling restores editable ink",
+    "in-flight stroke survives zoom and late release cannot duplicate it",
+    "Markdown notes and autosave remain intact",
+    "standard stabilization suppresses synthetic lateral jitter by more than 35 percent with at most 3.2 CSS-pixel trailing distance",
+    "coalescing batch size does not alter stabilization output",
+    "pressure, short dashes and all four persisted stability preferences survive"
+  ],
+  "nativeObsidian": {
+    "version": "1.14.4",
+    "platform": "Windows",
+    "isolatedFixture": true,
+    "zoomInTwiceOutOnce": "saved curve and rectangle remain visible",
+    "reload": "saved ink remains visible",
+    "existingManagedFilesAudited": 49,
+    "existingFilesByteIdentical": true,
+    "existingSettingsUnchanged": true,
+    "originalPaneWidthsRestored": true
+  },
+  "limitation": "Synthetic pointer tests and Windows zoom checks cannot certify physical tablet friction, stylus latency or handwriting feel."
+}
