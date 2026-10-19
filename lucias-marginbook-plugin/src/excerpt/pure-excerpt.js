@@ -19,13 +19,34 @@
  *   > ^ex-4d5e6f
  *
  * 返回条目：{ pdfPath, page, selection:[a,b,c,d]|null, exId, tags:[], text, sourceMd, line }
- * 注意：^ex- 是块尾锚点——遇到它就给当前条目定稿。没有 ^ex- 的悬空条目也会保留
- *       （exId 为 null），遵循全插件「宁可画得不准也不丢数据」的原则。
+ * ^ex- 是块尾锚点。没有 ID 的旧摘录仍按选区、受控区域或摘录包装保留；
+ * 普通 PDF 页码链接只负责导航，不再自动产生摘录。
  */
 function lmbUnwrapExcerptCard(content) {
-  if (typeof content !== "string" || !/\[!lmb-excerpt\]/i.test(content)) return content || "";
-  return content.split(/\r?\n/).filter((line) => !/\[!lmb-excerpt\]/i.test(line) && !/class=["']lmb-excerpt-id["']/i.test(line))
-    .map((line) => line.replace(/^(\s*)>\s?/, "$1")).join("\n");
+  return lmbExcerptCardSourceLines(content).map((line) => line.text).join("\n");
+}
+
+// Preserve per-line card provenance while removing the visual wrapper. A card
+// elsewhere in a mixed document must not make its ordinary links into excerpts.
+function lmbExcerptCardSourceLines(content) {
+  const wrapped = /\[!lmb-excerpt\]/i.test(content || "");
+  let cardDepth = 0;
+  return String(content || "").split(/\r?\n/).flatMap((raw) => {
+    const depth = ((raw.match(/^\s*((?:>\s*)*)/) || ["", ""])[1].match(/>/g) || []).length;
+    if (wrapped && /\[!lmb-excerpt\]/i.test(raw)) { cardDepth = depth; return []; }
+    if (wrapped && /class=["']lmb-excerpt-id["']/i.test(raw)) return [];
+    if (cardDepth && depth <= cardDepth && raw.trim()) cardDepth = 0;
+    return [{ text: wrapped ? raw.replace(/^(\s*)>\s?/, "$1") : raw, card: cardDepth > 0 && depth > cardDepth }];
+  });
+}
+
+function lmbExcerptDocumentRole(content) {
+  // Only a real top-level frontmatter scalar controls indexing. Mentions inside
+  // prose, code examples, and other properties must have no effect.
+  const frontmatter = String(content || "").match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
+  if (!frontmatter) return "";
+  const role = frontmatter[1].match(/^marginbook-role:[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^#\r\n]*?))[ \t]*(?:#.*)?$/m);
+  return role ? String(role[1] || role[2] || role[3] || "").trim().toLowerCase() : "";
 }
 
 function lmbParsePdfLinkTarget(linkText) {
@@ -45,6 +66,8 @@ function lmbParsePdfLinkTarget(linkText) {
 function lmbParseExcerptDoc(content, sourcePath) {
   const entries = [];
   if (!content || typeof content !== "string") return entries;
+  const role = lmbExcerptDocumentRole(content);
+  if (role === "reading-guide") return entries;
   // v0.18：只把插件受控生成区编入索引，用户补充区里的 PDF 链接不会制造幽灵摘录。
   const generated = content.match(/<!--\s*LMB:BEGIN\s*-->([\s\S]*?)<!--\s*LMB:END\s*-->/i);
   // 词语备注是用户主动建立的独立条目，不能随 Canvas 同步重写的受控区一起被覆盖。
@@ -54,10 +77,16 @@ function lmbParseExcerptDoc(content, sourcePath) {
   if (generated) content = generated[1] + (manual ? "\n" + manual[1] : "") + (wordNotes ? "\n" + wordNotes[1] : "");
   // v0.20：摘录卡使用外层 lmb-excerpt callout。解析前只剥掉这一层视觉包装，
   // 内部原文、图片、评论和 ^ex 锚点仍按旧格式解析，存量文档完全兼容。
-  content = lmbUnwrapExcerptCard(content);
-  const lines = content.split(/\r?\n/);
+  const sourceLines = lmbExcerptCardSourceLines(content);
+  const lines = sourceLines.map((line) => line.text);
   let pending = null;
-  const flush = () => { if (pending) { entries.push(pending); pending = null; } };
+  let pendingEvidence = false;
+  let managed = !!generated;
+  const flush = () => {
+    if (pending && (pendingEvidence || pending.exId)) entries.push(pending);
+    pending = null;
+    pendingEvidence = false;
+  };
   /* v0.16.6 P1-8：callout 区块内**整段**跳过，不只是首行。
    *   旧版只有 `if (/^\s*(?:>\s*)+\[!/.test(raw)) continue;` —— 只挡 `> [!xxx]` 标题行，
    *   于是「> 我的批注」这类 note 正文行会落进 5) 被收成摘录正文（索引里变成
@@ -69,6 +98,8 @@ function lmbParseExcerptDoc(content, sourcePath) {
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] || "";
+    if (/<!--\s*LMB:(?:MANUAL-EXCERPTS|WORD-NOTES):BEGIN\s*-->/i.test(raw)) { flush(); managed = true; continue; }
+    if (/<!--\s*LMB:(?:MANUAL-EXCERPTS|WORD-NOTES):END\s*-->/i.test(raw)) { flush(); managed = !!generated; continue; }
     // 兼容已被旧同步逻辑污染的文档：外层摘录 Callout 解包后，原本与外层
     // 同级的 lmb-comment 会失去 `>`，变成普通 `[!lmb-comment]` 文本。
     if (/^\s*\[!lmb-comment\]/i.test(raw)) { inLooseMirrorComment = true; continue; }
@@ -93,6 +124,11 @@ function lmbParseExcerptDoc(content, sourcePath) {
       inCalloutDepth = 0;
       const sm = LMB_SEL_RE.exec((lm[3] || "").trim());
       const rm = LMB_RECT_RE.exec((lm[4] || "").trim());
+      // PDF Flow used select=/square= before the selection=/rect= convention.
+      // Retain those records without reinterpreting their coordinate systems.
+      const legacyGeometry = /&(?:select|square)=(?:\d+(?:\.\d+)?,){3}\d+(?:\.\d+)?(?=[&|\]])/i.test(lm[0]);
+      const legacyQuote = /^\s*(?:>\s*)+\(\s*\[\[[\s\S]+\]\]\s*\)\s*$/.test(raw);
+      pendingEvidence = !!(sm || rm || legacyGeometry || legacyQuote || managed || sourceLines[i].card || role === "excerpts");
       pending = {
         pdfPath: lm[1],
         page: parseInt(lm[2], 10),
@@ -118,8 +154,7 @@ function lmbParseExcerptDoc(content, sourcePath) {
     const ex = EX_ID_RE.exec(raw);
     if (ex) {
       pending.exId = ex[0].replace(/^\^/, "");
-      entries.push(pending);
-      pending = null;
+      flush();
       continue;
     }
     // 3) 剥掉【所有】层 > 前缀后再判定

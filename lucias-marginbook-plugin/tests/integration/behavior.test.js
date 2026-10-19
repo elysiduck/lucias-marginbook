@@ -219,6 +219,47 @@ async function main() {
   ].join("\n"), "book-摘录.md");
   assert.equal(pollutedCommentParsed[0].text, "正确摘录正文");
   assert.equal(pollutedCommentParsed[0].exId, "ex-polluted1");
+
+  const navigationOnly = [
+    "| 18 | [[book.pdf#page=18|📖 P18]] |",
+    "## P18", "[[book.pdf#page=18|跳到 P18]]",
+    "**原文**：AI 的复述。", "> AI 的解释，不是真实摘录。"
+  ].join("\n");
+  assert.equal(pure.lmbParseExcerptDoc(navigationOnly, "逐页精读.md").length, 0);
+  const oldSelection = "> [[book.pdf#page=2&selection=1,0,2,3|原文]]\n> 旧选区摘录";
+  const oldId = "[[book.pdf#page=3|原文]]\n旧摘录\n^ex-legacy01";
+  const oldQuote = "> ([[book.pdf#page=4|【book-P.4】]])\n> 无 ID 的旧摘录";
+  const oldFlow = "旧 PDF Flow 原文🔗[[book.pdf#page=5&select=1,0,2,3&color=yellow|p.5]]";
+  const oldSquare = "🔗[[book.pdf#page=6&square=45,218,422,222&color=yellow|p.6]]";
+  const cardWithoutId = "> [!lmb-excerpt]+ 原文\n> > [[book.pdf#page=7|原文]]\n> > 没有 ID 的卡片";
+  for (const legacy of [oldSelection, oldId, oldQuote, oldFlow, oldSquare, cardWithoutId]) {
+    assert.equal(pure.lmbParseExcerptDoc(legacy, "old.md").length, 1, "legacy excerpt must remain indexed");
+  }
+  const mixed = pure.lmbParseExcerptDoc([navigationOnly, oldId, navigationOnly, cardWithoutId, "", navigationOnly].join("\n"), "mixed.md");
+  assert.equal(mixed.length, 2, "explicit excerpts must not authorize other links in the document");
+  assert.equal(mixed[0].text, "旧摘录");
+  assert.equal(pure.lmbParseExcerptDoc("<!-- LMB:MANUAL-EXCERPTS:BEGIN -->\n[[book.pdf#page=8]]\n手动摘录\n<!-- LMB:MANUAL-EXCERPTS:END -->\n" + navigationOnly, "manual.md").length, 1);
+  assert.equal(pure.lmbParseExcerptDoc("<!-- LMB:BEGIN -->\n[[book.pdf#page=8]]\n无 ID 的受控摘录\n<!-- LMB:END -->\n" + navigationOnly, "managed.md").length, 1);
+  for (const role of ["reading-guide", "'reading-guide'", '"reading-guide" # navigation only']) {
+    assert.equal(pure.lmbParseExcerptDoc("\uFEFF---\r\nmarginbook-role: " + role + "\r\n---\r\n" + oldSelection + "\n" + oldId, "guide.md").length, 0);
+  }
+  assert.equal(pure.lmbParseExcerptDoc("---\nmarginbook-role: excerpts\n---\n[[book.pdf#page=9]]\n手动全文档摘录", "manual.md").length, 1);
+  assert.equal(pure.lmbParseExcerptDoc("正文里的示例：\nmarginbook-role: reading-guide\n" + oldSelection, "old.md").length, 1);
+  assert.equal(pure.lmbParseExcerptDoc("---\ndescription: |\n  marginbook-role: reading-guide\n---\n" + oldSelection, "old.md").length, 1);
+  assert.equal(proto.lmbParsePdfLink("book.pdf#page=18").page, 18, "plain page navigation remains supported");
+  const guideFile = { path: "guide.md", extension: "md", stat: { mtime: 2 } };
+  const indexedReal = pure.lmbParseExcerptDoc(oldId, "real.md")[0];
+  const indexCtx = {
+    excerptIndex: new Map([["book.pdf", [indexedReal, { sourceMd: guideFile.path, page: 18, text: "旧缓存假批注" }]]]),
+    indexMtime: new Map([[guideFile.path, 1]]),
+    app: { vault: { cachedRead: async () => "---\nmarginbook-role: reading-guide\n---\n" + navigationOnly } },
+    lmbFileLinksPdf: () => true, dropFileFromIndex: proto.dropFileFromIndex,
+    lmbScheduleMarksRefresh: () => {}, lmbSchedulePdfSidebarRefresh: () => {},
+    lmbMirrorMdNotesToCanvas: async (_file, _content, entries) => { assert.equal(entries.length, 0); }
+  };
+  await proto.reindexFile.call(indexCtx, guideFile);
+  assert.deepEqual(indexCtx.excerptIndex.get("book.pdf"), [indexedReal], "reindex removes guide ghosts while preserving other sources");
+  assert.equal(indexCtx.indexMtime.get(guideFile.path), 2);
   const noteState = proto._lmbExcerptNoteState([
     "> [!lmb-excerpt]+ P.17 · 原文",
     "> > 摘录",

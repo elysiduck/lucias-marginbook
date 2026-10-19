@@ -1,0 +1,21 @@
+{
+  "validation": "Read-only comparison against the user's vault before deployment",
+  "markdownFilesScanned": 565,
+  "pdfLinkedDocumentsCompared": 48,
+  "previousEntries": 573,
+  "retainedEntries": 213,
+  "retainedEntriesIdenticalIncludingTextIdsGeometryAndSource": true,
+  "removedEntriesWithExcerptIdOrSelectionOrRect": 0,
+  "removedNavigationEntries": 360,
+  "removedSources": [
+    { "document": "Lecture 11 ECON508_逐页精读.md", "count": 66 },
+    { "document": "Lecture 12 ECON508_详细梳理.md", "count": 36 },
+    { "document": "Lecture 13 ECON508_详细梳理.md", "count": 27 },
+    { "document": "Lecture 14 ECON508_详细梳理.md", "count": 28 },
+    { "document": "Lecture 15 ECON508_逐页精读.md", "count": 74 },
+    { "document": "508-L4.md", "count": 58 },
+    { "document": "大数据经济学第九讲-文本数据深度解析.md", "count": 71 }
+  ],
+  "legacyPdfFlowEntriesWithoutModernIdOrGeometryRetained": 18,
+  "limitations": "Parser/index/navigation regressions verified; live Obsidian PDF rendering requires plugin reload and host observation."
+}
