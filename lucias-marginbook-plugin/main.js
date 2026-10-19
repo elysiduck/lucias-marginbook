@@ -671,8 +671,8 @@ const LMB_STYLES = [
   '.lmb-pdf-sidebar-resizer:hover,.lmb-pdf-sidebar-resizer.is-dragging{background:var(--interactive-accent);opacity:.75;}',
   '.lmb-pdf-sidebar-title{position:sticky;top:0;padding:12px 3px 10px;margin-bottom:9px;',
   'background:var(--background-primary);border-bottom:1px solid var(--background-modifier-border);z-index:2;}',
-  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;min-height:30px;padding-right:112px;}',
-  '.lmb-sidebar-header-actions{position:absolute;z-index:1100;right:12px;top:calc(var(--lmb-pdf-sidebar-top,0px) + 12px);display:flex;align-items:center;gap:6px;}.lmb-sidebar-header-actions button{position:static;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;flex:0 0 auto;height:30px!important;min-height:30px!important;max-height:30px;margin:0!important;padding:0 8px!important;gap:5px;border:1px solid var(--background-modifier-border);border-radius:7px;background:var(--background-secondary);color:var(--text-muted);font:11px/1 var(--font-interface);box-shadow:none;cursor:pointer;transition:background .15s,color .15s,box-shadow .15s,transform .1s;}.lmb-sidebar-header-actions button svg{display:block;width:17px;height:17px;flex:0 0 17px;stroke:currentColor;}.lmb-sidebar-header-actions .lmb-sidebar-state-toggle{width:30px;min-width:30px;padding:0!important;}.lmb-sidebar-header-actions button:hover{background:var(--background-modifier-hover);color:var(--text-normal);box-shadow:0 2px 7px #0003;}.lmb-sidebar-header-actions button:active{transform:scale(.96);box-shadow:inset 0 1px 4px #0003;}.lmb-sidebar-header-actions button:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px;}.lmb-pdf-sidebar-closed .lmb-sidebar-side-toggle{display:none;}.lmb-sidebar-side-toggle{white-space:nowrap;}.lmb-sidebar-left>.lmb-sidebar-header-actions{left:calc(var(--lmb-pdf-sidebar-width,340px) - 12px);right:auto;transform:translateX(-100%);}.lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-sidebar-header-actions{left:12px;transform:none;}@media(any-pointer:coarse){.lmb-sidebar-header-actions button{height:40px!important;min-height:40px!important;max-height:40px;font-size:12px;}.lmb-sidebar-header-actions .lmb-sidebar-state-toggle{width:40px;min-width:40px;}.lmb-pdf-sidebar-title-row{min-height:40px;padding-right:134px;}}',
+  '.lmb-pdf-sidebar-title-row{display:flex;align-items:center;gap:7px;min-height:30px;padding-right:84px;}',
+  '.lmb-sidebar-header-actions{position:absolute;z-index:1100;right:12px;top:calc(var(--lmb-pdf-sidebar-top,0px) + 12px);display:flex;align-items:center;gap:6px;}.lmb-sidebar-header-actions button{position:static;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;flex:0 0 auto;height:30px!important;min-height:30px!important;max-height:30px;margin:0!important;padding:0 8px!important;gap:5px;border:1px solid var(--background-modifier-border);border-radius:7px;background:var(--background-secondary);color:var(--text-muted);font:11px/1 var(--font-interface);box-shadow:none;cursor:pointer;transition:background .15s,color .15s,box-shadow .15s,transform .1s;}.lmb-sidebar-header-actions button svg{display:block;width:17px;height:17px;flex:0 0 17px;stroke:currentColor;}.lmb-sidebar-header-actions :is(.lmb-sidebar-state-toggle,.lmb-sidebar-side-toggle){width:30px;min-width:30px;padding:0!important;}.lmb-sidebar-header-actions button:hover{background:var(--background-modifier-hover);color:var(--text-normal);box-shadow:0 2px 7px #0003;}.lmb-sidebar-header-actions button:active{transform:scale(.96);box-shadow:inset 0 1px 4px #0003;}.lmb-sidebar-header-actions button:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px;}.lmb-pdf-sidebar-closed .lmb-sidebar-side-toggle{display:none;}.lmb-sidebar-side-toggle{white-space:nowrap;}.lmb-sidebar-left>.lmb-sidebar-header-actions{left:calc(var(--lmb-pdf-sidebar-width,340px) - 12px);right:auto;transform:translateX(-100%);}.lmb-sidebar-left.lmb-pdf-sidebar-closed>.lmb-sidebar-header-actions{left:12px;transform:none;}@media(any-pointer:coarse){.lmb-sidebar-header-actions button{height:40px!important;min-height:40px!important;max-height:40px;font-size:12px;}.lmb-sidebar-header-actions :is(.lmb-sidebar-state-toggle,.lmb-sidebar-side-toggle){width:40px;min-width:40px;}.lmb-pdf-sidebar-title-row{min-height:40px;padding-right:104px;}}',
   '.lmb-pdf-sidebar-title-main{font-size:14px;font-weight:700;line-height:1.4;}',
   '.lmb-pdf-sidebar-count{font-size:10px;color:var(--text-on-accent);background:var(--interactive-accent);padding:1px 6px;border-radius:99px;}',
   '.lmb-pdf-sidebar-file{font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}',
@@ -2028,6 +2028,26 @@ function lmbInkRibbon(object, width, height) {
     return lengths > .000001 && (dx * ex + dy * ey) / lengths < .65 || (point.p ?? .5) - Math.max(points[i - 1].p ?? .5, points[i + 1].p ?? .5) >= .07;
   });
   return { centers, left, right, corners };
+}
+
+function lmbInkTraceRibbon(path, geometry) {
+  const { centers, left, right, corners } = geometry;
+  if (!centers.length) return;
+  const trace = (side, anchors) => {
+    for (let i = 1; i < side.length - 1; i++) {
+      if (anchors[i]) path.lineTo(side[i].x, side[i].y);
+      else path.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+    }
+    path.lineTo(side[side.length - 1].x, side[side.length - 1].y);
+  };
+  path.moveTo(left[0].x, left[0].y); trace(left, corners);
+  const last = centers.length - 1, end = centers[last], start = centers[0];
+  const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
+  path.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
+  trace(right.slice().reverse(), corners.slice().reverse());
+  const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
+  path.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
+  path.closePath();
 }
 
 function lmbInkRibbonPath(object, width, height) {
@@ -4199,7 +4219,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.44.0";
+    st.dataset.lmbVersion = "0.45.0";
   }
 
 }
@@ -4801,8 +4821,6 @@ LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
 LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
   if (!pageEl || !pdfPath) return;
   const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
-  if (this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[pdfPath] || this._lmbActiveInlineBlocks && this._lmbActiveInlineBlocks.size)
-    this.lmbRenderTextBlocksOnPage(pageEl, pdfPath).catch((err) => console.warn("[lmb] text block render failed", err));
   // Capture policy must update synchronously when ink mode toggles; waiting for
   // IntersectionObserver leaves PDF.js in control of the first Pencil stroke.
   this.lmbUpdateInkPageCapture(pageEl);
@@ -4820,6 +4838,10 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
     if (!visiblyNear) return;
     pageEl._lmbInkNearViewport = true;
   }
+  // Markdown has its own resize observer. Ink refresh only needs to restore a
+  // block removed by PDF.js, not restyle every existing block again on zoom.
+  if ((this._lmbActiveInlineBlocks?.size || Object.values(this.settings.pdfTextBlocks?.[pdfPath] || {}).some(view => Number(view?.page) === pageNumber)) && !pageEl.querySelector(':scope > .lmb-pdf-text-block'))
+    this.lmbRenderTextBlocksOnPage(pageEl, pdfPath).catch((err) => console.warn("[lmb] text block render failed", err));
   if (!this.inkMode && !this.lmbInkObjects(pdfPath, pageNumber).length) {
     for (const layer of pageEl.querySelectorAll(":scope > .lmb-ink-layer, :scope > .lmb-ink-live-layer")) {
       layer.style.display = "none";
@@ -5159,8 +5181,30 @@ LuciasMarginBookPlugin.prototype.lmbCanvasContext = function (canvas) {
   return { ctx, width: canvas.clientWidth, height: canvas.clientHeight };
 };
 
-LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width, height) {
-  if (!object) return;
+LuciasMarginBookPlugin.prototype.lmbInkCachedPath = function (object, width, height) {
+  if (typeof Path2D === 'undefined') return null;
+  const normalized = object.renderVersion >= 3 && object.widthUnit === 'page';
+  const signature = [object.width, object.widthUnit, object.pressureMode, object.renderVersion, !!object.inkCutStart, !!object.inkCutEnd].join('|');
+  const cache = this._lmbInkPathCache || (this._lmbInkPathCache = new WeakMap());
+  let entry = cache.get(object);
+  if (!entry || entry.points !== object.points || entry.count !== object.points.length || entry.signature !== signature) {
+    entry = { points: object.points, count: object.points.length, signature, paths: new Map() }; cache.set(object, entry);
+  }
+  const aspect = height / Math.max(1, width), key = normalized ? 'page' : `${width}/${height}`;
+  let saved = entry.paths.get(key);
+  if (!saved || normalized && Math.abs(saved.height / saved.width - aspect) > .01) {
+    const referenceWidth = normalized ? 1000 : width, referenceHeight = normalized ? 1000 * aspect : height;
+    const path = new Path2D(); lmbInkTraceRibbon(path, lmbInkRibbon(object, referenceWidth, referenceHeight));
+    saved = { path, width: referenceWidth, height: referenceHeight };
+    entry.paths.set(key, saved);
+    // Older renderers keep exact size-specific geometry, with bounded zoom history.
+    if (entry.paths.size > 3) entry.paths.delete(entry.paths.keys().next().value);
+  }
+  return saved;
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width, height, cacheStatic = false) {
+  if (!object || !(width > 0) || !(height > 0)) return;
   const color = object.color || "#e05252", type = object.type;
   ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.globalAlpha = object.opacity == null ? 1 : object.opacity;
   if (type === "pen" || type === "highlighter") {
@@ -5171,22 +5215,12 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
       const radius = lmbInkSegmentWidth(object, points[0], null, width, height) / 2;
       ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
     } else if (type === "pen" && object.renderVersion >= 2) {
-      const { centers, left, right, corners } = lmbInkRibbon(object, width, height);
-      const trace = (side, anchors) => {
-        for (let i = 1; i < side.length - 1; i++) {
-          if (anchors[i]) ctx.lineTo(side[i].x, side[i].y);
-          else ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
-        }
-        ctx.lineTo(side[side.length - 1].x, side[side.length - 1].y);
-      };
-      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left, corners);
-      const last = centers.length - 1, end = centers[last], start = centers[0];
-      const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
-      ctx.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
-      trace(right.slice().reverse(), corners.slice().reverse());
-      const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
-      ctx.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
-      ctx.closePath(); ctx.fill();
+      const saved = cacheStatic && this.lmbInkCachedPath(object, width, height);
+      if (saved) { ctx.scale(width / saved.width, height / saved.height); ctx.fill(saved.path); ctx.restore(); return; }
+      // Reference-space geometry makes natural pressure and fine tips invariant
+      // under PDF zoom. The active stroke uses the same geometry without caching.
+      if (object.renderVersion >= 3 && object.widthUnit === 'page') { const scale = width / 1000; ctx.scale(scale, scale); height /= scale; width = 1000; }
+      ctx.beginPath(); lmbInkTraceRibbon(ctx, lmbInkRibbon(object, width, height)); ctx.fill();
     } else if (type === "highlighter") {
       ctx.lineWidth = lmbInkSegmentWidth(object, points[0], null, width);
       ctx.beginPath(); ctx.moveTo(points[0].x * width, points[0].y * height);
@@ -5221,9 +5255,10 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
 
 LuciasMarginBookPlugin.prototype.lmbDrawInkLayer = function (canvas) {
   const info = this.lmbCanvasContext(canvas); if (!info) return;
+  if (!(info.width > 0) || !(info.height > 0)) { canvas.dataset.lmbInkDrawn = '0'; return; }
   info.ctx.clearRect(0, 0, info.width, info.height);
   const hidden = this._lmbInkHiddenIds || new Set();
-  for (const object of this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) if (!hidden.has(object.id)) this.lmbDrawInkObject(info.ctx, object, info.width, info.height);
+  for (const object of this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) if (!hidden.has(object.id)) this.lmbDrawInkObject(info.ctx, object, info.width, info.height, true);
   canvas.dataset.lmbInkDrawn = "1";
 };
 
@@ -5394,6 +5429,10 @@ LuciasMarginBookPlugin.prototype.lmbCommitInkChange = function (path, page, befo
   const after = lmbInkClone(this.lmbInkObjects(path, page, true));
   const patch = lmbInkBuildPatch(before, after);
   if (!patch.added.length && !patch.removed.length && !patch.modified.length) return false;
+  if (this._lmbInkPathCache && patch.modified.length) {
+    const modified = new Set(patch.modified.map(item => item.id));
+    for (const object of this.lmbInkObjects(path, page)) if (modified.has(object.id)) this._lmbInkPathCache.delete(object);
+  }
   const history = this.lmbHistoryFor(path, page);
   history.undo.push({ patch, label });
   if (history.undo.length > LMB_INK_HISTORY_LIMIT) history.undo.shift();
@@ -5668,6 +5707,7 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
     for (const pageEl of this._lmbInkObservedPages) clearTimeout(pageEl._lmbInkResizeTimer);
     this._lmbInkObservedPages.clear();
     observer.disconnect(); clearTimeout(this._lmbInkSaveTimer); clearTimeout(this._lmbInkPrefsTimer); this.lmbFlushInkStorage().catch(() => {});
+    this._lmbInkPathCache = null;
     document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
     document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => {
       this.lmbUpdateInkPageCapture(pageEl, true);
@@ -10795,9 +10835,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // setIcon is not a replace-all API in the host. Rebuild our own content
     // explicitly so refreshes cannot accumulate old icons or text labels.
     button.replaceChildren();
-    try { setIcon(button, left ? "panel-left" : "panel-right"); } catch (_) { button.empty(); }
-    button.createSpan({ text: left ? "左侧" : "右侧" });
+    try { setIcon(button, left ? "panel-left" : "panel-right"); } catch (_) { button.setText("⇄"); }
     button.title = left ? "侧栏位于左侧，点击移到右侧" : "侧栏位于右侧，点击移到左侧";
+    button.setAttribute("aria-label", button.title);
   },
 
   async lmbSetPdfSidebarSide(side) {
@@ -14272,7 +14312,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.44.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.45.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")

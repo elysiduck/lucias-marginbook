@@ -295,6 +295,26 @@ function lmbInkRibbon(object, width, height) {
   return { centers, left, right, corners };
 }
 
+function lmbInkTraceRibbon(path, geometry) {
+  const { centers, left, right, corners } = geometry;
+  if (!centers.length) return;
+  const trace = (side, anchors) => {
+    for (let i = 1; i < side.length - 1; i++) {
+      if (anchors[i]) path.lineTo(side[i].x, side[i].y);
+      else path.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+    }
+    path.lineTo(side[side.length - 1].x, side[side.length - 1].y);
+  };
+  path.moveTo(left[0].x, left[0].y); trace(left, corners);
+  const last = centers.length - 1, end = centers[last], start = centers[0];
+  const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
+  path.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
+  trace(right.slice().reverse(), corners.slice().reverse());
+  const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
+  path.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
+  path.closePath();
+}
+
 function lmbInkRibbonPath(object, width, height) {
   const { centers, left, right, corners } = lmbInkRibbon(object, width, height);
   if (!centers.length) return '';

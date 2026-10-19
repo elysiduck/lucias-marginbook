@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.45.0
+
+- Cache completed pen outlines as native Path2D geometry. Natural-pressure version 3 strokes use reference-space paths so zoom transforms existing geometry instead of rebuilding pressure/taper outlines. Live and cached drawing share a single path tracer. Earlier outline versions retain exact size-specific geometry with three cached sizes per stroke.
+- Invalidate paths on geometry, width, pressure mode or cut-boundary changes; release cache references on unload. Keep caches outside serialized data and avoid building paths for hidden zero-size canvases.
+- Stop ink refresh from repeatedly laying out existing Markdown blocks on zoom. Their own resize observer remains responsible for layout; ink refresh still restores removed blocks on visible PDF pages and retains page-layer recovery.
+- Remove the visible left/right text from the sidebar placement toggle. Keep a square icon button, hover/action description, accessible label and existing hover/press styling; narrow the reserved header space accordingly.
+- Validate 10 Node suites and 493 browser checks, including cached/live pixel agreement, zoom reuse, cache invalidation, earlier versions, zero-size views, sidebar layout and Markdown/ink workflows. A Windows headless Edge fixture with 180 strokes/39,600 points reduced warmed synchronous zoom processing from about 13 ms to 0.5 ms. Initial display still builds the cache; these timings do not measure full PDF rendering or physical tablet latency.
+
 ## 0.44.0
 
 - Preserve expressive pen details: reduce follower damping during pressure gestures, coherent turns and paused micro-adjustments. Retain short stationary pressure samples and keep raw pressure peaks through display smoothing and final simplification.

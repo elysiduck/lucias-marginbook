@@ -191,9 +191,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     // setIcon is not a replace-all API in the host. Rebuild our own content
     // explicitly so refreshes cannot accumulate old icons or text labels.
     button.replaceChildren();
-    try { setIcon(button, left ? "panel-left" : "panel-right"); } catch (_) { button.empty(); }
-    button.createSpan({ text: left ? "左侧" : "右侧" });
+    try { setIcon(button, left ? "panel-left" : "panel-right"); } catch (_) { button.setText("⇄"); }
     button.title = left ? "侧栏位于左侧，点击移到右侧" : "侧栏位于右侧，点击移到左侧";
+    button.setAttribute("aria-label", button.title);
   },
 
   async lmbSetPdfSidebarSide(side) {

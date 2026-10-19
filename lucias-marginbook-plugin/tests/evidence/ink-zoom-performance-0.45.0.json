@@ -1,0 +1,45 @@
+{
+  "version": "0.45.0",
+  "date": "2026-10-19",
+  "nodeSuites": 10,
+  "browserChecks": {
+    "inkLinks": 70,
+    "markdownFlow": 105,
+    "sidebar": 74,
+    "layout": 54,
+    "ink": 59,
+    "controls": 84,
+    "selection": 21,
+    "thumbnailMenu": 12,
+    "pathCache": 14,
+    "total": 493,
+    "pageErrors": 0
+  },
+  "benchmark": {
+    "environment": "Windows headless Edge, 1440x1000 viewport, devicePixelRatio 2",
+    "strokes": 180,
+    "points": 39600,
+    "scales": [1, 1.1, 1.25, 1.5, 1.25, 1.1, 1],
+    "baselineMedianZoomCpuMs": 13.3,
+    "cachedMedianZoomCpuMs": 0.5,
+    "baselineInitialDisplayMs": 22.1,
+    "cachedInitialDisplayMs": 33.1,
+    "scope": "Synchronous plugin ensure-layer/ink-redraw processing; excludes native PDF.js rendering, GPU completion and physical tablet latency",
+    "tradeoff": "First display constructs cached paths; subsequent zoom reuses them. Caches are runtime-only."
+  },
+  "regressions": [
+    "cached and live path pixels agree at 60%, 100%, 110% and 150%",
+    "new natural-pressure strokes reuse one path across zoom",
+    "color changes reuse geometry; width and geometry edits invalidate it",
+    "in-place committed edits cannot reuse stale paths",
+    "earlier renderers retain exact size-specific outlines and bounded cache sizes",
+    "a real aspect change rebuilds geometry",
+    "rendering cannot mutate stored stroke data",
+    "hidden zero-size canvases cannot poison cache paths",
+    "sidebar refresh produces one placement icon and no left/right text",
+    "tooltip and accessible description remain; mobile/desktop headers align without horizontal overflow",
+    "existing Markdown autosave, pressure tips, eraser, undo/redo, association and zoom-recovery workflows pass"
+  ],
+  "visual": "Inspected generated sidebar screenshot; placement and collapse controls are square icon-only buttons",
+  "limitations": "No physical iPad timing measurement or new native Obsidian performance capture in this version."
+}

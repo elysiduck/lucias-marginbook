@@ -327,8 +327,6 @@ LuciasMarginBookPlugin.prototype.lmbRefreshInkLayers = function () {
 LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, fallbackIndex) {
   if (!pageEl || !pdfPath) return;
   const pageNumber = Number(pageEl.dataset.pageNumber) || fallbackIndex + 1;
-  if (this.settings.pdfTextBlocks && this.settings.pdfTextBlocks[pdfPath] || this._lmbActiveInlineBlocks && this._lmbActiveInlineBlocks.size)
-    this.lmbRenderTextBlocksOnPage(pageEl, pdfPath).catch((err) => console.warn("[lmb] text block render failed", err));
   // Capture policy must update synchronously when ink mode toggles; waiting for
   // IntersectionObserver leaves PDF.js in control of the first Pencil stroke.
   this.lmbUpdateInkPageCapture(pageEl);
@@ -346,6 +344,10 @@ LuciasMarginBookPlugin.prototype.lmbEnsureInkLayer = function (pageEl, pdfPath, 
     if (!visiblyNear) return;
     pageEl._lmbInkNearViewport = true;
   }
+  // Markdown has its own resize observer. Ink refresh only needs to restore a
+  // block removed by PDF.js, not restyle every existing block again on zoom.
+  if ((this._lmbActiveInlineBlocks?.size || Object.values(this.settings.pdfTextBlocks?.[pdfPath] || {}).some(view => Number(view?.page) === pageNumber)) && !pageEl.querySelector(':scope > .lmb-pdf-text-block'))
+    this.lmbRenderTextBlocksOnPage(pageEl, pdfPath).catch((err) => console.warn("[lmb] text block render failed", err));
   if (!this.inkMode && !this.lmbInkObjects(pdfPath, pageNumber).length) {
     for (const layer of pageEl.querySelectorAll(":scope > .lmb-ink-layer, :scope > .lmb-ink-live-layer")) {
       layer.style.display = "none";
@@ -685,8 +687,30 @@ LuciasMarginBookPlugin.prototype.lmbCanvasContext = function (canvas) {
   return { ctx, width: canvas.clientWidth, height: canvas.clientHeight };
 };
 
-LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width, height) {
-  if (!object) return;
+LuciasMarginBookPlugin.prototype.lmbInkCachedPath = function (object, width, height) {
+  if (typeof Path2D === 'undefined') return null;
+  const normalized = object.renderVersion >= 3 && object.widthUnit === 'page';
+  const signature = [object.width, object.widthUnit, object.pressureMode, object.renderVersion, !!object.inkCutStart, !!object.inkCutEnd].join('|');
+  const cache = this._lmbInkPathCache || (this._lmbInkPathCache = new WeakMap());
+  let entry = cache.get(object);
+  if (!entry || entry.points !== object.points || entry.count !== object.points.length || entry.signature !== signature) {
+    entry = { points: object.points, count: object.points.length, signature, paths: new Map() }; cache.set(object, entry);
+  }
+  const aspect = height / Math.max(1, width), key = normalized ? 'page' : `${width}/${height}`;
+  let saved = entry.paths.get(key);
+  if (!saved || normalized && Math.abs(saved.height / saved.width - aspect) > .01) {
+    const referenceWidth = normalized ? 1000 : width, referenceHeight = normalized ? 1000 * aspect : height;
+    const path = new Path2D(); lmbInkTraceRibbon(path, lmbInkRibbon(object, referenceWidth, referenceHeight));
+    saved = { path, width: referenceWidth, height: referenceHeight };
+    entry.paths.set(key, saved);
+    // Older renderers keep exact size-specific geometry, with bounded zoom history.
+    if (entry.paths.size > 3) entry.paths.delete(entry.paths.keys().next().value);
+  }
+  return saved;
+};
+
+LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width, height, cacheStatic = false) {
+  if (!object || !(width > 0) || !(height > 0)) return;
   const color = object.color || "#e05252", type = object.type;
   ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.globalAlpha = object.opacity == null ? 1 : object.opacity;
   if (type === "pen" || type === "highlighter") {
@@ -697,22 +721,12 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
       const radius = lmbInkSegmentWidth(object, points[0], null, width, height) / 2;
       ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
     } else if (type === "pen" && object.renderVersion >= 2) {
-      const { centers, left, right, corners } = lmbInkRibbon(object, width, height);
-      const trace = (side, anchors) => {
-        for (let i = 1; i < side.length - 1; i++) {
-          if (anchors[i]) ctx.lineTo(side[i].x, side[i].y);
-          else ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
-        }
-        ctx.lineTo(side[side.length - 1].x, side[side.length - 1].y);
-      };
-      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left, corners);
-      const last = centers.length - 1, end = centers[last], start = centers[0];
-      const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
-      ctx.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
-      trace(right.slice().reverse(), corners.slice().reverse());
-      const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
-      ctx.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
-      ctx.closePath(); ctx.fill();
+      const saved = cacheStatic && this.lmbInkCachedPath(object, width, height);
+      if (saved) { ctx.scale(width / saved.width, height / saved.height); ctx.fill(saved.path); ctx.restore(); return; }
+      // Reference-space geometry makes natural pressure and fine tips invariant
+      // under PDF zoom. The active stroke uses the same geometry without caching.
+      if (object.renderVersion >= 3 && object.widthUnit === 'page') { const scale = width / 1000; ctx.scale(scale, scale); height /= scale; width = 1000; }
+      ctx.beginPath(); lmbInkTraceRibbon(ctx, lmbInkRibbon(object, width, height)); ctx.fill();
     } else if (type === "highlighter") {
       ctx.lineWidth = lmbInkSegmentWidth(object, points[0], null, width);
       ctx.beginPath(); ctx.moveTo(points[0].x * width, points[0].y * height);
@@ -747,9 +761,10 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
 
 LuciasMarginBookPlugin.prototype.lmbDrawInkLayer = function (canvas) {
   const info = this.lmbCanvasContext(canvas); if (!info) return;
+  if (!(info.width > 0) || !(info.height > 0)) { canvas.dataset.lmbInkDrawn = '0'; return; }
   info.ctx.clearRect(0, 0, info.width, info.height);
   const hidden = this._lmbInkHiddenIds || new Set();
-  for (const object of this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) if (!hidden.has(object.id)) this.lmbDrawInkObject(info.ctx, object, info.width, info.height);
+  for (const object of this.lmbInkObjects(canvas.dataset.lmbInkPath, canvas.dataset.lmbInkPage)) if (!hidden.has(object.id)) this.lmbDrawInkObject(info.ctx, object, info.width, info.height, true);
   canvas.dataset.lmbInkDrawn = "1";
 };
 
@@ -920,6 +935,10 @@ LuciasMarginBookPlugin.prototype.lmbCommitInkChange = function (path, page, befo
   const after = lmbInkClone(this.lmbInkObjects(path, page, true));
   const patch = lmbInkBuildPatch(before, after);
   if (!patch.added.length && !patch.removed.length && !patch.modified.length) return false;
+  if (this._lmbInkPathCache && patch.modified.length) {
+    const modified = new Set(patch.modified.map(item => item.id));
+    for (const object of this.lmbInkObjects(path, page)) if (modified.has(object.id)) this._lmbInkPathCache.delete(object);
+  }
   const history = this.lmbHistoryFor(path, page);
   history.undo.push({ patch, label });
   if (history.undo.length > LMB_INK_HISTORY_LIMIT) history.undo.shift();
@@ -1194,6 +1213,7 @@ LuciasMarginBookPlugin.prototype.lmbSetupInk = function () {
     for (const pageEl of this._lmbInkObservedPages) clearTimeout(pageEl._lmbInkResizeTimer);
     this._lmbInkObservedPages.clear();
     observer.disconnect(); clearTimeout(this._lmbInkSaveTimer); clearTimeout(this._lmbInkPrefsTimer); this.lmbFlushInkStorage().catch(() => {});
+    this._lmbInkPathCache = null;
     document.querySelectorAll(".lmb-ink-tools").forEach((element) => element.remove());
     document.querySelectorAll(".page[data-lmb-ink-bound]").forEach((pageEl) => {
       this.lmbUpdateInkPageCapture(pageEl, true);

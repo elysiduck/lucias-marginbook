@@ -11,7 +11,7 @@
       plugin.lmbEnsurePdfSidebarEl(leaf); plugin.lmbSetPdfSidebarVisible(leaf,i%3!==0);
       await plugin.lmbRenderPdfSidebarForLeaf(leaf);
       const side=host.querySelector('.lmb-sidebar-side-toggle'), toggle=host.querySelector('.lmb-sidebar-state-toggle');
-      check(side.querySelectorAll('span').length===1&&side.querySelectorAll('svg').length===1,'refresh '+i+' retains exactly one side label and icon');
+      check(side.querySelectorAll('span').length===0&&side.querySelectorAll('svg').length===1&&side.textContent.trim()===''&&side.title===side.getAttribute('aria-label'),'refresh '+i+' retains one icon without visible side text and keeps an accessible tooltip');
       check(toggle.querySelectorAll('svg').length===1&&host.querySelectorAll('.lmb-sidebar-header-actions button').length===2,'refresh '+i+' retains exactly two header controls');
     }
     plugin.lmbSetPdfSidebarVisible(leaf,true);
