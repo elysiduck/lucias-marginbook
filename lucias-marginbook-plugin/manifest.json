@@ -1,7 +1,7 @@
 {
   "id": "lucias-marginbook",
   "name": "Lucia's MarginBook",
-  "version": "0.43.0",
+  "version": "0.44.0",
   "minAppVersion": "1.5.0",
   "description": "独立 PDF 摘录工作流：文字/图片拖拽到 md/canvas、MN4 式拖到卡上自动成子节点（首连锁定一卡一线，拖回父卡可改挂侧上下左右，尺寸变化自动重居中）、内容寻址摘录 ID、按页分组+相关笔记浮现+颜色语义+回忆模式、仿 PDF Flow 批注评论底栏（独立评论数据）。摘录索引 + PDF 回绘标记 + 双向跳转。图片框选 = PDF 工具栏按钮 / 侧栏按钮 / Alt+拖拽（一次性，截完自动复原）。双重摘录：文字选区自动附截图，卡片可切换文字/图片显示（宽度固定，v0.16.0 起切换入口收进悬浮栏、卡内不再放控件）。兼容 PDF++ 的 selection= 链接格式（存量笔记零迁移）。",
   "author": "Castorice",

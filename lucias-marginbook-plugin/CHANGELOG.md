@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.44.0
+
+- Preserve expressive pen details: reduce follower damping during pressure gestures, coherent turns and paused micro-adjustments. Retain short stationary pressure samples and keep raw pressure peaks through display smoothing and final simplification.
+- Render new natural-pressure strokes with a finer light-pressure range and pressure-dependent pointed starts/releases. Close at the final contact coordinate, retain heavy rounded stops and uniform fine strokes, and recognize gradual release independently of sample density. Zero-pressure contact begins fine instead of creating a default-pressure blob.
+- Preserve corner/pressure accent anchors in both Canvas and SVG outlines. Merge coincident display samples at peak pressure so stationary dots stay visible; preserve their original editable samples in storage.
+- Keep previous render versions and current pressure/stability preferences. Mark erased boundaries so partial erasing cannot manufacture a new release taper. Handwriting remains editable with association, undo/redo, autosave and zoom recovery.
+- Validate pressure-release outlines, held accents, dense samples, hooks, real dot pixels, SVG/Canvas agreement and existing Markdown/zoom workflows. Procreate's public taper/expression documentation informed the design; no Indigo brush assets or internal preset parameters were copied. Physical Apple Pencil Pro handwriting remains a user-device check.
+
 ## 0.43.0
 
 - Add input-stage pen stabilization with off/light/standard/strong levels, selectable in plugin settings and the handwriting toolbar's More area. Default to standard. Apply speed-adaptive damping and bounded screen-pixel trailing distance before persistence; keep pressure, short dashes and release filtering. Existing ink is not reprocessed.

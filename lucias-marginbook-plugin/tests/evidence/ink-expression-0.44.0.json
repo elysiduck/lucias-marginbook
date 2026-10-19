@@ -1,0 +1,39 @@
+{
+  "version": "0.44.0",
+  "date": "2026-10-19",
+  "inputContext": "User reports Apple Pencil Pro with working pressure, overly round light releases and loss of stroke details under stabilization",
+  "publicDesignReference": "https://help.procreate.com/procreate/handbook/5.4/brushes/brush-studio-settings",
+  "referenceScope": "Pressure taper, fine tip and motion-filter expression concepts; Indigo internal parameters and assets not used",
+  "nodeSuites": 10,
+  "browserChecks": {
+    "inkLinks": 70,
+    "markdownFlow": 105,
+    "sidebar": 74,
+    "layout": 54,
+    "ink": 59,
+    "controls": 84,
+    "selection": 21,
+    "thumbnailMenu": 12,
+    "total": 479,
+    "pageErrors": 0
+  },
+  "regressions": [
+    "real declining light contact pressure closes to a point without a hover tail",
+    "uniform fine strokes, heavy stops and fixed width remain distinct",
+    "dense slowly declining pressure also sharpens",
+    "stationary pressure accents survive sampling, simplification and persistence",
+    "pressure dots have real pixels at their own location",
+    "coincident display points retain peak pressure without changing stored samples",
+    "confirmed hooks reduce follower lag while alternating jitter stays suppressed",
+    "partial eraser cuts do not gain an artificial new taper",
+    "undo redo preserves expressive outline data",
+    "existing page/sidebar Markdown autosave and zoom/recycling checks pass"
+  ],
+  "visual": {
+    "fixture": "Same synthetic pressure inputs for horizontal, falling, rising and hook-like strokes under renderer versions 2 and 3",
+    "comparisonInspected": true,
+    "canvasSvgMeanAbsoluteAlphaDifference": 0,
+    "size": "1000 x 1100"
+  },
+  "limitations": "No physical Apple Pencil Pro was available. Synthetic pressure curves verify geometry and persistence, not subjective pen feel or exact Indigo behavior."
+}

@@ -9,7 +9,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.43.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.44.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -52,16 +52,16 @@ class LMBSettingTab extends PluginSettingTab {
         .onChange(async (v) => { this.plugin.settings.inkInputMode = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("笔压效果")
-      .setDesc("自然压感适合普通书写；钢笔效果的粗细变化较克制；固定宽度适合画图。")
+      .setDesc("自然压感保留提按、顿笔与轻收尖锋，适合汉字书写；钢笔效果的粗细变化较克制；固定宽度适合画图。只影响新笔迹。")
       .addDropdown((d) => d
-        .addOption("natural", "自然压感")
+        .addOption("natural", "自然压感 · 细腻笔锋")
         .addOption("fountain", "钢笔效果")
         .addOption("fixed", "固定宽度")
         .setValue(this.plugin.settings.inkPressureMode || "natural")
         .onChange(async (v) => { this.plugin.settings.inkPressureMode = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("跟笔稳定")
-      .setDesc("抑制细小偏移，增强跟笔阻尼。标准适合普通书写；强更稳但跟笔稍慢；只影响新写的触控笔笔迹。手写工具栏的更多设置中也能调整。")
+      .setDesc("抑制细小偏移；提按、确认转向和顿笔微调时减弱阻尼以保留细节。轻档更跟手，标准更稳；只影响新笔迹。更多设置中也能调整。")
       .addDropdown(d => d.addOption("0", "关闭").addOption("1", "轻").addOption("2", "标准").addOption("3", "强")
         .setValue(String(lmbInkStabilityLevel(this.plugin.settings.inkStabilization)))
         .onChange(async value => { this.plugin.settings.inkStabilization = Number(value); await this.plugin.saveSettings(); this.plugin.lmbRenderInkTools(); }));

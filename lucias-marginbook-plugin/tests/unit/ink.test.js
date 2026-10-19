@@ -181,7 +181,7 @@ async function main() {
   listeners.get("pointermove")(event(700, 900, 0, { buttons: 0 }));
   listeners.get("pointerup")(event(900, 1000, .5, { buttons: 0 })); // some drivers repeat positive pressure on release
   let newStroke = flowCtx.lmbInkObjects("flow.pdf", "1").at(-1);
-  assert.equal(newStroke.renderVersion, 2);
+  assert.equal(newStroke.renderVersion, 3);
   assert.equal(newStroke.points.at(-1).x, .3, "hover and release coordinates cannot extend a pen stroke");
   assert.equal(newStroke.points.at(-1).p, .04, "light genuine contact is preserved without tail trimming");
   const repeated = JSON.parse(JSON.stringify(newStroke));listeners.get("lostpointercapture")(event(999, 999, 0));
@@ -221,6 +221,30 @@ async function main() {
   const tiny = [{ x: .1, y: .2, p: .4, t: 1 }], tinyState = { level: 3, width: 1000, height: 1400, raw: tiny[0], tip: tiny[0] };
   pure.lmbInkStabilizeSamples(tiny, [{ x: .1008, y: .2, p: .4, t: 2 }], tinyState);pure.lmbInkFinishStabilization(tiny, tinyState);assert.equal(tiny.at(-1).x, .1008, "short dashes do not disappear in strong stability mode");
   assert.equal(pure.lmbInkStabilityLevel(undefined), 2);assert.equal(pure.lmbInkStabilityLevel(0), 0);assert.equal(pure.lmbInkStabilityLevel(8), 2);
+
+  const brush = { type: 'pen', renderVersion: 3, width: .003, widthUnit: 'page', pressureMode: 'natural' };
+  const widths = [.03, .5, .9].map(p => pure.lmbInkSegmentWidth(brush, { p, x: .1, y: .1, t: 0 }, null, 1000, 1400));
+  assert(widths[0] < widths[1] * .2, 'light contact has a much finer nib than medium pressure');
+  assert(widths[2] > widths[1] * 1.4, 'heavy paused contact retains a pronounced pressure accent');
+  assert.equal(pure.lmbInkSegmentWidth({ ...brush, pressureMode: 'fixed' }, { p: .01 }, null, 1000), 3, 'fixed-width drawing remains fixed');
+  const taper = { ...brush, points: [{ x: .1, y: .2, p: .04, t: 0 }, { x: .2, y: .2, p: .65, t: 8 }, { x: .3, y: .2, p: .2, t: 16 }, { x: .35, y: .2, p: .03, t: 24 }] };
+  const tapered = pure.lmbInkRibbon(taper, 1000, 1400);
+  assert.deepEqual(tapered.left[0], tapered.centers[0]);assert.deepEqual(tapered.left.at(-1), tapered.centers.at(-1));assert.deepEqual(tapered.right.at(-1), tapered.centers.at(-1), 'light release closes to a point at the last contact without extending the tail');
+  const heavyStop = pure.lmbInkRibbon({ ...taper, points: taper.points.map(p => ({ ...p, p: .8 })) }, 1000, 1400);assert.notDeepEqual(heavyStop.left.at(-1), heavyStop.centers.at(-1), 'heavy stop keeps its rounded full-width end');
+  const fineUniform = pure.lmbInkRibbon({ ...taper, points: taper.points.map(p => ({ ...p, p: .05 })) }, 1000, 1400);assert.notDeepEqual(fineUniform.left.at(-1), fineUniform.centers.at(-1), 'constant fine pressure is not artificially tapered');
+  const cutTip = pure.lmbInkRibbon({...taper,inkCutEnd:true},1000,1400);assert.notDeepEqual(cutTip.left.at(-1),cutTip.centers.at(-1),'erased cut boundary does not acquire a new release taper');
+  const denseRelease = Array.from({length:200},(_,i)=>({x:.1+i*.001,y:.2,p:.6-i*.57/199,t:i*4}));
+  const denseTip = pure.lmbInkRibbon({...brush,points:denseRelease},1000,1400);assert.deepEqual(denseTip.left.at(-1),denseTip.centers.at(-1),'a slowly declining, densely sampled release still sharpens');
+  const pressurePeak = [{ x: .1, y: .2, p: .2, t: 0 }, { x: .11, y: .2, p: .9, t: 4 }, { x: .12, y: .2, p: .2, t: 8 }];
+  assert.equal(pure.lmbInkDisplayPoints(pressurePeak, 1.4, true)[1].p, .9, 'render smoothing cannot average away a pressure peak');
+  assert(pure.lmbInkRibbon({ ...brush, points: pressurePeak }, 1000, 1400).corners[1], 'a short pressure accent receives its full outline width');
+  const held = pressurePeak.map(p => ({ ...p, x: .1, y: .2 })), heldRibbon = pure.lmbInkRibbon({ ...brush, points: held }, 1000, 1400);assert.equal(heldRibbon.centers.length, 1);assert(pure.lmbInkRibbonPath({ ...brush, points: held }, 1000, 1400).includes('A'), 'stationary pressure gestures retain a visible pressure-weighted dot in SVG');
+  assert.equal(flowCtx.lmbInkPoint(pageEl, event(100, 100, 0)).p, .02, 'zero-pressure pen contact starts fine instead of a default-pressure blob');
+  const pressureSamples = [{ x: .1, y: .2, p: .2, t: 1 }];pure.lmbInkAppendSamples(pressureSamples, [{ x: .1, y: .2, p: .9, t: 4 }], .00005, true);assert.equal(pressureSamples.length, 2, 'brief stationary pressure changes survive sampling');
+  const hook = Array.from({ length: 8 }, (_, i) => ({ x: .1 + i * .002, y: .2, p: .4, t: i * 8 })).concat([{ x: .114, y: .198, p: .4, t: 64 }, { x: .114, y: .196, p: .4, t: 72 }]);
+  const runHook = detail => { const target = [hook[0]], state = { level: 2, detail, width: 1000, height: 1400, raw: hook[0], tip: hook[0] };pure.lmbInkStabilizeSamples(target, hook.slice(1), state);return Math.hypot((state.tip.x-hook.at(-1).x)*1000,(state.tip.y-hook.at(-1).y)*1400); };
+  assert(runHook(true) < runHook(false) * .55, 'confirmed directional hook releases damping instead of dragging through the turn');
+  const detailed = [jitter[0]], detailedState = { level: 2, detail: true, width: 1000, height: 1400, raw: jitter[0], tip: jitter[0] };pure.lmbInkStabilizeSamples(detailed, jitter.slice(1), detailedState);assert(error(detailed) < error(jitter) * .65, 'detail preservation still suppresses alternating sensor jitter');
 
   // Sparse strokes and fast eraser sweeps must be clipped geometrically, not
   // just by deleting sampled vertices. Preserve pressure and reversible IDs.

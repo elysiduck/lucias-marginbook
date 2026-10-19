@@ -1892,13 +1892,13 @@ function lmbInkNormalizePoint(point, previous) {
   };
 }
 
-function lmbInkAppendSamples(target, samples, minDistance) {
+function lmbInkAppendSamples(target, samples, minDistance, preservePressure = false) {
   const result = target || [];
   const threshold = Math.max(.00005, Number(minDistance) || .00035);
   for (const raw of samples || []) {
     const prior = result[result.length - 1];
     const point = lmbInkNormalizePoint(raw, prior);
-    if (!prior || lmbInkDistance(prior, point) >= threshold || point.t - prior.t >= 12) result.push(point);
+    if (!prior || lmbInkDistance(prior, point) >= threshold || point.t - prior.t >= 12 || preservePressure && Math.abs(point.p - prior.p) >= .025) result.push(point);
     else prior.p = (prior.p * 2 + point.p) / 3;
   }
   return result;
@@ -1923,13 +1923,27 @@ function lmbInkStabilizeSamples(target, samples, state) {
   for (const raw of samples || []) {
     const prior = state.tip || target[target.length - 1], previousRaw = state.raw || prior;
     const point = lmbInkNormalizePoint(raw, previousRaw); state.raw = point;
-    if (!prior || !level) { lmbInkAppendSamples(target, [point], .00005); state.tip = point; continue; }
+    if (!prior || !level) { lmbInkAppendSamples(target, [point], .00005, state.detail); state.tip = point; continue; }
     const dt = Math.max(1, point.t - previousRaw.t), speed = Math.hypot((point.x - previousRaw.x) * width, (point.y - previousRaw.y) * height) / dt;
     const dx = (point.x - prior.x) * width, dy = (point.y - prior.y) * height, distance = Math.hypot(dx, dy);
-    const alpha = dt / (dt + tau / (1 + speed * 1.8));
-    const travel = Math.max(0, distance - lag, (distance - friction) * alpha), fraction = distance ? travel / distance : 0;
+    let responsiveness = 1;
+    if (state.detail) {
+      const vx = (point.x - previousRaw.x) * width, vy = (point.y - previousRaw.y) * height, length = Math.hypot(vx, vy);
+      const lastVector = state.vector, pending = state.turn;
+      const coherentTurn = pending && length > .4 && (vx * pending.x + vy * pending.y) / (length * pending.length) > .8;
+      const pressureGesture = Math.abs(point.p - previousRaw.p) >= .07 || point.p < .16 || point.p > .7 && speed < .25;
+      // Two consistent samples distinguish an intentional turn from alternating
+      // digitizer jitter. Pressure gestures and paused micro-adjustments respond
+      // immediately; ordinary light contact still gets the user's chosen damping.
+      if (pressureGesture || coherentTurn || dt >= 24 && speed < .12) responsiveness = .12;
+      state.lastDetail = responsiveness < 1;
+      state.turn = lastVector && lastVector.length > .8 && length > .8 && (vx * lastVector.x + vy * lastVector.y) / (length * lastVector.length) < .55 ? { x: vx, y: vy, length } : null;
+      if (length > .4) state.vector = { x: vx, y: vy, length };
+    }
+    const alpha = dt / (dt + tau * responsiveness / (1 + speed * 1.8));
+    const travel = Math.max(0, distance - lag * (responsiveness < 1 ? .2 : 1), (distance - friction * responsiveness) * alpha), fraction = distance ? travel / distance : 0;
     const tip = { ...point, x: prior.x + dx * fraction / width, y: prior.y + dy * fraction / height };
-    state.tip = tip; lmbInkAppendSamples(target, [tip], .00005);
+    state.tip = tip; lmbInkAppendSamples(target, [tip], .00005, state.detail);
   }
   return target;
 }
@@ -1937,6 +1951,7 @@ function lmbInkStabilizeSamples(target, samples, state) {
 function lmbInkFinishStabilization(points, state) {
   // Never turn a deliberate short dash into a dot. Only flush the last known
   // CONTACT sample, never the release/hover coordinate.
+  if (state?.detail && state.raw && points.length && (state.lastDetail || state.raw.p < .16)) lmbInkAppendSamples(points, [state.raw], .00005, true);
   if (state?.raw && points.length && points.every(p => Math.hypot((p.x - points[0].x) * state.width, (p.y - points[0].y) * state.height) < .5)
     && Math.hypot((state.raw.x - points[0].x) * state.width, (state.raw.y - points[0].y) * state.height) >= .5) {
     lmbInkAppendSamples(points, [state.raw], .00005);
@@ -1947,7 +1962,7 @@ function lmbInkFinishStabilization(points, state) {
 // Rendering-only stabilization. Persist original contact samples so hit tests,
 // erasing, undo and linked references retain their original geometry. Preserve
 // corners and endpoints; bound displacement in page-width units at every zoom.
-function lmbInkDisplayPoints(points, aspect = 1) {
+function lmbInkDisplayPoints(points, aspect = 1, detail = false) {
   return (points || []).map((point, i) => {
     const previous = points[i - 1], next = points[i + 1];
     if (!previous || !next) return { ...point };
@@ -1959,39 +1974,75 @@ function lmbInkDisplayPoints(points, aspect = 1) {
     const dy = (previous.y + next.y - 2 * point.y) / 4;
     const offset = Math.hypot(dx, dy * aspect), weight = offset > .0007 ? .0007 / offset : 1;
     return { ...point, x: point.x + dx * weight, y: point.y + dy * weight,
-      p: ((previous.p ?? .5) + 2 * (point.p ?? .5) + (next.p ?? .5)) / 4 };
+      p: detail ? point.p : ((previous.p ?? .5) + 2 * (point.p ?? .5) + (next.p ?? .5)) / 4 };
   });
 }
 
 function lmbInkRibbon(object, width, height) {
-  const points = lmbInkDisplayPoints(object.points, height / Math.max(1, width));
+  const detail = object.renderVersion >= 3;
+  let source = object.points || [];
+  if (detail) {
+    source = [];
+    for (const point of object.points || []) {
+      const previous = source[source.length - 1];
+      if (previous && Math.hypot((point.x - previous.x) * width, (point.y - previous.y) * height) < .001) source[source.length - 1] = { ...previous, p: Math.max(previous.p ?? .5, point.p ?? .5) };
+      else source.push(point);
+    }
+  }
+  const points = lmbInkDisplayPoints(source, height / Math.max(1, width), detail);
   const centers = points.map(point => ({ x: point.x * width, y: point.y * height }));
+  const fineEnd = (start) => {
+    if (!detail || object.pressureMode === 'fixed' || object.pressureMode === 'fountain' || points.length < 2) return false;
+    if (start ? object.inkCutStart : object.inkCutEnd) return false;
+    const edge = points[start ? 0 : points.length - 1].p ?? .5;
+    if (edge >= (start ? .12 : .16)) return false;
+    // Follow the pressure trend rather than a fixed number of samples: Pencil
+    // sampling frequency must not decide whether a slow release gets a fine tip.
+    for (let i = start ? 1 : points.length - 2; i >= 0 && i < points.length; i += start ? 1 : -1) {
+      const pressure = points[i].p ?? .5;
+      if (pressure < edge - .025) return false;
+      if (pressure - edge >= .07) return true;
+    }
+    return false;
+  };
+  const pointedStart = fineEnd(true), pointedEnd = fineEnd(false);
   const left = [], right = [];
   for (let i = 0; i < centers.length; i++) {
     const a = centers[Math.max(0, i - 1)], b = centers[Math.min(centers.length - 1, i + 1)];
     let dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
     if (!length) { dx = 1; dy = 0; length = 1; }
-    const radius = lmbInkSegmentWidth(object, points[i], points[i - 1], width) / 2;
+    let radius = lmbInkSegmentWidth(object, points[i], points[i - 1], width, height) / 2;
+    if (detail) {
+      // A genuine pressure release closes at the LAST CONTACT position. Never
+      // invent an extra tail, and retain round caps for dots/heavy stops.
+      if (i === points.length - 1 && pointedEnd || i === 0 && pointedStart) radius = 0;
+    }
     const nx = -dy / length * radius, ny = dx / length * radius;
     left.push({ x: centers[i].x + nx, y: centers[i].y + ny });
     right.push({ x: centers[i].x - nx, y: centers[i].y - ny });
   }
-  return { centers, left, right };
+  const corners = points.map((point, i) => {
+    if (!detail || !i || i === points.length - 1) return false;
+    const a = centers[i - 1], b = centers[i], c = centers[i + 1];
+    const dx = b.x - a.x, dy = b.y - a.y, ex = c.x - b.x, ey = c.y - b.y, lengths = Math.hypot(dx, dy) * Math.hypot(ex, ey);
+    return lengths > .000001 && (dx * ex + dy * ey) / lengths < .65 || (point.p ?? .5) - Math.max(points[i - 1].p ?? .5, points[i + 1].p ?? .5) >= .07;
+  });
+  return { centers, left, right, corners };
 }
 
 function lmbInkRibbonPath(object, width, height) {
-  const { centers, left, right } = lmbInkRibbon(object, width, height);
-  if (centers.length < 2) return '';
+  const { centers, left, right, corners } = lmbInkRibbon(object, width, height);
+  if (!centers.length) return '';
   const xy = point => `${point.x},${point.y}`;
-  const trace = side => {
+  const trace = (side, anchors) => {
     let d = '';
-    for (let i = 1; i < side.length - 1; i++) d += ` Q${xy(side[i])} ${(side[i].x + side[i + 1].x) / 2},${(side[i].y + side[i + 1].y) / 2}`;
+    for (let i = 1; i < side.length - 1; i++) d += anchors[i] ? ` L${xy(side[i])}` : ` Q${xy(side[i])} ${(side[i].x + side[i + 1].x) / 2},${(side[i].y + side[i + 1].y) / 2}`;
     return d + ` L${xy(side[side.length - 1])}`;
   };
   const end = centers.length - 1;
   const endRadius = Math.hypot(left[end].x - centers[end].x, left[end].y - centers[end].y);
   const startRadius = Math.hypot(left[0].x - centers[0].x, left[0].y - centers[0].y);
-  return `M${xy(left[0])}${trace(left)} A${endRadius},${endRadius} 0 0 0 ${xy(right[end])}${trace(right.slice().reverse())} A${startRadius},${startRadius} 0 0 0 ${xy(left[0])} Z`;
+  return `M${xy(left[0])}${trace(left, corners)} A${endRadius},${endRadius} 0 0 0 ${xy(right[end])}${trace(right.slice().reverse(), corners.slice().reverse())} A${startRadius},${startRadius} 0 0 0 ${xy(left[0])} Z`;
 }
 
 function lmbInkPerpendicularDistance(point, start, end) {
@@ -2066,11 +2117,17 @@ function lmbInkMergePages(older, newer) {
   return result;
 }
 
-function lmbInkSegmentWidth(object, point, previous, pageWidth) {
+function lmbInkSegmentWidth(object, point, previous, pageWidth, pageHeight = pageWidth) {
   const base = object.widthUnit === "page"
     ? Math.max(.5, (Number(object.width) || .003) * pageWidth)
     : Math.max(.5, Number(object.width) || 3);
   if (object.pressureMode === "fixed" || object.type === "highlighter") return base;
+  if (object.renderVersion >= 3 && object.pressureMode !== 'fountain') {
+    const pressure = lmbInkClamp(point?.p ?? .5, .005, 1);
+    const distance = previous ? Math.hypot((point.x - previous.x) * pageWidth, (point.y - previous.y) * pageHeight) : 0;
+    const speed = previous ? distance / Math.max(1, point.t - previous.t) : 0;
+    return Math.max(.12, base * (.055 + 1.5 * Math.pow(pressure, .85)) * lmbInkClamp(1.04 - speed * .08, .94, 1.04));
+  }
   const pressure = lmbInkClamp(point && point.p || .5, .05, 1);
   const distance = previous ? lmbInkDistance(point, previous) * pageWidth : 0;
   const elapsed = previous ? Math.max(1, (point.t || 0) - (previous.t || 0)) : 16;
@@ -4142,7 +4199,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.43.0";
+    st.dataset.lmbVersion = "0.44.0";
   }
 
 }
@@ -4856,7 +4913,7 @@ LuciasMarginBookPlugin.prototype.lmbUpdateInkPageCapture = function (pageEl, for
 LuciasMarginBookPlugin.prototype.lmbInkPoint = function (pageEl, event) {
   const rect = pageEl.getBoundingClientRect();
   const rawTime = Number(event.timeStamp);
-  const pressure = Number(event.pressure) > 0 ? Number(event.pressure) : Number(event.force) > 0 ? Number(event.force) : .5;
+  const pressure = Number(event.pressure) > 0 ? Number(event.pressure) : Number(event.force) > 0 ? Number(event.force) : lmbInkIsStylusInput(event) && (event.pressure === 0 || event.force === 0) ? .02 : .5;
   return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: pressure, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
 };
 
@@ -4954,10 +5011,10 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
       : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
     const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
     this.lmbAssignInkContinuation(object, path(), page());
-    if (tool === "pen") object.renderVersion = 2;
+    if (tool === "pen") object.renderVersion = 3;
     const rect = pageEl.getBoundingClientRect();
     active = { kind: "draw", object, before, pointerId: event.pointerId, stylus,
-      stabilizer: tool === "pen" && stylus ? { level: lmbInkStabilityLevel(this.settings.inkStabilization), width: rect.width, height: rect.height, raw: point, tip: point } : null }; redrawLive();
+      stabilizer: tool === "pen" && stylus ? { level: lmbInkStabilityLevel(this.settings.inkStabilization), detail: true, width: rect.width, height: rect.height, raw: point, tip: point } : null }; redrawLive();
   };
   const move = (event) => {
     if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
@@ -5032,7 +5089,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     else if (current.kind === "draw") {
       const object = current.object;
       if (current.stabilizer) lmbInkFinishStabilization(object.points, current.stabilizer);
-      if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, .00018, .055);
+      if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, object.renderVersion >= 3 ? .00008 : .00018, object.renderVersion >= 3 ? .018 : .055);
       const isStroke = object.type === "pen" || object.type === "highlighter";
       const longEnough = Math.hypot((object.x2 || 0) - (object.x1 || 0), (object.y2 || 0) - (object.y1 || 0)) > .001;
       if (isStroke || longEnough) objects.push(object);
@@ -5111,19 +5168,22 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
     if (!points.length) { ctx.restore(); return; }
     if (type === "highlighter") ctx.globalCompositeOperation = "multiply";
     if (points.length === 1) {
-      const radius = lmbInkSegmentWidth(object, points[0], null, width) / 2;
+      const radius = lmbInkSegmentWidth(object, points[0], null, width, height) / 2;
       ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
-    } else if (type === "pen" && object.renderVersion === 2) {
-      const { centers, left, right } = lmbInkRibbon(object, width, height);
-      const trace = side => {
-        for (let i = 1; i < side.length - 1; i++) ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+    } else if (type === "pen" && object.renderVersion >= 2) {
+      const { centers, left, right, corners } = lmbInkRibbon(object, width, height);
+      const trace = (side, anchors) => {
+        for (let i = 1; i < side.length - 1; i++) {
+          if (anchors[i]) ctx.lineTo(side[i].x, side[i].y);
+          else ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+        }
         ctx.lineTo(side[side.length - 1].x, side[side.length - 1].y);
       };
-      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left);
+      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left, corners);
       const last = centers.length - 1, end = centers[last], start = centers[0];
       const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
       ctx.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
-      trace(right.slice().reverse());
+      trace(right.slice().reverse(), corners.slice().reverse());
       const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
       ctx.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
       ctx.closePath(); ctx.fill();
@@ -5285,6 +5345,10 @@ LuciasMarginBookPlugin.prototype.lmbEraseAt = function (canvas, point, active) {
     else {
       const pieces = fragments.map((points, part) => ({ ...object,
         id: part === 0 ? object.id : this.lmbInkId(), type: object.type === "highlighter" ? "highlighter" : "pen", points,
+        ...(object.renderVersion >= 3 ? {
+          inkCutStart: !!object.inkCutStart || !object.points?.length || lmbInkDistance(points[0], object.points[0]) > 1e-9,
+          inkCutEnd: !!object.inkCutEnd || !object.points?.length || lmbInkDistance(points[points.length - 1], object.points[object.points.length - 1]) > 1e-9
+        } : {}),
         inkSourceIds: Array.from(new Set([...(object.inkSourceIds || []), object.id])),
         x1: points[0].x, y1: points[0].y, x2: points[points.length - 1].x, y2: points[points.length - 1].y,
         pressureMode: object.type === "line" || object.type === "rect" ? "fixed" : object.pressureMode || "natural"
@@ -6012,8 +6076,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const style = { fill: "none", stroke: o.color || "#e05252", "stroke-width": o.widthUnit === "page" ? Math.max(.5, (Number(o.width) || .003) * 1000) : Number(o.width) || 3, opacity: o.opacity == null ? 1 : o.opacity, "stroke-linecap": "round", "stroke-linejoin": "round" };
         if (o.type === "pen" || o.type === "highlighter") {
           const points = o.points || [];
-          if (points.length === 1) add("circle", { cx: points[0].x * 1000, cy: points[0].y * height, r: (o.renderVersion === 2 ? lmbInkSegmentWidth(o, points[0], null, 1000) : Number(style["stroke-width"])) / 2, fill: style.stroke, opacity: style.opacity });
-          else if (points.length && o.type === "pen" && o.renderVersion === 2) add("path", { fill: style.stroke, stroke: "none", opacity: style.opacity, d: lmbInkRibbonPath(o, 1000, height) });
+          if (points.length === 1) add("circle", { cx: points[0].x * 1000, cy: points[0].y * height, r: (o.renderVersion >= 2 ? lmbInkSegmentWidth(o, points[0], null, 1000, height) : Number(style["stroke-width"])) / 2, fill: style.stroke, opacity: style.opacity });
+          else if (points.length && o.type === "pen" && o.renderVersion >= 2) add("path", { fill: style.stroke, stroke: "none", opacity: style.opacity, d: lmbInkRibbonPath(o, 1000, height) });
           else if (points.length) add("path", { ...style, d: points.map((p, i) => `${i ? "L" : "M"}${p.x * 1000},${p.y * height}`).join(" ") });
         } else if (o.type === "line") add("line", { ...style, x1: o.x1 * 1000, y1: o.y1 * height, x2: o.x2 * 1000, y2: o.y2 * height });
         else if (o.type === "rect") add("rect", { ...style, x: Math.min(o.x1, o.x2) * 1000, y: Math.min(o.y1, o.y2) * height, width: Math.abs(o.x2 - o.x1) * 1000, height: Math.abs(o.y2 - o.y1) * height });
@@ -14208,7 +14272,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.43.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.44.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -14251,16 +14315,16 @@ class LMBSettingTab extends PluginSettingTab {
         .onChange(async (v) => { this.plugin.settings.inkInputMode = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("笔压效果")
-      .setDesc("自然压感适合普通书写；钢笔效果的粗细变化较克制；固定宽度适合画图。")
+      .setDesc("自然压感保留提按、顿笔与轻收尖锋，适合汉字书写；钢笔效果的粗细变化较克制；固定宽度适合画图。只影响新笔迹。")
       .addDropdown((d) => d
-        .addOption("natural", "自然压感")
+        .addOption("natural", "自然压感 · 细腻笔锋")
         .addOption("fountain", "钢笔效果")
         .addOption("fixed", "固定宽度")
         .setValue(this.plugin.settings.inkPressureMode || "natural")
         .onChange(async (v) => { this.plugin.settings.inkPressureMode = v; await this.plugin.saveSettings(); }));
     new Setting(containerEl)
       .setName("跟笔稳定")
-      .setDesc("抑制细小偏移，增强跟笔阻尼。标准适合普通书写；强更稳但跟笔稍慢；只影响新写的触控笔笔迹。手写工具栏的更多设置中也能调整。")
+      .setDesc("抑制细小偏移；提按、确认转向和顿笔微调时减弱阻尼以保留细节。轻档更跟手，标准更稳；只影响新笔迹。更多设置中也能调整。")
       .addDropdown(d => d.addOption("0", "关闭").addOption("1", "轻").addOption("2", "标准").addOption("3", "强")
         .setValue(String(lmbInkStabilityLevel(this.plugin.settings.inkStabilization)))
         .onChange(async value => { this.plugin.settings.inkStabilization = Number(value); await this.plugin.saveSettings(); this.plugin.lmbRenderInkTools(); }));

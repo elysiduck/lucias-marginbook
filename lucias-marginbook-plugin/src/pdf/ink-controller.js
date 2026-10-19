@@ -439,7 +439,7 @@ LuciasMarginBookPlugin.prototype.lmbUpdateInkPageCapture = function (pageEl, for
 LuciasMarginBookPlugin.prototype.lmbInkPoint = function (pageEl, event) {
   const rect = pageEl.getBoundingClientRect();
   const rawTime = Number(event.timeStamp);
-  const pressure = Number(event.pressure) > 0 ? Number(event.pressure) : Number(event.force) > 0 ? Number(event.force) : .5;
+  const pressure = Number(event.pressure) > 0 ? Number(event.pressure) : Number(event.force) > 0 ? Number(event.force) : lmbInkIsStylusInput(event) && (event.pressure === 0 || event.force === 0) ? .02 : .5;
   return lmbInkNormalizePoint({ x: (event.clientX - rect.left) / Math.max(1, rect.width), y: (event.clientY - rect.top) / Math.max(1, rect.height), p: pressure, t: Number.isFinite(rawTime) ? rawTime : Date.now() });
 };
 
@@ -537,10 +537,10 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
       : { color: this.inkColor, width: this.inkWidth, opacity: 1 };
     const object = { id: this.lmbInkId(), type: tool, color: preset.color, opacity: preset.opacity, width: preset.width / 1000, widthUnit: "page", pressureMode: this.settings.inkPressureMode || "natural", x1: point.x, y1: point.y, x2: point.x, y2: point.y, points: [point] };
     this.lmbAssignInkContinuation(object, path(), page());
-    if (tool === "pen") object.renderVersion = 2;
+    if (tool === "pen") object.renderVersion = 3;
     const rect = pageEl.getBoundingClientRect();
     active = { kind: "draw", object, before, pointerId: event.pointerId, stylus,
-      stabilizer: tool === "pen" && stylus ? { level: lmbInkStabilityLevel(this.settings.inkStabilization), width: rect.width, height: rect.height, raw: point, tip: point } : null }; redrawLive();
+      stabilizer: tool === "pen" && stylus ? { level: lmbInkStabilityLevel(this.settings.inkStabilization), detail: true, width: rect.width, height: rect.height, raw: point, tip: point } : null }; redrawLive();
   };
   const move = (event) => {
     if (event.pointerType === "touch" && !lmbInkIsStylusInput(event)) {
@@ -615,7 +615,7 @@ LuciasMarginBookPlugin.prototype.lmbBindInkPage = function (pageEl, canvas, live
     else if (current.kind === "draw") {
       const object = current.object;
       if (current.stabilizer) lmbInkFinishStabilization(object.points, current.stabilizer);
-      if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, .00018, .055);
+      if (object.type === "pen" || object.type === "highlighter") object.points = lmbInkSimplifyPoints(object.points, object.renderVersion >= 3 ? .00008 : .00018, object.renderVersion >= 3 ? .018 : .055);
       const isStroke = object.type === "pen" || object.type === "highlighter";
       const longEnough = Math.hypot((object.x2 || 0) - (object.x1 || 0), (object.y2 || 0) - (object.y1 || 0)) > .001;
       if (isStroke || longEnough) objects.push(object);
@@ -694,19 +694,22 @@ LuciasMarginBookPlugin.prototype.lmbDrawInkObject = function (ctx, object, width
     if (!points.length) { ctx.restore(); return; }
     if (type === "highlighter") ctx.globalCompositeOperation = "multiply";
     if (points.length === 1) {
-      const radius = lmbInkSegmentWidth(object, points[0], null, width) / 2;
+      const radius = lmbInkSegmentWidth(object, points[0], null, width, height) / 2;
       ctx.beginPath(); ctx.arc(points[0].x * width, points[0].y * height, radius, 0, Math.PI * 2); ctx.fill();
-    } else if (type === "pen" && object.renderVersion === 2) {
-      const { centers, left, right } = lmbInkRibbon(object, width, height);
-      const trace = side => {
-        for (let i = 1; i < side.length - 1; i++) ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+    } else if (type === "pen" && object.renderVersion >= 2) {
+      const { centers, left, right, corners } = lmbInkRibbon(object, width, height);
+      const trace = (side, anchors) => {
+        for (let i = 1; i < side.length - 1; i++) {
+          if (anchors[i]) ctx.lineTo(side[i].x, side[i].y);
+          else ctx.quadraticCurveTo(side[i].x, side[i].y, (side[i].x + side[i + 1].x) / 2, (side[i].y + side[i + 1].y) / 2);
+        }
         ctx.lineTo(side[side.length - 1].x, side[side.length - 1].y);
       };
-      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left);
+      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y); trace(left, corners);
       const last = centers.length - 1, end = centers[last], start = centers[0];
       const endAngle = Math.atan2(left[last].y - end.y, left[last].x - end.x);
       ctx.arc(end.x, end.y, Math.hypot(left[last].x - end.x, left[last].y - end.y), endAngle, endAngle - Math.PI, true);
-      trace(right.slice().reverse());
+      trace(right.slice().reverse(), corners.slice().reverse());
       const startAngle = Math.atan2(right[0].y - start.y, right[0].x - start.x);
       ctx.arc(start.x, start.y, Math.hypot(right[0].x - start.x, right[0].y - start.y), startAngle, startAngle - Math.PI, true);
       ctx.closePath(); ctx.fill();
@@ -868,6 +871,10 @@ LuciasMarginBookPlugin.prototype.lmbEraseAt = function (canvas, point, active) {
     else {
       const pieces = fragments.map((points, part) => ({ ...object,
         id: part === 0 ? object.id : this.lmbInkId(), type: object.type === "highlighter" ? "highlighter" : "pen", points,
+        ...(object.renderVersion >= 3 ? {
+          inkCutStart: !!object.inkCutStart || !object.points?.length || lmbInkDistance(points[0], object.points[0]) > 1e-9,
+          inkCutEnd: !!object.inkCutEnd || !object.points?.length || lmbInkDistance(points[points.length - 1], object.points[object.points.length - 1]) > 1e-9
+        } : {}),
         inkSourceIds: Array.from(new Set([...(object.inkSourceIds || []), object.id])),
         x1: points[0].x, y1: points[0].y, x2: points[points.length - 1].x, y2: points[points.length - 1].y,
         pressureMode: object.type === "line" || object.type === "rect" ? "fixed" : object.pressureMode || "natural"

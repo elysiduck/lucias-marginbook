@@ -119,7 +119,7 @@
     pointer(activeLive, 'pointerup', 91, 650, 760, 'pen', { pressure: .5 });
     const cleanStroke = items().at(-1), pageRect = page.getBoundingClientRect();
     check(cleanStroke.points.at(-1).x * pageRect.width <= 180.01 && cleanStroke.points.at(-1).x * pageRect.width >= 176.7, 'hover and positive-pressure stylus release do not add a tail');
-    check(Math.abs(cleanStroke.points.at(-1).p - .04) < .000001 && cleanStroke.renderVersion === 2, 'light contact remains editable with continuous outline rendering');
+    check(Math.abs(cleanStroke.points.at(-1).p - .04) < .000001 && cleanStroke.renderVersion === 3, 'light contact remains editable with expressive outline rendering');
     const roundtrip = JSON.stringify(cleanStroke); await plugin.lmbFlushInkStorage();
     check(JSON.stringify(disk.inkAnnotations['demo.pdf']['1'].objects.at(-1)) === roundtrip, 'new render version and exact contact samples survive persistence');
     plugin.lmbUndoInk(page.querySelector('.lmb-ink-layer')); plugin.lmbRedoInk(page.querySelector('.lmb-ink-layer'));
@@ -168,6 +168,28 @@
     pointer(resizeSurface, 'pointerup', 103, 700, 700, 'pen', { pressure: 0 });
     check(items().length === countBeforeResize + 1, 'late release after zoom cannot duplicate or extend the saved stroke');
     await plugin.lmbFlushInkStorage(); check(disk.quickExcerpts['demo.pdf'][0].note === '手写后继续编辑 Markdown', 'zoom rebuild and stability preferences preserve Markdown notes');
+    const expressiveSurface = page.querySelector('.lmb-ink-live-layer');
+    pointer(expressiveSurface, 'pointerdown', 110, 110, 550, 'pen', { pressure: .03 });
+    pointer(expressiveSurface, 'pointermove', 110, 170, 550, 'pen', { pressure: .8 });
+    pointer(expressiveSurface, 'pointermove', 110, 230, 550, 'pen', { pressure: .03 });
+    pointer(expressiveSurface, 'pointerup', 110, 650, 750, 'pen', { pressure: 0 });
+    const expressive = items().at(-1), geometry = page.getBoundingClientRect(), outline = module.exports.__test.lmbInkRibbon(expressive, geometry.width, geometry.height);
+    check(expressive.renderVersion === 3 && Math.abs(expressive.points.at(-1).x * geometry.width - 230) < .01, 'fine release ends at the last real contact even with strong stabilization');
+    check(outline.left.at(-1).x === outline.right.at(-1).x && outline.left.at(-1).y === outline.right.at(-1).y, 'declining light pressure produces a pointed end rather than a round cap');
+    pointer(expressiveSurface, 'pointerdown', 111, 250, 550, 'pen', { pressure: .2 });
+    pointer(expressiveSurface, 'pointermove', 111, 250, 550, 'pen', { pressure: .9 });
+    pointer(expressiveSurface, 'pointermove', 111, 250, 550, 'pen', { pressure: .2 });
+    pointer(expressiveSurface, 'pointerup', 111, 650, 750, 'pen', { pressure: 0 });
+    const accent = items().at(-1);
+    check(accent.points.some(p => p.p > .89), 'stationary short pressure accent survives contact sampling and final simplification');
+    const heldOutline = module.exports.__test.lmbInkRibbon(accent, geometry.width, geometry.height);
+    check(heldOutline.centers.length === 1 && inkVisible(), 'stationary pressure creates visible ink without a spurious tail');
+    const dotCanvas = page.querySelector('.lmb-ink-layer'), dotRatio = dotCanvas.width / page.clientWidth;
+    const dotPixels = dotCanvas.getContext('2d').getImageData(Math.round(250 * dotRatio) - 8, Math.round(550 * dotRatio) - 8, 16, 16).data;
+    check(Array.from(dotPixels).some((value, i) => i % 4 === 3 && value > 0), 'stationary pressure accent has real pixels at its own location');
+    const expressiveData = JSON.stringify(items()); await plugin.lmbFlushInkStorage();
+    check(JSON.stringify(disk.inkAnnotations['demo.pdf']['1'].objects) === expressiveData, 'expressive nib geometry and pressure accents survive exact persistence');
+    plugin.lmbUndoInk(page.querySelector('.lmb-ink-layer')); plugin.lmbRedoInk(page.querySelector('.lmb-ink-layer'));check(JSON.stringify(items()) === expressiveData, 'undo redo preserves pointed ends and pressure details');
     out.textContent = 'PASS ' + results.length + ' ink / palm / Markdown workflow checks';
     out.dataset.report = JSON.stringify({ checks: results.length, results, physicalTablet: false });
   } catch (error) { out.textContent = 'FAIL after ' + results.length + ': ' + error.stack; throw error; }
