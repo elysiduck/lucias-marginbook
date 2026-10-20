@@ -36,7 +36,13 @@ class Element {
   contains(el) { return !!el && (el === this || this.children.some((child) => child.contains(el))); }
   setAttribute(name, value) { (this.attributes || (this.attributes = {}))[name] = value; }
   getAttribute(name) { return this.attributes && this.attributes[name]; }
-  focus() { this.ownerDocument.activeElement = this; }
+  focus() {
+    const previous = this.ownerDocument.activeElement;
+    if (previous === this) return;
+    this.ownerDocument.activeElement = this;
+    for (const fn of previous?.events.blur || []) fn({});
+    for (const fn of this.events.focus || []) fn({});
+  }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   get textContent() { return (this._text || "") + this.children.map((child) => child.textContent).join(""); }
   set textContent(text) { this._text = text; }
@@ -52,8 +58,37 @@ class Element {
   remove() { this.isConnected = false; if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); }
 }
 class Plugin {}
+// Match Obsidian Scope semantics: a defined return skips the parent scope;
+// only false prevents the browser's default behavior in window capture.
+class Scope {
+  constructor(parent) { this.parent = parent; this.keys = []; }
+  register(modifiers, key, func) { this.keys.push({ modifiers, key, func }); }
+  handleKey(event) {
+    for (const binding of this.keys) if (binding.key === event.key) {
+      const result = binding.func(event);
+      if (result !== undefined) return result;
+    }
+    return this.parent?.handleKey(event);
+  }
+}
+function editorKeymap() {
+  const scope = new Scope(); let pages = 0, other = 0;
+  for (const key of ["ArrowLeft", "ArrowRight", "PageUp", "PageDown"]) scope.register(null, key, event => { pages++; event.preventDefault(); });
+  scope.register(null, "F6", () => { other++; return false; });
+  return { scope, previous: [], get pages() { return pages; }, get other() { return other; },
+    pushScope(next) { this.previous.push(this.scope); this.scope = next; },
+    popScope(current) { if (this.scope === current) this.scope = this.previous.pop(); else this.previous = this.previous.filter(x => x !== current); }
+  };
+}
+async function pressEditorKey(editor, keymap, key, extra = {}) {
+  const event = { key, prevented: false, stopped: false,
+    preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...extra };
+  if (keymap.scope.handleKey(event) === false) { event.preventDefault(); event.stopPropagation(); }
+  if (!event.stopped) await editor.input.emit("keydown", event);
+  return event;
+}
 const context = vm.createContext({ LuciasMarginBookPlugin: Plugin, Modal: class {}, Notice: class { hide() {} },
-  MarkdownRenderer: { render: async (_app, text, el) => { el.textContent = text; } }, console, setTimeout, clearTimeout });
+  Scope, MarkdownRenderer: { render: async (_app, text, el) => { el.textContent = text; } }, console, setTimeout, clearTimeout });
 for (const file of ["src/pdf/pure-ink.js", "src/pdf/pure-ink-links.js", "src/pdf/ink-links-controller.js", "src/pdf/pure-live-markdown.js", "src/pdf/sidebar-controller.js", "src/pdf/text-block-controller.js", "src/pdf/live-editor-controller.js", "src/pdf/sidebar-note-editor.js", "src/pdf/mark-service.js", "src/core/settings-store.js"])
   vm.runInContext(fs.readFileSync(file, "utf8"), context);
 const proto = Plugin.prototype;
@@ -319,8 +354,26 @@ async function main() {
   assert.equal(raceEditor.getText(), "new active\n\nlatest paragraph");
   raceEditor.cancel(); context.MarkdownRenderer.render = rendererBeforeRace;
   const multiSource = "## 标题\n\n第一段 **加粗**。\n\n第二段。";
+  const keymap = editorKeymap(); plugin.app.keymap = keymap;
+  const pdfScope = keymap.scope;
   const live = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: multiSource, onSubmit: async () => {} });
   await live.activate(1, 3);
+  for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]) {
+    for (const modifiers of [{}, { shiftKey: true }, { ctrlKey: true }, { metaKey: true }, { isComposing: true }]) {
+      live.input.setSelectionRange(3, 3);
+      const event = await pressEditorKey(live, keymap, key, modifiers);
+      assert.equal(event.prevented, false, "native caret/selection keys must remain available");
+      assert.equal(event.stopped, true, "navigation keys must not bubble to PDF handlers");
+    }
+  }
+  assert.equal(keymap.pages, 0, "window-capture PDF shortcuts must never run while typing");
+  await pressEditorKey(live, keymap, "F6"); assert.equal(keymap.other, 1, "other shortcuts keep their parent scope");
+  live.input.setSelectionRange(0, 0);
+  await pressEditorKey(live, keymap, "ArrowLeft"); assert.equal(live.active, 0, "left at a block boundary still edits the previous paragraph");
+  await live.activate(1, 3);
+  const otherInput = new Element(); otherInput.ownerDocument = live.input.ownerDocument; otherInput.focus();
+  assert.equal(keymap.scope, pdfScope, "leaving the editor restores PDF shortcuts");
+  live.input.focus(); assert.notEqual(keymap.scope, pdfScope);
   assert.equal(live.input.value, "第一段 **加粗**。");
   assert.equal(editingBlock.querySelectorAll("textarea").length, 1);
   assert(editingBlock.querySelector(".lmb-pdf-text-body").textContent.includes("第二段。"));
@@ -336,6 +389,9 @@ async function main() {
   live.input.value = "粘贴首段\n\n## 粘贴标题\n\n粘贴末段"; live.input.setSelectionRange(live.input.value.length, live.input.value.length); await live.render();
   assert.equal(live.input.value, "粘贴末段"); assert(live.getText().includes("## 粘贴标题"));
   live.cancel();
+  assert.equal(keymap.scope, pdfScope, "closing the editor releases its keyboard scope");
+  assert.equal(keymap.previous.length, 0, "paragraph rebuilds do not leak keyboard scopes");
+  pdfScope.handleKey({ key: "ArrowRight", preventDefault() {} }); assert.equal(keymap.pages, 1);
   const between = plugin.lmbOpenInlineNoteEditor(editingBlock, { value: "前段\n\n后段", onSubmit: async () => {} });
   between.input.value = "前段\n\n"; between.input.setSelectionRange(4, 4); await between.render();
   assert.equal(between.input.value, "", "Enter between paragraphs keeps an editable blank at the caret");
@@ -349,6 +405,7 @@ async function main() {
   const sideItem = { exId: "quick-side", page: 2, text: "Excerpt", note: "## Heading\n\nOriginal paragraph." };
   side.settings = { quickExcerpts: { "sidebar.pdf": [sideItem] }, pdfTextBlocks: {} };
   side.app = { workspace: { getLeavesOfType: () => [sideLeaf] }, vault: {} };
+  side.app.keymap = editorKeymap();
   side.lmbEnsurePdfSidebarEl = () => sideBar; side.lmbSetPdfSidebarVisible = () => {};
   let sidebarRefreshes = 0; side.lmbRenderPdfSidebarForLeaf = async () => { sidebarRefreshes++; };
   side.lmbRefreshTextBlocks = async () => {}; side.saveSettings = async () => {};
@@ -358,6 +415,9 @@ async function main() {
   await side.lmbOpenSidebarNoteEditor(entrySide, sideLeaf, sideRow);
   const sideEditor = sideBar._lmbSidebarEditor;
   assert(sideEditor && sideRow.contains(sideEditor.input));
+  sideEditor.input.setSelectionRange(3, 3);
+  const sideArrow = await pressEditorKey(sideEditor, side.app.keymap, "ArrowRight");
+  assert.equal(sideArrow.prevented, false); assert.equal(side.app.keymap.pages, 0, "sidebar uses the same capture protection");
   assert.equal((side._lmbActiveInlineBlocks || new Set()).size, 0, "sidebar hosts are not PDF page overlays");
   await sideEditor.activate(1); sideEditor.input.value = "Draft **bold**."; await sideEditor.render();
   assert.equal(await side.lmbTextBlockNote(entrySide), "## Heading\n\nDraft **bold**.");

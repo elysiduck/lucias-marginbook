@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.45.1
+
+- Give focused sidebar and on-page Markdown note editors their own Obsidian keyboard scope so PDF window-capture shortcuts cannot turn pages while moving the caret. Preserve native navigation and modified selection keys, paragraph-boundary movement, composition and other shortcuts; restore the PDF scope on blur or editor close.
+- Add regressions for both editor locations, navigation modifiers, composition, paragraph switches and scope cleanup. Build and all 10 test suites pass.
+
 ## 0.45.0
 
 - Cache completed pen outlines as native Path2D geometry. Natural-pressure version 3 strokes use reference-space paths so zoom transforms existing geometry instead of rebuilding pressure/taper outlines. Live and cached drawing share a single path tracer. Earlier outline versions retain exact size-specific geometry with three cached sizes per stroke.

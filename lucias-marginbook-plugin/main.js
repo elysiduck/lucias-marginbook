@@ -9,7 +9,7 @@
 
 const {
   Plugin, Notice, Menu, TFile, PluginSettingTab, Setting, normalizePath, Modal,
-  FuzzySuggestModal, MarkdownRenderer, setIcon, Platform
+  FuzzySuggestModal, MarkdownRenderer, setIcon, Platform, Scope
 } = require("obsidian");
 
 // Platform is part of Obsidian's public API and is available on desktop and mobile.
@@ -4254,7 +4254,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.45.0";
+    st.dataset.lmbVersion = "0.45.1";
   }
 
 }
@@ -11922,6 +11922,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const input = body.createEl("textarea", { cls: "lmb-live-markdown-input", attr: { "aria-label": "当前段落 Markdown", placeholder: "输入 Markdown…", spellcheck: "false", rows: "1" } });
     const text = String(opts.value || "").replace(/\r\n/g, "\n");
     const state = { input, text, parts: lmbLiveMarkdownBlocks(text), active: 0, closed: false, busy: false, sequence: 0, cache: new Map(), history: [], redo: [], composing: false };
+    // Obsidian handles PDF arrows in window capture, before textarea handlers.
+    // A focused editor scope must claim them without preventing native caret /
+    // selection behavior. Keep other shortcuts in the previously active scope.
+    const keymap = this.app && this.app.keymap;
+    let editorScope = null;
+    const releaseScope = () => {
+      if (editorScope) { keymap.popScope(editorScope); editorScope = null; }
+    };
+    input.addEventListener("focus", () => {
+      if (state.closed || editorScope || !keymap || typeof Scope === "undefined") return;
+      editorScope = new Scope(keymap.scope);
+      for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"])
+        editorScope.register(null, key, () => doc.activeElement === input && !state.closed ? true : undefined);
+      keymap.pushScope(editorScope);
+    });
+    input.addEventListener("blur", releaseScope);
     state.lastSavedText = text;
     let autosaveTimer = null, pendingSave = null, finishing = null;
     const changed = (value) => {
@@ -12034,6 +12050,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     state.close = (saved) => {
       if (state.closed) return;
       const result = state.getText(); state.closed = true; state.sequence++;
+      releaseScope();
       clearTimeout(autosaveTimer);
       if (state.outsideClick) opts.pageRoot.removeEventListener("click", state.outsideClick, true);
       if (state.observer) state.observer.disconnect();
@@ -12090,6 +12107,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     });
     input.addEventListener("input", (event) => { if (event.isComposing || state.composing) resize(); else state.sync(); });
     input.addEventListener("keydown", (event) => {
+      if (/^(ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|PageUp|PageDown)$/.test(event.key)) event.stopPropagation();
       if (event.isComposing || state.composing) return;
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); state.save(); return; }
       if ((event.ctrlKey || event.metaKey) && /^(z|y)$/i.test(event.key)) { event.preventDefault(); event.stopPropagation(); state.undo(event.shiftKey || event.key.toLowerCase() === "y"); return; }
@@ -14347,7 +14365,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.45.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.45.1") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")

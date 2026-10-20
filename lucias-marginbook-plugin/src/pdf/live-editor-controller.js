@@ -25,6 +25,22 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     const input = body.createEl("textarea", { cls: "lmb-live-markdown-input", attr: { "aria-label": "当前段落 Markdown", placeholder: "输入 Markdown…", spellcheck: "false", rows: "1" } });
     const text = String(opts.value || "").replace(/\r\n/g, "\n");
     const state = { input, text, parts: lmbLiveMarkdownBlocks(text), active: 0, closed: false, busy: false, sequence: 0, cache: new Map(), history: [], redo: [], composing: false };
+    // Obsidian handles PDF arrows in window capture, before textarea handlers.
+    // A focused editor scope must claim them without preventing native caret /
+    // selection behavior. Keep other shortcuts in the previously active scope.
+    const keymap = this.app && this.app.keymap;
+    let editorScope = null;
+    const releaseScope = () => {
+      if (editorScope) { keymap.popScope(editorScope); editorScope = null; }
+    };
+    input.addEventListener("focus", () => {
+      if (state.closed || editorScope || !keymap || typeof Scope === "undefined") return;
+      editorScope = new Scope(keymap.scope);
+      for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"])
+        editorScope.register(null, key, () => doc.activeElement === input && !state.closed ? true : undefined);
+      keymap.pushScope(editorScope);
+    });
+    input.addEventListener("blur", releaseScope);
     state.lastSavedText = text;
     let autosaveTimer = null, pendingSave = null, finishing = null;
     const changed = (value) => {
@@ -137,6 +153,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     state.close = (saved) => {
       if (state.closed) return;
       const result = state.getText(); state.closed = true; state.sequence++;
+      releaseScope();
       clearTimeout(autosaveTimer);
       if (state.outsideClick) opts.pageRoot.removeEventListener("click", state.outsideClick, true);
       if (state.observer) state.observer.disconnect();
@@ -193,6 +210,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     });
     input.addEventListener("input", (event) => { if (event.isComposing || state.composing) resize(); else state.sync(); });
     input.addEventListener("keydown", (event) => {
+      if (/^(ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|PageUp|PageDown)$/.test(event.key)) event.stopPropagation();
       if (event.isComposing || state.composing) return;
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); state.save(); return; }
       if ((event.ctrlKey || event.metaKey) && /^(z|y)$/i.test(event.key)) { event.preventDefault(); event.stopPropagation(); state.undo(event.shiftKey || event.key.toLowerCase() === "y"); return; }
