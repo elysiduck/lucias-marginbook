@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.45.2
+
+- Remove mobile's unconditional right PDF gutter, which overrode closed and left sidebar states. Apply the narrow-screen right gutter only while the right sidebar is open. Closing either sidebar restores the PDF reading width; moving it left releases the right gutter.
+- Add real CSS cascade and geometry checks across desktop/mobile classes, six viewport widths, and repeated close/open/side switches in headless Edge. Physical iPad validation remains a device check.
+
 ## 0.45.1
 
 - Give focused sidebar and on-page Markdown note editors their own Obsidian keyboard scope so PDF window-capture shortcuts cannot turn pages while moving the caret. Preserve native navigation and modified selection keys, paragraph-boundary movement, composition and other shortcuts; restore the PDF scope on blur or editor close.

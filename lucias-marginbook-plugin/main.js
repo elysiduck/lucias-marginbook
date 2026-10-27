@@ -388,7 +388,7 @@ const LMB_STYLES = [
   "body.lmb-mobile .lmb-chip{max-width:calc(100vw - 20px);white-space:normal;font-size:13px;padding:7px 8px 7px 12px;gap:6px;}",
   "body.lmb-mobile .lmb-chip-action{width:40px;height:40px;min-width:40px;border-radius:12px;touch-action:manipulation;}",
   "body.lmb-mobile.lmb-rect-mode .pdf-viewer-container,body.lmb-mobile.lmb-rect-mode .page{touch-action:none!important;}",
-  "body.lmb-mobile .lmb-pdf-sidebar-host{padding-right:var(--lmb-pdf-sidebar-width,340px)!important;}",
+  // Mobile shares the base host spacing so closed/left states can clear the right gutter.
   ".lmb-rect{position:fixed;z-index:999;",
   "border:2px dashed var(--interactive-accent,#7c6cf0);",
   "background:rgba(124,108,240,.15);pointer-events:none;}",
@@ -723,7 +723,7 @@ const LMB_STYLES = [
   '.lmb-mark-sidebar-active{outline:2px solid var(--interactive-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--interactive-accent) 25%,transparent);}',
   'body.lmb-mobile .lmb-pdf-excerpt-sidebar{min-width:280px!important;max-width:min(38vw,420px)!important;box-shadow:none!important;}',
   'body.lmb-mobile .lmb-pdf-sidebar-resizer{display:none;}',
-  '@media(max-width:700px){body.lmb-mobile .lmb-pdf-sidebar-host{padding-right:min(46vw,320px)!important;}body.lmb-mobile .lmb-pdf-excerpt-sidebar{width:min(46vw,320px)!important;min-width:240px!important;max-width:min(46vw,320px)!important;}}',
+  '@media(max-width:700px){body.lmb-mobile .lmb-pdf-sidebar-host:not(.lmb-pdf-sidebar-closed):not(.lmb-sidebar-left){padding-right:min(46vw,320px)!important;}body.lmb-mobile .lmb-pdf-excerpt-sidebar{width:min(46vw,320px)!important;min-width:240px!important;max-width:min(46vw,320px)!important;}}',
   '.lmb-text-placing .page{cursor:crosshair!important;}',
   '.lmb-pdf-text-block{position:absolute!important;z-index:65;box-sizing:border-box;color:#222;font-family:var(--font-text);line-height:1.5;border:1px solid transparent;border-radius:4px;background:transparent;user-select:text!important;-webkit-user-select:text!important;}',
   '.lmb-pdf-text-block:hover,.lmb-pdf-text-block:focus-within{border-color:var(--interactive-accent,#6a9);}',
@@ -4254,7 +4254,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.45.1";
+    st.dataset.lmbVersion = "0.45.2";
   }
 
 }
@@ -14365,7 +14365,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.45.1") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.45.2") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
