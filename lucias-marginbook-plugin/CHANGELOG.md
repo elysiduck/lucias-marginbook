@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.46.0
+
+- Add a two-pane file picker: readable titles and paths, file type and folder filters, recent files, keyboard selection, Markdown/image previews, PDF page navigation and up to four linked or same-lecture candidate notes.
+- Route the native Open File command, homepage button and existing Ctrl+K binding to the new picker. Add a dedicated MarginBook command with Mod+K. Entry adapters restore original handlers on unload without changing vault hotkey configuration.
+- Load only the selected PDF, cancel stale previews, unload Markdown render components and vault listeners when closed, and retain at most eight rendered PDF page thumbnails per picker session. Opening files preserves the original tab unless a new tab is requested.
+- Validate 11 Node suites plus 11 headless Edge cases using installed Obsidian CSS/PDF.js and an actual course PDF. Browser checks cover page rendering/navigation, aliases, filters, stale-render cancellation, keyboard opening and narrow-screen geometry; live Obsidian remains a reload/user check.
+
 ## 0.45.2
 
 - Remove mobile's unconditional right PDF gutter, which overrode closed and left sidebar states. Apply the narrow-screen right gutter only while the right sidebar is open. Closing either sidebar restores the PDF reading width; moving it left releases the right gutter.

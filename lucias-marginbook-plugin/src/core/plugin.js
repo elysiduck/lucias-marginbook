@@ -529,6 +529,7 @@ class LuciasMarginBookPlugin extends Plugin {
 
     this.addSettingTab(new LMBSettingTab(this.app, this));
     this.injectStyles();
+    this.lmbSetupFilePicker();
     try { document.body.toggleClass("lmb-mobile", !!this.isMobile); } catch (_) {}
 
     // 补丁 C：Recall——阅读模式下把含「【文件名-P.数字】」回跳链接的 blockquote 模糊化。
@@ -1094,7 +1095,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.45.2";
+    st.dataset.lmbVersion = "0.46.0";
   }
 
 }

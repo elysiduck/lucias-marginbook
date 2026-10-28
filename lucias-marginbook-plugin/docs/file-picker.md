@@ -1,0 +1,13 @@
+# 文件预览选择器（0.46.0）
+
+启用 MarginBook 后，原生“打开文件”按钮、`switcher:open` 命令和该命令已有的 Ctrl+K 快捷键会进入双栏文件选择器。也可运行 “Lucia's MarginBook: 打开文件（预览选择器）”。插件不改写 hotkeys.json，停用时恢复原入口。
+
+- 搜索框匹配文件名、路径和 Markdown frontmatter 的 aliases / alias；多个空格分隔的关键词可乱序输入。
+- 支持全部、PDF、笔记、图片筛选，可以叠加“最近打开”和文件夹限制。默认展示全仓库，按匹配程度、最近打开顺序、修改时间排列。
+- 单击结果或在搜索框内按 ↑↓ 选中并预览；Enter 或双击在原标签页打开，Ctrl/Cmd+Enter 或 Ctrl/Cmd+单击在新标签页打开。右侧“打开文件”按钮也在新标签页打开。
+- PDF 预览完整页面，可翻页；仅加载当前选中的 PDF，在窗口内缓存最多八张页面图。关闭后释放缓存和 PDF.js 任务。
+- Markdown 通过 Obsidian 的 MarkdownRenderer 渲染，最多预览前 60,000 字符；图片按仓库资源路径预览。其他类型提供直接打开入口。
+- 配套笔记优先展示已有双向链接，再展示同目录的同 Lecture 编号候选；文件名关联仅为候选，不写入或修改笔记。
+- 关闭窗口、切换选择或停用插件时取消旧预览、卸载渲染组件和监听器。新增、删除、重命名和修改文件会更新当前搜索结果。
+
+`npm run verify` 包含搜索和可恢复入口适配测试。`tests/file-picker-browser.cjs` 使用本机 Edge、Obsidian 样式与 PDF.js、实际课件验证预览、翻页、键盘、筛选和异步取消；它是浏览器夹具，不连接正在运行的 Obsidian。运行时设置 NODE_PATH 指向已安装的 Playwright，可通过 OBSIDIAN_ASAR_PATH 和 OBSIDIAN_VAULT_PATH 指定本机路径。

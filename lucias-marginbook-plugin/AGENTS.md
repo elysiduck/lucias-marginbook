@@ -12,3 +12,12 @@ For changes under this plugin directory:
    asks not to push.
 5. Use `npm run backup -- "<concise commit message>"` for the verified commit and
    push workflow.
+
+## Standing backup authorization
+
+On 2026-10-29, the user explicitly authorized committing and pushing this update
+and future updates to this plugin to `https://github.com/elysiduck/lucias-marginbook`
+using the workflow above. The authorized push destination is `origin/main` in
+that repository. Verify the remote still points to that repository before pushing.
+Keep commits scoped to this plugin directory; do not include unrelated workspace
+files. Continue this backup workflow unless the user revokes or changes it.

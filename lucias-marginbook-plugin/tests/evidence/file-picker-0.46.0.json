@@ -1,0 +1,32 @@
+{
+  "engine": "headless Edge",
+  "actualObsidianCSS": true,
+  "actualPDFJS": true,
+  "actualCoursePDF": true,
+  "liveObsidian": false,
+  "checks": [
+    "Real installed PDF.js renders the real Lecture 17 course PDF",
+    "PDF next page renders and caches independently",
+    "Search updates selection and renders Markdown with a managed component",
+    "Frontmatter aliases match without being filenames",
+    "Type filter combines with search and displays empty state",
+    "Folder filter restricts results",
+    "Recent filter lists only history entries",
+    "A delayed Markdown renderer cannot overwrite a newer PDF selection",
+    "Arrow navigation, Ctrl+Enter opens a new tab, close removes all vault listeners",
+    "Enter opens in the original leaf",
+    "Narrow viewport stays within screen bounds"
+  ],
+  "geometry": {
+    "modal": {
+      "width": 1320,
+      "height": 820,
+      "x": 90,
+      "y": 90
+    },
+    "left": 557.03125,
+    "preview": 708.953125,
+    "overflow": false
+  },
+  "errors": []
+}

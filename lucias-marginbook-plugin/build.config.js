@@ -38,6 +38,7 @@ module.exports = Object.freeze([
   "src/pdf/navigation-service.js",
   "src/canvas/canvasbar-controller.js",
   "src/ui/modals.js",
+  "src/ui/file-picker.js",
   "src/ui/settings-tab.js",
   "src/exports.js"
 ]);
