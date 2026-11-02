@@ -1,6 +1,6 @@
 module.exports = LuciasMarginBookPlugin;
 module.exports.__test = {
-  lmbWordEndpoint, lmbWordMarkdown, lmbWordResult,
+  lmbWordEndpoint, lmbWordMarkdown, lmbWordResult, lmbWordPrompt, LMB_WORD_DEFAULT_PROMPT,
   LMB_PDF_LIB, lmbPageAfterInsert, lmbShiftInkPages, lmbShiftPageSettings, lmbShiftPdfTextLinks, lmbShiftCanvasPdfPages,
   lmbShouldReshowSelection, lmbMeasureRenderedContent, lmbMeasureNaturalCard,
   lmbVerticalOverflow, lmbHeightAfterOverflow, lmbFinalizeCardHeight, EX_ID_RE,

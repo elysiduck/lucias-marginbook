@@ -1,5 +1,7 @@
 # AI 词汇卡（0.47.0）
 
+0.48.0：设置中增加“自定义生成要求”多行文本框，自动保存；内置 incentive、contend/content、dehumidify、wry、uniformity、coddle/cobble、bolster/boost 七组示例。可用“恢复默认”恢复全部规则和示例；留空也采用默认要求。用户只需描述内容和风格，插件另外附加固定 JSON 输出协议。新查询按“翻译 → 例句 → 助记”展示，助记保留段落并转义不安全内容。修改提示词不自动改写历史卡片；已有卡片重新查词仍先预览再保存。较长提示词会增加输入用量。未返回有效助记时保留原卡并提示重试。百炼 workspace 专属域名也关闭思考模式。
+
 在设置 → Lucia's MarginBook → AI 词汇卡填写 API 接口地址、API Key 和模型名称，再点击“测试连接”。接口须兼容非流式 Chat Completions，返回 `choices[0].message.content`；支持基础地址和完整 `/chat/completions` 地址。本地免密接口的 Key 可以留空。百炼例：`https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen-flash`。百炼请求关闭思考模式；其他服务采用兼容接口默认行为。暂不支持原生 Anthropic Messages、Gemini generateContent 或 Responses 格式。
 
 在 PDF 选中单词或短语，点击浮动工具条的语言图标（Aa 查词建卡）。最多 160 字符、12 个词；图片选区不显示入口。新卡片立即写入摘录文档独立的 `LMB:WORD-NOTES` 区域，不创建截图或 Canvas 卡片。元数据保留词语和从当前 textLayer 选区附近提取的少量语境；提取失败时只查词。结果作为现有 Markdown 备注保存，可以沿用侧栏和页内编辑、收起及定位。

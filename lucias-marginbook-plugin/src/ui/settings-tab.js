@@ -9,7 +9,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.47.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.48.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
@@ -36,6 +36,26 @@ class LMBSettingTab extends PluginSettingTab {
       .setDesc("开启时发送选中词附近的少量 PDF 原文，用于判断本句词义；关闭后只发送选中的单词或短语。")
       .addToggle(t => t.setValue(this.plugin.settings.wordAiContext !== false)
         .onChange(async v => { this.plugin.settings.wordAiContext = v; await this.plugin.saveSettings(); }));
+    let promptInput;
+    const promptSetting = new Setting(containerEl).setName("自定义生成要求")
+      .setDesc("默认含 7 个助记示例。可编辑翻译、例句和助记的生成风格，自动保存；留空使用默认要求。无需编写 JSON。修改只影响后续查询，已有卡片需主动重新生成并确认替换。")
+      .addTextArea(t => {
+        promptInput = t;
+        t.setValue(lmbWordPrompt(this.plugin.settings.wordAiPrompt));
+        t.inputEl.rows = 18; t.inputEl.maxLength = 16000;
+        t.inputEl.style.cssText = "width:100%;min-height:280px;resize:vertical;font-size:13px;line-height:1.65;";
+        t.inputEl.setAttribute("aria-label", "AI 词汇卡自定义生成要求");
+        t.onChange(async v => { this.plugin.settings.wordAiPrompt = v; await this.plugin.saveSettings(); });
+      });
+    promptSetting.settingEl.style.flexWrap = "wrap";
+    promptSetting.controlEl.style.cssText = "width:100%;flex:1 1 100%;margin-top:12px;";
+    new Setting(containerEl).setName("恢复默认生成要求")
+      .setDesc("恢复内置助记规则及全部示例，不改动接口配置和已有卡片。")
+      .addButton(b => b.setButtonText("恢复默认").onClick(async () => {
+        this.plugin.settings.wordAiPrompt = LMB_WORD_DEFAULT_PROMPT;
+        promptInput.setValue(LMB_WORD_DEFAULT_PROMPT);
+        await this.plugin.saveSettings(); new Notice("已恢复默认生成要求及 7 个助记示例");
+      }));
     new Setting(containerEl).setName("测试 AI 连接")
       .setDesc("发送一次 example 查词请求，检查接口和返回格式；不创建卡片，可能产生少量费用。")
       .addButton(b => b.setButtonText("测试连接").onClick(async () => {

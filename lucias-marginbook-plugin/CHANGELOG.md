@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.48.0
+
+- Add an editable, automatically saved AI generation prompt with seven mnemonic examples and a restore-default action. Existing API configuration and saved cards are retained.
+- Generate vocabulary notes in translation, example and mnemonic order, preserve mnemonic paragraphs, and keep structured response instructions separate from the user's content preferences. Missing or invalid mnemonics report a retryable error rather than silently omitting the section.
+- Disable thinking for Alibaba workspace endpoints as well as the shared DashScope endpoint. Extend regression checks for prompt persistence, upgrade defaults, actual request binding, rendering order and safe mnemonic formatting.
+
 ## 0.47.0
 
 - Add AI vocabulary cards from PDF word/phrase selections with contextual meanings, translations and generated examples stored in the existing Markdown note source. Keep original PDF navigation and editable sidebar/page notes.
