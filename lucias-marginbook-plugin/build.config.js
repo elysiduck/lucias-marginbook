@@ -26,6 +26,7 @@ module.exports = Object.freeze([
   "src/pdf/ink-controller.js",
   "src/pdf/ink-links-controller.js",
   "src/pdf/selection-controller.js",
+  "src/pdf/word-card-controller.js",
   "src/canvas/canvas-controller.js",
   "src/note/note-comment-controller.js",
   "src/excerpt/index-service.js",

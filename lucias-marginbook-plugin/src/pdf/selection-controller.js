@@ -956,6 +956,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       makeAction("file-plus-2", "创建完整摘录到摘录文档", this.lmbCreateDirectMdExcerpt);
       if (this.isMobile) makeAction("layout-dashboard", "加入 PDF 专属画布", this.lmbCreateDirectCanvasExcerpt);
       makeAction("panel-right-open", "创建简洁摘录到 PDF 侧栏", this.lmbCreateQuickExcerpt);
+      if (!info.isImage) makeAction("languages", "Aa 查词建卡（AI）", this.lmbCreateAiWordCard);
     }
     chip.setAttribute("draggable", this.isMobile ? "false" : "true");
     chip.style.left = Math.min(x + 12, doc.defaultView.innerWidth - 240) + "px";

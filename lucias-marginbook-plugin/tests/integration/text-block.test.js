@@ -149,6 +149,20 @@ async function main() {
   rendering._lmbApplySidebarPageFilter(renderingLeaf);
   assert.equal(sidebar.dataset.page, "3", "unfollowed sidebar retains the selected page during refresh");
   context.MarkdownRenderer.render = originalRender;
+  // Vocabulary classification survives a real sidebar render, collapse and page/type filtering.
+  rendering._lmbGetPdfSidebarEntries = () => [
+    { quick: true, exId: "word-test", page: 3, text: "**salient**", note: "本句释义：显著的", wordCard: true, word: "salient" },
+    { quick: true, exId: "ordinary-test", page: 3, text: "salient", note: "普通摘录" }
+  ];
+  await rendering.lmbRenderPdfSidebarForLeaf(renderingLeaf);
+  const vocabularyRows = sidebar.querySelectorAll(".lmb-pdf-sidebar-item");
+  assert(vocabularyRows[0].cls.has("is-word-card")); assert(!vocabularyRows[1].cls.has("is-word-card"));
+  assert(vocabularyRows[0].querySelector(".lmb-pdf-sidebar-item-title").textContent.includes("Aa 词汇"));
+  assert(vocabularyRows[0].querySelector(".lmb-pdf-sidebar-item-summary").textContent.startsWith("salient"));
+  const typeButtons = sidebar.querySelector(".lmb-word-filters").children;
+  typeButtons[1].onclick(); assert(!vocabularyRows[0].cls.has("is-page-hidden")); assert(vocabularyRows[1].cls.has("is-page-hidden"));
+  typeButtons[2].onclick(); assert(vocabularyRows[0].cls.has("is-page-hidden")); assert(!vocabularyRows[1].cls.has("is-page-hidden"));
+  typeButtons[0].onclick(); assert(!vocabularyRows[0].cls.has("is-page-hidden")); assert(!vocabularyRows[1].cls.has("is-page-hidden"));
   const pageNotes = new Plugin(), pageFile = { path: "page-notes.pdf", extension: "pdf", name: "page-notes.pdf" };
   const pageLeaf = { view: { file: pageFile } };
   pageNotes.settings = {}; pageNotes.excerptIndex = new Map(); pageNotes.getExcerptsForPdf = () => [];

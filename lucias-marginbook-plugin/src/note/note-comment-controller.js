@@ -116,12 +116,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
     return result;
   },
 
-  async lmbSaveExcerptNote(file, exId, value) {
+  async lmbSaveExcerptNote(file, exId, value, guard) {
     if (!(file instanceof TFile) || !exId) return false;
     let changed = false;
     await this.app.vault.process(file, (raw) => {
       const state = this._lmbExcerptNoteState(raw, exId);
       if (!state) return raw;
+      if (guard && !guard(state.value)) return raw;
       const anchorLine = state.lines[state.anchor];
       const prefix = (anchorLine.match(/^(\s*(?:>\s*)*)\^/) || ["", "> "])[1] || "> ";
       const note = [];

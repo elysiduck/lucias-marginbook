@@ -674,6 +674,7 @@ const LMB_STYLES = [
 
   '.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body{--h1-size:1.35em;--h2-size:1.22em;--h3-size:1.12em;--h4-size:1em;--h5-size:1em;--h6-size:1em;font-size:12px;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered :is(h1,h2,h3,h4,h5,h6){line-height:1.35!important;margin-block:.6em .3em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered h1{font-size:1.35em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered h2{font-size:1.22em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered h3{font-size:1.12em!important;}.lmb-pdf-excerpt-sidebar .lmb-pdf-sidebar-item-note-body.markdown-rendered :is(h4,h5,h6){font-size:1em!important;}',
 
+  '.lmb-pdf-sidebar-item.is-word-card{border-left:3px solid var(--interactive-accent);}.lmb-pdf-sidebar-item.is-word-card .lmb-pdf-sidebar-item-title{color:var(--interactive-accent);font-weight:600;}.lmb-pdf-sidebar-item.is-word-card .lmb-pdf-sidebar-item-text{font-size:19px;font-weight:600;}.lmb-word-query-status{font-size:12px;color:var(--text-muted);padding:8px 0;}.lmb-word-filters button{font-size:11px;}',
 ];
 
 if (typeof module !== "undefined" && module.exports) {

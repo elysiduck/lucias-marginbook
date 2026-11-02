@@ -2,6 +2,10 @@
 
 const LMB_DEFAULT_SETTINGS = Object.freeze({
   debug: false,
+  wordAiUrl: "",
+  wordAiKey: "",
+  wordAiModel: "",
+  wordAiContext: true,
   colorMap: "",
   noteCalloutType: "ppd-note",
   noteTitle: "补充描述",
@@ -81,6 +85,10 @@ class LmbSettingsStore {
   serialize(settings, state) {
     const obj = {
       debug: !!settings.debug,
+      wordAiUrl: String(settings.wordAiUrl || ""),
+      wordAiKey: String(settings.wordAiKey || ""),
+      wordAiModel: String(settings.wordAiModel || ""),
+      wordAiContext: settings.wordAiContext !== false,
       recallDefault: !!settings.recallDefault,
       colorMap: settings.colorMap,
       noteCalloutType: settings.noteCalloutType,

@@ -145,6 +145,17 @@ function lmbParseExcerptDoc(content, sourcePath) {
       continue;
     }
     if (!pending) continue;
+    const wordMeta = raw.match(/<!-- LMB:WORD:([^ ]+) -->/);
+    if (wordMeta) {
+      try {
+        const meta = JSON.parse(decodeURIComponent(wordMeta[1]));
+        if (typeof meta.word === "string" && meta.word.length <= 160) {
+          pending.wordCard = true; pending.word = meta.word;
+          pending.wordContext = typeof meta.context === "string" ? meta.context.slice(0, 1200) : "";
+        }
+      } catch (_) { /* Invalid metadata never becomes executable content. */ }
+      continue;
+    }
 
     // 图片是摘录的媒体内容，不应作为 `![[附件.webp]]` 原样混进侧栏正文。
     const image = raw.match(/!\[\[([^\]|]+\.(?:webp|png|jpe?g))(?:\|[^\]]*)?\]\]/i);

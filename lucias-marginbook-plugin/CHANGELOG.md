@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.47.0
+
+- Add AI vocabulary cards from PDF word/phrase selections with contextual meanings, translations and generated examples stored in the existing Markdown note source. Keep original PDF navigation and editable sidebar/page notes.
+- Add API base/full endpoint, masked API Key, model ID, context sharing toggle and a real connection test in plugin settings. Use Obsidian's HTTP API with a bounded wait, safe error messages and no automatic background queries.
+- Distinguish vocabulary cards with Aa labels, accent borders, persistent compact word titles and a type filter that combines with page and search filters. Retry failed lookups and preview replacements for existing notes; concurrent edits, deletion and unload cannot be overwritten by late responses.
+- Validate 12 Node suites including network fixtures, settings roundtrip, vocabulary persistence/deduplication/retries and sidebar classification/filtering. Real provider connectivity requires the user's API configuration.
+
 ## 0.46.0
 
 - Add a two-pane file picker: readable titles and paths, file type and folder filters, recent files, keyboard selection, Markdown/image previews, PDF page navigation and up to four linked or same-lecture candidate notes.

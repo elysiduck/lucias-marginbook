@@ -275,7 +275,9 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       const choosingInk = !!this._lmbInkAssociation && this._lmbInkAssociation.snapshot.path === leaf?.view?.file?.path;
       const current = !choosingInk && this._lmbPdfSidebarView !== "all"; let shown = 0;
       bar.querySelectorAll(".lmb-pdf-sidebar-item").forEach((row) => {
-        const visible = !current || Number(row.dataset.page) === page;
+        const type = leaf._lmbWordFilter || "all";
+        const visible = (!current || Number(row.dataset.page) === page)
+          && (type === "all" || (row.dataset.wordCard === "true") === (type === "word"));
         row.toggleClass("is-page-hidden", !visible); if (visible) shown++;
       });
       const sub = bar.querySelector(".lmb-pdf-sidebar-title-sub");
@@ -492,7 +494,8 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       }
       const renderSig = JSON.stringify({
         file: file.path,
-        entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags, e.pageNote, e.inkNote]),
+        entries: entries.map((e) => [e.exId, e.page, e.text, e.note, e.imagePath, e.tags, e.pageNote, e.inkNote, e.wordCard, e.word]),
+        wordJobs: Array.from(this._lmbWordJobs?.keys() || []),
         inkLinks: this.settings.inkExcerptLinks && this.settings.inkExcerptLinks[file.path],
         sources: Array.from(sourceVersions),
         views: this.settings && this.settings.excerptViews,
@@ -538,10 +541,24 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
       allBtn.onclick = () => { this._lmbPdfSidebarView = "all"; sync(); this._lmbApplySidebarPageFilter(leaf); };
       followBtn.onclick = () => { this._lmbPdfSidebarFollow = this._lmbPdfSidebarFollow === false; sync(); };
       sync();
+      const typeControls = head.createDiv({ cls: "lmb-pdf-sidebar-controls lmb-word-filters" });
+      const typeButtons = [];
+      for (const [value, label] of [["all", "全部类型"], ["word", "Aa 词汇"], ["note", "其他批注"]]) {
+        const button = typeControls.createEl("button", { text: label, attr: { type: "button" } });
+        typeButtons.push([value, button]);
+        button.onclick = () => {
+          leaf._lmbWordFilter = value;
+          for (const [key, control] of typeButtons) { control.toggleClass("is-active", key === value); control.setAttribute("aria-pressed", String(key === value)); }
+          this._lmbApplySidebarPageFilter(leaf);
+        };
+        button.toggleClass("is-active", value === (leaf._lmbWordFilter || "all"));
+        button.setAttribute("aria-pressed", String(value === (leaf._lmbWordFilter || "all")));
+      }
       const search = head.createEl("input", { cls: "lmb-pdf-sidebar-search", attr: { type: "search", placeholder: "搜索摘录或备注…" } });
       const list = prepared.createDiv({ cls: "lmb-pdf-sidebar-list" }), mdCache = new Map(), renderJobs = [];
       for (const e of entries) {
         const row = list.createDiv({ cls: "lmb-pdf-sidebar-item" }); row.dataset.page = String(e.page || ""); row.dataset.exId = e.exId || ""; row.dataset.ordinal = String(e._lmbSidebarOrdinal);
+        row.dataset.wordCard = String(!!e.wordCard); row.toggleClass("is-word-card", !!e.wordCard);
         row.addEventListener("click", event => {
           if (this._lmbInkAssociation?.snapshot.path !== file.path) return;
           event.preventDefault(); event.stopImmediatePropagation();
@@ -551,7 +568,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
         const compact = this.lmbIsTextBlockCollapsed(textView);
         row.toggleClass("is-compact", compact);
         const header = row.createDiv({ cls: "lmb-pdf-sidebar-item-header" });
-        header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `P.${e.page || "?"} · ${e._lmbSidebarOrdinal}${e.inkNote ? " · 手写" : e.pageNote ? " · 页注" : ""}` });
+        header.createDiv({ cls: "lmb-pdf-sidebar-item-title", text: `${e.wordCard ? "Aa 词汇 · " : ""}P.${e.page || "?"} · ${e._lmbSidebarOrdinal}${e.inkNote ? " · 手写" : e.pageNote ? " · 页注" : ""}` });
         const summary = header.createDiv({ cls: "lmb-pdf-sidebar-item-summary" });
         const expandEntry = header.createEl("button", { cls: "lmb-pdf-sidebar-expand-entry", text: "展开", attr: { "aria-label": `在侧栏展开 P.${e.page || "?"} · ${e._lmbSidebarOrdinal}` } });
         expandEntry.onclick = (ev) => { ev.stopPropagation(); this.lmbSetTextBlockCollapsed(e, file.path, false).catch((err) => new Notice("设置保存失败：" + err.message)); };
@@ -592,7 +609,7 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           }
           note = mdCache.get(e.sourceMd).get(e.exId) || "";
         }
-        const summaryText = this._lmbSidebarSummary(note, cleanText);
+        const summaryText = e.wordCard ? e.word + " · " + this._lmbSidebarSummary(note, "") : this._lmbSidebarSummary(note, cleanText);
         summary.setText(summaryText); summary.setAttribute("title", summaryText);
         if (note) {
           const noteEl = row.createDiv({ cls: "lmb-pdf-sidebar-item-note" });
@@ -620,6 +637,13 @@ Object.assign(LuciasMarginBookPlugin.prototype, {
           return button;
         };
         const color = iconButton("palette", "修改摘录颜色");
+        if (e.wordCard) {
+          const querying = !!this._lmbWordJobs?.has(e.exId);
+          const lookup = iconButton("languages", querying ? "正在查询…" : "AI 查词／重试（已有内容先预览）");
+          lookup.disabled = querying;
+          if (querying) body.createDiv({ cls: "lmb-word-query-status", text: "正在结合词语与语境查询…" });
+          lookup.onclick = ev => { ev.stopPropagation(); this.lmbRetryWordCard(e).catch(() => new Notice("查词失败，请重试")); };
+        }
         const place = iconButton("text-cursor-input", textView.page ? "重新放置 Markdown 文本块" : "将 Markdown 备注放到 PDF 页面");
         place.onclick = (ev) => { ev.stopPropagation(); this.lmbStartTextBlockPlacement(Object.assign({}, e, { pdfPath: file.path }), leaf).catch((err) => new Notice("无法放置：" + err.message)); };
         const visibility = iconButton("chevrons-up", "收起为侧栏入口", headerActions);

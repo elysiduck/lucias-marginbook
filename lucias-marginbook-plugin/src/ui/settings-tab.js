@@ -9,13 +9,41 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.46.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.47.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")
       .addToggle((t) => t
         .setValue(this.plugin.settings.debug)
         .onChange(async (v) => { this.plugin.settings.debug = v; await this.plugin.saveSettings(); }));
+    containerEl.createEl("h2", { text: "AI 词汇卡" });
+    containerEl.createEl("p", { text: "PDF 选中单词或短语后，点击浮动工具条的「Aa 查词建卡」。支持兼容 Chat Completions 的接口。只在主动查词或测试连接时发送请求；按服务商计费。" });
+    new Setting(containerEl).setName("API 接口地址")
+      .setDesc("填写服务商的基础地址（含 /v1 等路径），或完整的 /chat/completions 地址。")
+      .addText(t => t.setPlaceholder("https://dashscope.aliyuncs.com/compatible-mode/v1")
+        .setValue(this.plugin.settings.wordAiUrl || "")
+        .onChange(async v => { this.plugin.settings.wordAiUrl = v.trim(); await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName("API Key")
+      .setDesc("保存在本地插件 data.json 中，未加密；若同步插件配置，也会同步此密钥。本地免密服务可以留空。")
+      .addText(t => { t.inputEl.type = "password"; t.inputEl.autocomplete = "off";
+        t.setPlaceholder("服务商提供的密钥").setValue(this.plugin.settings.wordAiKey || "")
+          .onChange(async v => { this.plugin.settings.wordAiKey = v.trim(); await this.plugin.saveSettings(); }); });
+    new Setting(containerEl).setName("模型名称")
+      .setDesc("填写服务商支持的模型 ID，例如 qwen-flash。")
+      .addText(t => t.setPlaceholder("qwen-flash").setValue(this.plugin.settings.wordAiModel || "")
+        .onChange(async v => { this.plugin.settings.wordAiModel = v.trim(); await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName("发送原句语境")
+      .setDesc("开启时发送选中词附近的少量 PDF 原文，用于判断本句词义；关闭后只发送选中的单词或短语。")
+      .addToggle(t => t.setValue(this.plugin.settings.wordAiContext !== false)
+        .onChange(async v => { this.plugin.settings.wordAiContext = v; await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName("测试 AI 连接")
+      .setDesc("发送一次 example 查词请求，检查接口和返回格式；不创建卡片，可能产生少量费用。")
+      .addButton(b => b.setButtonText("测试连接").onClick(async () => {
+        b.setDisabled(true); b.setButtonText("测试中…");
+        try { await this.plugin.lmbQueryWord("example", ""); new Notice("AI 连接成功，词汇卡格式正常"); }
+        catch (error) { new Notice("AI 连接测试失败：" + error.message); }
+        finally { b.setDisabled(false); b.setButtonText("测试连接"); }
+      }));
     // 补丁 B：颜色语义映射
     new Setting(containerEl)
       .setName("颜色语义映射")

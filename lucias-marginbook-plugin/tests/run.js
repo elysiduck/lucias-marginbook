@@ -15,6 +15,7 @@ const suites = [
   "tests/integration/file-picker.test.js",
   "tests/integration/text-block.test.js",
   "tests/integration/note-workflow.test.js",
+  "tests/integration/word-card.test.js",
   "tests/integration/storage.test.js"
 ];
 

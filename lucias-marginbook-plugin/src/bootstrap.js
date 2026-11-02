@@ -9,7 +9,7 @@
 
 const {
   Plugin, Notice, Menu, TFile, PluginSettingTab, Setting, normalizePath, Modal,
-  FuzzySuggestModal, MarkdownRenderer, setIcon, Platform, Scope, Component, loadPdfJs
+  FuzzySuggestModal, MarkdownRenderer, setIcon, Platform, Scope, Component, loadPdfJs, requestUrl
 } = require("obsidian");
 
 // Platform is part of Obsidian's public API and is available on desktop and mobile.
