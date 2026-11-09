@@ -74,6 +74,8 @@ const fixture = () => {
     new TFile('Lecture 15 ECON508_FALL 2026.pdf'), new TFile('Lecture 15 ECON508_逐页精读.md'), new TFile('Lecture 16 Discussion ECON508 FALL 2026.pdf'),
     new TFile('封面.png'), new TFile('slow.md'), new TFile('other.md', 'Other')];
   for (let i = 0; i < 100; i++) files.push(new TFile(`资料 ${i}.md`, 'Archive'));
+  files[2].stat.ctime = Date.UTC(2026, 10, 2);
+  files[1].stat.mtime = Date.UTC(2026, 10, 1);
   const leaf = { async openFile(file) { window.opens.push({ path: file.path, tab: false }); } };
   window.app = {
     vault: {
@@ -120,11 +122,17 @@ const fixture = () => {
       const modal = document.querySelector('.modal').getBoundingClientRect();
       const left = document.querySelector('.lmb-fp-left').getBoundingClientRect();
       const preview = document.querySelector('.lmb-fp-preview').getBoundingClientRect();
-      return { modal: { width: modal.width, height: modal.height, x: modal.x, y: modal.y }, left: left.width, preview: preview.width, overflow: document.documentElement.scrollWidth > innerWidth };
+      const list = document.querySelector('.lmb-fp-list').getBoundingClientRect();
+      const rows = Array.from(document.querySelectorAll('.lmb-fp-row'), row => row.getBoundingClientRect());
+      return { modal: { width: modal.width, height: modal.height, x: modal.x, y: modal.y }, left: left.width, preview: preview.width,
+        rowHeight: rows[0].height, visibleRows: rows.filter(row => row.top >= list.top && row.bottom <= list.bottom).length,
+        overflow: document.documentElement.scrollWidth > innerWidth };
     });
     assert(geometry.left > 350 && geometry.preview > 400 && !geometry.overflow, JSON.stringify(geometry));
-    const evidence = path.join(__dirname, 'evidence'); fs.mkdirSync(evidence, { recursive: true });
-    await page.screenshot({ path: path.join(evidence, 'file-picker-0.46.0.png') });
+    assert(geometry.rowHeight <= 54 && geometry.visibleRows >= 9, JSON.stringify(geometry));
+    checks.push('Compact rows show at least nine complete results without scrolling');
+    const evidence = path.join(root, 'tmp'); fs.mkdirSync(evidence, { recursive: true });
+    await page.screenshot({ path: path.join(evidence, 'file-picker-0.48.1.png') });
     await page.getByRole('button', { name: '下一页 →', exact: true }).click();
     await page.waitForFunction(() => picker.pdfPage === 2 && picker.pdfCache.size >= 2);
     checks.push('PDF next page renders and caches independently');
@@ -147,10 +155,18 @@ const fixture = () => {
     assert.equal(await page.locator('.lmb-fp-name').textContent(), 'other');
     checks.push('Folder filter restricts results');
     await page.locator('.lmb-fp-folder').selectOption('');
-    await page.getByRole('button', { name: '最近打开', exact: true }).click();
+    await page.getByRole('button', { name: '仅最近打开', exact: true }).click();
     await page.waitForFunction(() => picker.results.length === 5);
     checks.push('Recent filter lists only history entries');
-    await page.getByRole('button', { name: '最近打开', exact: true }).click();
+    const sort = page.getByRole('combobox', { name: '文件排序' });
+    for (const [mode, top, date] of [['added', 2, '添加'], ['modified', 1, '修改'], ['activity', 2, '添加'], ['opened', 0, '修改']]) {
+      await sort.selectOption(mode);
+      assert(await page.evaluate(index => picker.results.length === 5 && picker.results[0].file === files[index], top), mode);
+      assert((await page.locator('.lmb-fp-date').first().textContent()).startsWith(date), mode);
+    }
+    checks.push('Time and history sorts update rows and date labels while the recent filter stays active');
+    await sort.selectOption('relevance');
+    await page.getByRole('button', { name: '仅最近打开', exact: true }).click();
     await page.locator('.lmb-fp-search input').fill('slow');
     await page.waitForFunction(() => picker.lastQuery === 'slow');
     await page.waitForTimeout(160);
@@ -178,7 +194,7 @@ const fixture = () => {
     checks.push('Narrow viewport stays within screen bounds');
     await page.evaluate(() => picker.close());
     assert.equal(errors.length, 0, errors.join('\n'));
-    fs.writeFileSync(path.join(evidence, 'file-picker-0.46.0.json'), JSON.stringify({ engine: 'headless Edge', actualObsidianCSS: true, actualPDFJS: true, actualCoursePDF: true, liveObsidian: false, checks, geometry, errors }, null, 2) + '\n');
+    fs.writeFileSync(path.join(evidence, 'file-picker-0.48.1.json'), JSON.stringify({ engine: 'headless Edge', actualObsidianCSS: true, actualPDFJS: true, actualCoursePDF: true, liveObsidian: false, checks, geometry, errors }, null, 2) + '\n');
     console.log(`PASS ${checks.length} file picker browser cases; screenshot saved`);
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.48.1
+
+- Compact the file picker into two lines per result while retaining the file type, folder and date. Add independent sort modes for relevance, last opened, created, modified and latest of created or modified. Keep the selected sort for the current Obsidian session.
+
 ## 0.48.0
 
 - Add an editable, automatically saved AI generation prompt with seven mnemonic examples and a restore-default action. Existing API configuration and saved cards are retained.

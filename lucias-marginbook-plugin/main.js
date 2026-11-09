@@ -4325,7 +4325,7 @@ class LuciasMarginBookPlugin extends Plugin {
     // v0.12.1：CSS 全部抽到 src/11-styles.js 的 LMB_STYLES，
     //   per-view-type 适配规则也集中在那边（借鉴 editing-toolbar：视图差异交给 CSS，不动 JS）。
     st.textContent = LMB_STYLES.join("");
-    st.dataset.lmbVersion = "0.48.0";
+    st.dataset.lmbVersion = "0.48.1";
   }
 
 }
@@ -14621,7 +14621,20 @@ function lmbPickerKind(file) {
   return ext === "pdf" ? "pdf" : ext === "md" ? "note" : /^(png|jpe?g|gif|webp|svg|avif|bmp)$/.test(ext) ? "image" : "other";
 }
 
-function lmbPickerSearch(files, query, kind, folder, recent, aliases) {
+const LMB_PICKER_SORTS = [
+  ["relevance", "综合排序"], ["opened", "最近打开"], ["added", "最近添加"],
+  ["modified", "最近修改"], ["activity", "添加或修改"]
+];
+
+function lmbPickerTime(file, mode) {
+  const { ctime, mtime } = file.stat;
+  const valid = time => Number.isFinite(time) && time > 0 ? time : 0;
+  if (mode === "added") return valid(ctime);
+  if (mode === "activity") return Math.max(valid(ctime), valid(mtime));
+  return valid(mtime);
+}
+
+function lmbPickerSearch(files, query, kind, folder, recent, aliases, sort = "relevance") {
   const tokens = query.normalize("NFKC").toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
   const ranks = new Map(recent.map((path, i) => [path, recent.length - i]));
   return files.flatMap(file => {
@@ -14632,8 +14645,10 @@ function lmbPickerSearch(files, query, kind, folder, recent, aliases) {
     const text = (file.path + " " + extra.join(" ")).normalize("NFKC").toLocaleLowerCase();
     if (!tokens.every(token => text.includes(token))) return [];
     const score = tokens.reduce((n, token) => n + (name === token ? 100 : name.startsWith(token) ? 35 : name.includes(token) ? 20 : 1), 0);
-    return [{ file, score, recent: ranks.get(file.path) || 0 }];
-  }).sort((a, b) => b.score - a.score || b.recent - a.recent || b.file.stat.mtime - a.file.stat.mtime || a.file.path.localeCompare(b.file.path, "zh-CN", { numeric: true }));
+    return [{ file, score, recent: ranks.get(file.path) || 0, time: lmbPickerTime(file, sort) }];
+  }).sort((a, b) => (sort === "relevance" ? 0 : sort === "opened" ? b.recent - a.recent : b.time - a.time) ||
+    b.score - a.score || b.recent - a.recent || b.time - a.time ||
+    a.file.path.localeCompare(b.file.path, "zh-CN", { numeric: true }));
 }
 
 function lmbPickerLectureKey(file) {
@@ -14708,6 +14723,7 @@ class LMBFilePickerModal extends Modal {
     this.kind = "all";
     this.folder = "";
     this.recentOnly = false;
+    this.sort = plugin._lmbFilePickerSort || "relevance";
     this.selected = 0;
     this.generation = 0;
     this.pageGeneration = 0;
@@ -14756,7 +14772,7 @@ class LMBFilePickerModal extends Modal {
     for (const [kind, label] of [["all", "全部"], ["pdf", "PDF"], ["note", "笔记"], ["image", "图片"]]) {
       this.tabs.set(kind, this.button(filters, label, () => { this.kind = kind; this.refresh(); }));
     }
-    this.recentButton = this.button(filters, "最近打开", () => { this.recentOnly = !this.recentOnly; this.refresh(); });
+    this.recentButton = this.button(filters, "仅最近打开", () => { this.recentOnly = !this.recentOnly; this.refresh(); });
     this.folderEl = filters.createEl("select", { cls: "lmb-fp-folder" });
     this.folderEl.setAttribute("aria-label", "限定文件夹");
     const all = this.folderEl.createEl("option", { text: "所有文件夹" }); all.value = "";
@@ -14767,8 +14783,16 @@ class LMBFilePickerModal extends Modal {
     this.folderEl.addEventListener("change", () => { this.folder = this.folderEl.value; this.refresh(); });
     const body = root.createDiv({ cls: "lmb-fp-body" });
     const left = body.createDiv({ cls: "lmb-fp-left" });
-    this.countEl = left.createDiv({ cls: "lmb-fp-count" });
+    const listHeader = left.createDiv({ cls: "lmb-fp-list-header" });
+    this.countEl = listHeader.createDiv({ cls: "lmb-fp-count" });
     this.countEl.setAttribute("aria-live", "polite");
+    const sort = listHeader.createEl("select", { cls: "lmb-fp-sort", attr: { "aria-label": "文件排序" } });
+    for (const [value, label] of LMB_PICKER_SORTS) sort.createEl("option", { text: label }).value = value;
+    sort.value = this.sort;
+    sort.addEventListener("change", () => {
+      this.plugin._lmbFilePickerSort = this.sort = sort.value;
+      this.refresh();
+    });
     this.listEl = left.createDiv({ cls: "lmb-fp-list", attr: { id: "lmb-fp-results", role: "listbox", "aria-label": "文件搜索结果" } });
     this.previewEl = body.createDiv({ cls: "lmb-fp-preview" });
     const footer = root.createDiv({ cls: "lmb-fp-footer" });
@@ -14802,7 +14826,7 @@ class LMBFilePickerModal extends Modal {
     this.lastQuery = this.searchEl.value;
     const recent = new Set(this.recent);
     this.results = lmbPickerSearch(this.recentOnly ? this.files.filter(file => recent.has(file.path)) : this.files,
-      this.lastQuery, this.kind, this.folder, this.recent, file => this.getAliases(file));
+      this.lastQuery, this.kind, this.folder, this.recent, file => this.getAliases(file), this.sort);
     this.limit = 80;
     this.listEl.empty();
     for (const [kind, el] of this.tabs) { el.toggleClass("is-active", kind === this.kind); el.setAttribute("aria-pressed", String(kind === this.kind)); }
@@ -14816,7 +14840,7 @@ class LMBFilePickerModal extends Modal {
     this.listEl.querySelector(".lmb-fp-more")?.remove();
     const start = this.listEl.querySelectorAll(".lmb-fp-row").length;
     for (let index = start; index < Math.min(this.limit, this.results.length); index++) {
-      const { file, recent } = this.results[index];
+      const { file, recent, time } = this.results[index];
       const kind = lmbPickerKind(file);
       const row = this.listEl.createDiv({ cls: "lmb-fp-row", attr: { role: "option", id: `lmb-fp-result-${index}`, "aria-selected": "false", tabindex: "-1" } });
       row.title = file.path;
@@ -14825,9 +14849,15 @@ class LMBFilePickerModal extends Modal {
       icon.createSpan({ text: file.extension.toUpperCase(), cls: "lmb-fp-ext" });
       const info = row.createDiv({ cls: "lmb-fp-info" });
       info.createDiv({ text: file.basename, cls: "lmb-fp-name" });
-      info.createDiv({ text: `${kind === "note" ? "Markdown 笔记" : kind === "pdf" ? "PDF 文档" : kind === "image" ? "图片" : file.extension.toUpperCase()} · ${new Date(file.stat.mtime).toLocaleDateString()}`, cls: "lmb-fp-meta" });
-      info.createDiv({ text: file.parent?.path === "/" ? "仓库根目录" : file.parent?.path || "仓库根目录", cls: "lmb-fp-path" });
-      if (recent) row.createSpan({ text: "最近", cls: "lmb-fp-badge" });
+      const details = info.createDiv({ cls: "lmb-fp-details" });
+      details.createSpan({ text: !file.parent?.path || file.parent.path === "/" ? "仓库根目录" : file.parent.path, cls: "lmb-fp-path" });
+      if (time) {
+        const added = this.sort === "added" || (this.sort === "activity" && time > lmbPickerTime(file, "modified"));
+        const date = new Date(time);
+        const stamp = details.createSpan({ text: `${added ? "添加" : "修改"} ${date.toLocaleDateString()}`, cls: "lmb-fp-date" });
+        stamp.title = `${added ? "创建时间" : "修改时间"}：${date.toLocaleString()}`;
+      }
+      if (recent && !this.recentOnly) row.createSpan({ text: "最近", cls: "lmb-fp-badge", attr: { title: "最近打开" } });
       row.addEventListener("click", event => { if (event.ctrlKey || event.metaKey) this.openFile(file, true); else this.choose(index); });
       row.addEventListener("dblclick", () => this.openFile(file, false));
     }
@@ -15006,18 +15036,23 @@ const LMB_FILE_PICKER_CSS = `
 .lmb-fp-folder{margin-left:auto;max-width:40%;font-size:12px;color:var(--text-muted)}
 .lmb-fp-body{display:grid;grid-template-columns:44% 56%;flex:1;min-height:0;border-top:1px solid var(--background-modifier-border);margin:0}
 .lmb-fp-left{display:flex;flex-direction:column;min-height:0;padding:16px 12px 10px 16px;border-right:1px solid var(--background-modifier-border)}
-.lmb-fp-count{font-size:12px;color:var(--text-muted);padding:0 12px 12px}
+.lmb-fp-list-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 4px 9px}
+.lmb-fp-count{font-size:12px;color:var(--text-muted)}
+.lmb-fp-sort{font-size:12px;color:var(--text-normal);max-width:55%;height:28px}
 .lmb-fp-list{overflow:auto;min-height:0;flex:1;scrollbar-width:thin}
-.lmb-fp-row{display:flex;gap:14px;position:relative;padding:15px 12px;border:1px solid transparent;border-radius:10px;cursor:pointer;margin:0 2px 5px;align-items:center;min-height:94px}
+.lmb-fp-row{display:flex;gap:9px;position:relative;padding:6px 8px;border:1px solid transparent;border-radius:7px;cursor:pointer;margin:0 2px 2px;align-items:center;min-height:50px}
 .lmb-fp-row:hover{background:var(--background-modifier-hover)}
 .lmb-fp-row.is-selected{background:var(--fp-selected);border-color:#536d45}
-.lmb-fp-row.is-selected:before{content:'';position:absolute;left:0;top:23px;bottom:23px;width:3px;background:var(--fp-accent);border-radius:3px}
-.lmb-fp-file-icon{flex-shrink:0;width:40px;min-height:51px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:3px;border-radius:7px;background:#333b3b;color:#aab7af}
+.lmb-fp-row.is-selected:before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;background:var(--fp-accent);border-radius:3px}
+.lmb-fp-file-icon{flex-shrink:0;width:29px;height:34px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1px;border-radius:5px;background:#333b3b;color:#aab7af}
 .lmb-fp-file-icon.is-pdf{background:#433a33;color:#e1b092}.lmb-fp-file-icon.is-note{background:#2a3a40;color:#9fc4d2}.lmb-fp-file-icon.is-image{background:#3e334c;color:#c2acdd}
-.lmb-fp-file-icon>span:first-child{display:flex}.lmb-fp-file-icon svg{width:21px;height:21px}.lmb-fp-ext{font-size:9px;font-weight:700;max-width:36px;overflow:hidden}
-.lmb-fp-info{flex:1;min-width:0}.lmb-fp-name{font-size:16px;font-weight:600;line-height:1.4;color:var(--text-normal);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.lmb-fp-meta{font-size:12px;color:var(--text-muted);margin-top:5px}.lmb-fp-path{font-size:11px;color:var(--text-faint);margin-top:5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.lmb-fp-badge{align-self:flex-start;white-space:nowrap;font-size:10px;border-radius:4px;padding:3px 6px;background:#41523b;color:#c8d9bc}
+.lmb-fp-file-icon>span:first-child{display:flex}.lmb-fp-file-icon svg{width:15px;height:15px}.lmb-fp-ext{font-size:8px;font-weight:700;line-height:10px;max-width:27px;overflow:hidden}
+.lmb-fp-info{flex:1;min-width:0}.lmb-fp-name{font-size:14px;font-weight:600;line-height:1.35;color:var(--text-normal);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.lmb-fp-meta{font-size:12px;color:var(--text-muted);margin-top:5px}
+.lmb-fp-details{display:flex;align-items:baseline;gap:7px;margin-top:2px;font-size:11px;line-height:1.3;color:var(--text-muted)}
+.lmb-fp-path{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.lmb-fp-date{flex-shrink:0;white-space:nowrap}.lmb-fp-date:before{content:'·';margin-right:7px}
+.lmb-fp-badge{flex-shrink:0;white-space:nowrap;font-size:10px;border-radius:4px;padding:2px 4px;background:#41523b;color:#c8d9bc}
 .lmb-fp-preview{padding:18px 24px;overflow:auto;min-width:0;background:var(--background-secondary);display:flex;flex-direction:column;scrollbar-width:thin}
 .lmb-fp-preview-top{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--text-muted)}
 .lmb-fp-preview-top button{font-size:12px;box-shadow:none;background:var(--background-primary);color:var(--fp-accent)}
@@ -15033,7 +15068,7 @@ const LMB_FILE_PICKER_CSS = `
 .lmb-fp-related button>span{font-size:13px;overflow-wrap:anywhere}.lmb-fp-related small{font-size:10px;color:var(--text-muted)}
 .lmb-fp-empty{padding:30px 12px;text-align:center;color:var(--text-muted);font-size:13px;line-height:1.8}.lmb-fp-more{display:block;margin:12px auto;box-shadow:none;font-size:12px}
 .lmb-fp-footer{display:flex;gap:22px;flex-wrap:wrap;padding:14px 2px;border-top:1px solid var(--background-modifier-border);font-size:11px;color:var(--text-muted);flex-shrink:0}.lmb-fp-footer>span{display:flex;gap:7px;align-items:center}.lmb-fp-footer kbd{font-size:10px;background:var(--background-secondary);border-radius:4px;padding:3px 6px;box-shadow:none}
-@media(max-width:760px){.modal.lmb-file-picker{padding:18px 14px 0;width:97vw;max-width:97vw;height:94vh;max-height:94vh}.lmb-fp-body{grid-template-columns:1fr;overflow:auto;display:flex;flex-direction:column}.lmb-fp-left{min-height:210px;flex:1;border-right:0;padding:10px}.lmb-fp-preview{min-height:270px;flex:1;border-top:1px solid var(--background-modifier-border);padding:14px}.lmb-fp-preview h3{font-size:16px}.lmb-fp-name{font-size:14px}.lmb-fp-row{min-height:80px;padding:10px}.lmb-fp-footer{gap:10px}.lmb-fp-filters{gap:2px}.lmb-fp-filters button{padding:5px 8px}.lmb-fp-folder{max-width:100%;width:100%;margin-top:7px}.lmb-fp-content{min-height:140px}}
+@media(max-width:760px){.modal.lmb-file-picker{padding:18px 14px 0;width:97vw;max-width:97vw;height:94vh;max-height:94vh}.lmb-fp-body{grid-template-columns:1fr;overflow:auto;display:flex;flex-direction:column}.lmb-fp-left{min-height:210px;flex:1;border-right:0;padding:10px}.lmb-fp-preview{min-height:270px;flex:1;border-top:1px solid var(--background-modifier-border);padding:14px}.lmb-fp-preview h3{font-size:16px}.lmb-fp-footer{gap:10px}.lmb-fp-filters{gap:2px}.lmb-fp-filters button{padding:5px 8px}.lmb-fp-folder{max-width:100%;width:100%;margin-top:7px}.lmb-fp-content{min-height:140px}}
 `;
 
 /* 41-settings-tab —— 设置页 */
@@ -15047,7 +15082,7 @@ class LMBSettingTab extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName("当前运行版本")
-      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.48.0") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
+      .setDesc((this.plugin.manifest && this.plugin.manifest.version || "0.48.1") + " · " + (this.plugin.isMobile ? "iPad / 移动端" : "桌面端"));
     new Setting(containerEl)
       .setName("调试提示（Notice）")
       .setDesc("在屏幕上显示每一步检测结果，用于定位问题。稳定后可关闭。")

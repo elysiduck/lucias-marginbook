@@ -20,6 +20,14 @@ assert.deepEqual(paths(search(files, "逐页理解", "note", "", [], f => f === 
 assert.equal(search(files, "unmatched", "all", "", [], () => []).length, 0);
 assert.equal(search(files, "", "all", "", [pdf.path, next.path], () => [])[0].file, pdf);
 assert(!paths(search(files, "", "all", "USC/508", [], () => [])).includes(outside.path));
+Object.assign(pdf.stat, { ctime: 10, mtime: 20 });
+Object.assign(next.stat, { ctime: 40, mtime: 5 }); // Imported file with an older source modification date.
+Object.assign(note.stat, { ctime: 15, mtime: 30 });
+const sorted = mode => paths(search(files, "econ508", "all", "USC/508", [pdf.path, note.path], () => [], mode));
+assert.deepEqual(sorted("opened").slice(0, 2), [pdf.path, note.path]);
+assert.deepEqual(sorted("added"), [next.path, note.path, pdf.path, other.path]);
+assert.deepEqual(sorted("modified"), [note.path, pdf.path, next.path, other.path]);
+assert.deepEqual(sorted("activity"), [next.path, note.path, pdf.path, other.path]);
 assert.equal(lectureKey(pdf), lectureKey(note));
 assert.notEqual(lectureKey(pdf), lectureKey(other));
 assert.equal(lectureKey(file("ECON508.md")), null);
