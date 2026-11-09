@@ -2,7 +2,7 @@
 
 **在 Obsidian 里读 PDF、做批注，把摘录整理成能回到原文的笔记和 Canvas 卡片。**
 
-[下载最新版](https://github.com/elysiduck/lucias-marginbook/releases/latest) · [安装](#安装与更新) · [功能](#功能) · [快速上手](#快速上手) · [更新日志](lucias-marginbook-plugin/CHANGELOG.md) · [问题反馈](https://github.com/elysiduck/lucias-marginbook/issues)
+[下载最新版](https://github.com/elysiduck/lucias-marginbook/releases/latest) · [完整图文手册](lucias-marginbook-plugin/docs/user-guide.md) · [安装](#安装与更新) · [功能](#功能) · [更新日志](lucias-marginbook-plugin/CHANGELOG.md) · [问题反馈](https://github.com/elysiduck/lucias-marginbook/issues)
 
 MarginBook 适合在 Obsidian 里读课件、论文和书籍。选中文字或框选页面区域，把摘录拖进 Markdown 或 Canvas；也可以直接在 PDF 页内写笔记、用笔做批注，再从侧栏回到对应页。打开下一份资料时，可以先在双栏选择器里看内容，再决定打开哪一个文件。
 
@@ -48,6 +48,8 @@ MarginBook 适合在 Obsidian 里读课件、论文和书籍。选中文字或�
 - **AI 词汇卡是可选联网功能。** 只有主动查词或测试连接时才发请求。可关闭发送原句语境；API Key 保存在本地插件配置中，未加密，不要公开或分享 `data.json`。
 
 ## 使用手册
+
+**[打开完整图文手册](lucias-marginbook-plugin/docs/user-guide.md)**：按阅读场景查找入口、操作步骤和设置，附文件选择器、PDF 摘录与页注、手写、Canvas、AI 词汇卡及插页截图。
 
 - [文件预览与排序](lucias-marginbook-plugin/docs/file-picker.md)
 - [PDF 页注和 Markdown 备注](lucias-marginbook-plugin/docs/markdown-pdf-notes.md)
